@@ -3,6 +3,7 @@
 // и свои; раскладку можно менять перетаскиванием или через контекстное меню.
 import SwiftUI
 import AppKit
+import CoreServices
 import Carbon
 import ApplicationServices
 import Security
@@ -98,6 +99,7 @@ final class Store: ObservableObject, @unchecked Sendable {
     @Published var maint: MaintModel? = nil
     @Published var big: BigFilesModel? = nil
     @Published var pwRequest: PasswordRequest? = nil
+    @Published var pwTool: ToolKind? = nil
     @Published var language: AppLanguage = Loc.setting
     @Published var links: [WebLink] = []
     @Published var linkDraft: LinkDraft? = nil
@@ -105,6 +107,8 @@ final class Store: ObservableObject, @unchecked Sendable {
     @Published var openFolder: UUID? = nil
     @Published var folderDraft: FolderDraft? = nil
     @Published var showSettings = false
+    @Published var quitAll: QuitAllModel? = nil
+    @Published var fmt: FormatModel? = nil
     var minimize: MinimizeController?
     @Published var iconTick = 0
     private var iconMemory: [UUID: NSImage] = [:]
@@ -469,8 +473,10 @@ final class Store: ObservableObject, @unchecked Sendable {
     // Очистка мусора
 
     func beginClean() {
+        if let c = clean, c.stage == .working { ToolWindows.shared.show(.clean, store: self); return }
         let m = CleanModel()
         clean = m
+        ToolWindows.shared.show(.clean, store: self)
         let ids = Set(apps.map { $0.id }.filter { !$0.hasPrefix("/") })
         DispatchQueue.global(qos: .userInitiated).async {
             let cats = Junk.scan(installedIDs: ids) { text in
@@ -486,7 +492,6 @@ final class Store: ObservableObject, @unchecked Sendable {
     func performClean(_ m: CleanModel) {
         m.stage = .working
         m.workText = T("Удаляю…")
-        Store.suppressAutoHide = true
         let items = m.selectedItems
         DispatchQueue.global(qos: .userInitiated).async {
             let fm = FileManager.default
@@ -513,21 +518,28 @@ final class Store: ObservableObject, @unchecked Sendable {
                 m.removedCount = removed
                 m.failed = left
                 m.stage = .done
-                Store.suppressAutoHide = false
             }
         }
     }
 
     // Обслуживание
 
-    func beginMaint() { maint = MaintModel() }
+    func beginMaint() {
+        if maint?.running != true { maint = MaintModel() }
+        ToolWindows.shared.show(.maint, store: self)
+    }
+    func beginQuitAll() { quitAll = QuitAllModel() }
+    func beginFormat() {
+        if fmt == nil || (fmt?.stage != .working && fmt?.speed.running != true) { fmt = FormatModel() }
+        ToolWindows.shared.show(.fmt, store: self)
+    }
+    func beginDisk() { DiskWindowController.shared.show(store: self) }
 
     func runMaint(_ m: MaintModel) {
         let ids = m.tasks.filter { $0.selected }.map { $0.id }
         guard !ids.isEmpty, !m.running else { return }
         m.running = true
         m.note = T("Выполняю…")
-        Store.suppressAutoHide = true
         for id in ids { m.set(id, .running) }
         DispatchQueue.global(qos: .userInitiated).async {
             // 1. то, что не требует пароля
@@ -559,7 +571,6 @@ final class Store: ObservableObject, @unchecked Sendable {
             DispatchQueue.main.async {
                 m.running = false
                 m.note = ""
-                Store.suppressAutoHide = false
             }
         }
     }
@@ -567,8 +578,10 @@ final class Store: ObservableObject, @unchecked Sendable {
     // Большие и старые файлы
 
     func beginBig() {
+        if let b = big, b.stage == .working { ToolWindows.shared.show(.big, store: self); return }
         let m = BigFilesModel()
         big = m
+        ToolWindows.shared.show(.big, store: self)
         DispatchQueue.global(qos: .userInitiated).async {
             let files = BigFiles.scan { text in
                 DispatchQueue.main.async { m.scanText = text }
@@ -1304,7 +1317,7 @@ struct CleanOverlay: View {
 
     var body: some View {
         ZStack {
-            Color.black.opacity(0.4).contentShape(Rectangle()).onTapGesture { }
+            ToolScrim()
             VStack(spacing: 0) {
                 HStack(spacing: 12) {
                     Image(systemName: "sparkles").font(.system(size: 28)).foregroundColor(.accentColor)
@@ -1517,6 +1530,7 @@ enum Admin {
         var answer: String?
         DispatchQueue.main.async {
             guard let store = Store.current else { sem.signal(); return }
+            store.pwTool = ToolWindows.shared.keyKind()
             store.pwRequest = PasswordRequest(user: NSUserName(), message: message) { pw in
                 answer = pw
                 sem.signal()
@@ -1815,13 +1829,2130 @@ enum Maintenance {
     }
 }
 
+// MARK: - Анализатор диска (как DaisyDisk)
+
+final class DiskNode: Identifiable {
+    let id = UUID()
+    let name: String
+    let url: URL
+    var size: Int64
+    let isDir: Bool
+    var isBucket = false
+    var children: [DiskNode] = []
+    weak var parent: DiskNode?
+
+    init(name: String, url: URL, size: Int64, isDir: Bool) {
+        self.name = name
+        self.url = url
+        self.size = size
+        self.isDir = isDir
+    }
+}
+
+enum DiskScanner {
+    /// Файлы и папки меньше 1 МБ в дерево не попадают, а суммируются в «Мелкие объекты» — иначе дерево всего диска не поместилось бы в память
+    static let threshold: Int64 = 1_048_576
+    /// Папки, которые не обходим никогда: iCloud Drive и сторонние файловые провайдеры (обход идёт через сетевой провайдер и подвисает) и служебные дубликаты
+    static let skipSuffixes = ["/Library/Mobile Documents", "/Library/CloudStorage"]
+    static let skipAlways: Set<String> = ["/.nofollow", "/.vol", "/dev", "/net", "/home", "/Network", "/Volumes", "/System/Volumes", "/private/var/vm", "/.Spotlight-V100", "/.fseventsd", "/.DocumentRevisions-V100"]
+
+    final class State {
+        let lock = NSLock()
+        var scanned = 0
+        var unreadable = 0
+        var cancelled = false
+        var path = ""
+        var links = Set<UInt64>()
+        var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
+    }
+
+    static func scan(root: URL, skip: Set<String>, state: State) -> DiskNode {
+        let path = root.path
+        return scanDir(path, name: path == "/" ? "/" : root.lastPathComponent, depth: 0, skip: skip.union(skipAlways), state: state)
+    }
+
+    /// Пересканирование одной папки: kept-подпапки из `reuse` берутся готовыми, остальное (мелкое) читается заново
+    static func scanNode(_ path: String, name: String, skip: Set<String>, state: State, reuse: [String: DiskNode]?) -> DiskNode {
+        scanDir(path, name: name, depth: 0, skip: skip, state: state, reuse: reuse)
+    }
+
+    private static func scanDir(_ path: String, name: String, depth: Int, skip: Set<String>, state: State, reuse: [String: DiskNode]? = nil) -> DiskNode {
+        let node = DiskNode(name: name, url: URL(fileURLWithPath: path), size: 0, isDir: true)
+        if state.isCancelled { return node }
+        if depth <= 5 { state.lock.lock(); state.path = path; state.lock.unlock() }
+        guard let dir = opendir(path) else {
+            state.lock.lock(); state.unreadable += 1; state.lock.unlock()
+            return node
+        }
+        let fd = dirfd(dir)
+        var total: Int64 = 0
+        var small: Int64 = 0
+        var smallCount = 0
+        var count = 0
+        var kept: [DiskNode] = []
+        var dirs: [(String, String)] = []
+        var reused: [DiskNode] = []
+        var st = stat()
+        while let ent = readdir(dir) {
+            let nm = withUnsafePointer(to: &ent.pointee.d_name) { p in
+                p.withMemoryRebound(to: CChar.self, capacity: Int(NAME_MAX) + 1) { String(cString: $0) }
+            }
+            if nm == "." || nm == ".." { continue }
+            count += 1
+            var type = ent.pointee.d_type
+            if type == UInt8(DT_LNK) { continue }
+            var haveStat = false
+            if type == UInt8(DT_UNKNOWN) {
+                guard fstatat(fd, nm, &st, AT_SYMLINK_NOFOLLOW) == 0 else { continue }
+                haveStat = true
+                switch st.st_mode & S_IFMT {
+                case S_IFDIR: type = UInt8(DT_DIR)
+                case S_IFREG: type = UInt8(DT_REG)
+                default: continue
+                }
+            }
+            if type == UInt8(DT_DIR) {
+                let full = path == "/" ? "/" + nm : path + "/" + nm
+                if skip.contains(full) { continue }
+                if skipSuffixes.contains(where: { full.hasSuffix($0) }) { continue }
+                if let r = reuse?[nm] { reused.append(r); continue }
+                dirs.append((full, nm))
+            } else if type == UInt8(DT_REG) {
+                if !haveStat, fstatat(fd, nm, &st, AT_SYMLINK_NOFOLLOW) != 0 { continue }
+                // жёсткие ссылки считаем один раз
+                if st.st_nlink > 1, !state.markLink(UInt64(st.st_ino) ^ (UInt64(UInt32(bitPattern: st.st_dev)) << 48)) { continue }
+                let sz = Int64(st.st_blocks) * 512
+                total += sz
+                if sz >= threshold {
+                    kept.append(DiskNode(name: nm, url: URL(fileURLWithPath: path == "/" ? "/" + nm : path + "/" + nm), size: sz, isDir: false))
+                } else {
+                    small += sz
+                    smallCount += 1
+                }
+            }
+        }
+        closedir(dir)
+        state.lock.lock(); state.scanned += count; state.lock.unlock()
+
+        var results = [DiskNode?](repeating: nil, count: dirs.count)
+        let rlock = NSLock()
+        let work: (Int) -> Void = { i in
+            let child = scanDir(dirs[i].0, name: dirs[i].1, depth: depth + 1, skip: skip, state: state)
+            rlock.lock(); results[i] = child; rlock.unlock()
+        }
+        if depth < 4 && dirs.count > 1 {
+            DispatchQueue.concurrentPerform(iterations: dirs.count, execute: work)
+        } else {
+            for i in dirs.indices { work(i) }
+        }
+        for child in reused + results.compactMap({ $0 }) {
+            total += child.size
+            if child.size >= threshold { kept.append(child) } else { small += child.size; smallCount += 1 }
+        }
+        node.size = total
+        if total < threshold { return node }
+        if small > 0 {
+            let b = DiskNode(name: Tf("Мелкие объекты (%@)", "\(smallCount)"), url: node.url, size: small, isDir: false)
+            b.isBucket = true
+            kept.append(b)
+        }
+        kept.sort { $0.size > $1.size }
+        for c in kept { c.parent = node }
+        node.children = kept
+        return node
+    }
+}
+
+extension DiskScanner.State {
+    /// true — ссылка встретилась впервые и её размер надо учесть
+    func markLink(_ key: UInt64) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return links.insert(key).inserted
+    }
+}
+
+struct DiskCacheNode: Codable {
+    var n: String
+    var s: Int64
+    var d: Bool
+    var b: Bool
+    var c: [DiskCacheNode]
+}
+
+struct DiskCache: Codable {
+    var root: String
+    var event: UInt64
+    var date: Date
+    var unreadable: Int
+    var tree: DiskCacheNode
+}
+
+extension DiskNode {
+    func cacheNode() -> DiskCacheNode {
+        DiskCacheNode(n: name, s: size, d: isDir, b: isBucket, c: children.map { $0.cacheNode() })
+    }
+
+    static func from(_ c: DiskCacheNode, url: URL, parent: DiskNode?) -> DiskNode {
+        let node = DiskNode(name: c.n, url: url, size: c.s, isDir: c.d)
+        node.isBucket = c.b
+        node.parent = parent
+        node.children = c.c.map { ch in
+            DiskNode.from(ch, url: ch.b ? url : url.appendingPathComponent(ch.n), parent: node)
+        }
+        return node
+    }
+}
+
+/// Журнал изменений файловой системы (FSEvents): какие папки менялись с момента `since`
+final class FSHistory {
+    private var paths: [(String, Bool)] = []
+    private var bad = false
+    private var finished = false
+    private var stream: FSEventStreamRef?
+    private var done: (([(String, Bool)]?) -> Void)?
+    private let queue = DispatchQueue(label: "disk.fshistory")
+
+    func start(root: String, since: UInt64, done: @escaping ([(String, Bool)]?) -> Void) {
+        self.done = done
+        var ctx = FSEventStreamContext(version: 0, info: Unmanaged.passUnretained(self).toOpaque(), retain: nil, release: nil, copyDescription: nil)
+        let callback: FSEventStreamCallback = { _, info, count, eventPaths, eventFlags, _ in
+            guard let info = info else { return }
+            let me = Unmanaged<FSHistory>.fromOpaque(info).takeUnretainedValue()
+            let list = Unmanaged<CFArray>.fromOpaque(eventPaths).takeUnretainedValue() as? [String] ?? []
+            let droppedMask = UInt32(kFSEventStreamEventFlagUserDropped) | UInt32(kFSEventStreamEventFlagKernelDropped) | UInt32(kFSEventStreamEventFlagEventIdsWrapped)
+            for i in 0..<count {
+                let f = eventFlags[i]
+                if f & UInt32(kFSEventStreamEventFlagHistoryDone) != 0 { me.finish(); return }
+                if f & droppedMask != 0 { me.bad = true }
+                if i < list.count { me.paths.append((list[i], f & UInt32(kFSEventStreamEventFlagMustScanSubDirs) != 0)) }
+            }
+        }
+        guard let s = FSEventStreamCreate(nil, callback, &ctx, [root] as CFArray, since, 0.0, FSEventStreamCreateFlags(kFSEventStreamCreateFlagUseCFTypes)) else {
+            done(nil)
+            return
+        }
+        stream = s
+        FSEventStreamSetDispatchQueue(s, queue)
+        FSEventStreamStart(s)
+        queue.asyncAfter(deadline: .now() + 60) { [weak self] in self?.finish(timeout: true) }
+    }
+
+    private func finish(timeout: Bool = false) {
+        if finished { return }
+        finished = true
+        if let s = stream {
+            FSEventStreamStop(s)
+            FSEventStreamInvalidate(s)
+            FSEventStreamRelease(s)
+            stream = nil
+        }
+        let result: [(String, Bool)]? = (bad || timeout) ? nil : paths
+        let d = done
+        done = nil
+        d?(result)
+    }
+}
+
+final class DiskModel: ObservableObject {
+    static let shared = DiskModel()
+
+    enum Stage { case choose, scanning, result }
+    @Published var stage: Stage = .choose
+    @Published var root: DiskNode?
+    @Published var current: DiskNode?
+    @Published var scanned = 0
+    @Published var scanPath = ""
+    @Published var unreadable = 0
+    @Published var pendingDelete: DiskNode?
+    @Published var message: String?
+    @Published var refreshing = false
+    @Published var scanDate: Date?
+    private(set) var whole = false
+    private var eventId: UInt64 = 0
+    private var generation = 0
+    private var state: DiskScanner.State?
+    private var timer: Timer?
+    private var history: FSHistory?
+
+    private struct Target {
+        let node: DiskNode
+        var full: Bool
+        let depth: Int
+    }
+
+    private var rootPath: String { whole ? "/" : NSHomeDirectory() }
+    private var skipSet: Set<String> { whole ? ["/Volumes", "/System/Volumes", "/dev", "/net", "/home"] : [] }
+
+    private static func cacheURL(whole: Bool) -> URL {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("StartMenu")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent(whole ? "disk-whole.json" : "disk-home.json")
+    }
+
+    /// Открыть анализ: если есть сохранённый — показать его сразу и обновить только изменения; иначе полный обход
+    func scan(whole: Bool, fresh: Bool = false) {
+        self.whole = whole
+        message = nil
+        if fresh { fullScan(); return }
+        generation += 1
+        let gen = generation
+        let rp = rootPath
+        stage = .scanning
+        scanned = 0
+        scanPath = T("Загрузка сохранённого анализа…")
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            var cache: DiskCache?
+            if let data = try? Data(contentsOf: DiskModel.cacheURL(whole: whole)),
+               let c = try? JSONDecoder().decode(DiskCache.self, from: data),
+               c.root == rp, Date().timeIntervalSince(c.date) < 14 * 86400 {
+                cache = c
+            }
+            DispatchQueue.main.async {
+                guard let self = self, gen == self.generation, self.stage == .scanning else { return }
+                if let c = cache {
+                    self.install(c)
+                    self.refresh()
+                } else {
+                    self.fullScan()
+                }
+            }
+        }
+    }
+
+    private func install(_ c: DiskCache) {
+        let r = DiskNode.from(c.tree, url: URL(fileURLWithPath: c.root), parent: nil)
+        root = r
+        current = r
+        eventId = c.event
+        scanDate = c.date
+        unreadable = c.unreadable
+        stage = .result
+    }
+
+    private func saveCache() {
+        guard let root = root else { return }
+        let cache = DiskCache(root: rootPath, event: eventId, date: scanDate ?? Date(), unreadable: unreadable, tree: root.cacheNode())
+        let url = DiskModel.cacheURL(whole: whole)
+        DispatchQueue.global(qos: .utility).async {
+            if let data = try? JSONEncoder().encode(cache) { try? data.write(to: url, options: .atomic) }
+        }
+    }
+
+    private func fullScan() {
+        generation += 1
+        let gen = generation
+        stage = .scanning
+        scanned = 0
+        scanPath = ""
+        message = nil
+        refreshing = false
+        let ev = FSEventsGetCurrentEventId()
+        let st = DiskScanner.State()
+        state = st
+        let rootURL = URL(fileURLWithPath: rootPath)
+        let skip = skipSet
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+            st.lock.lock(); let n = st.scanned; let p = st.path; st.lock.unlock()
+            self?.scanned = n
+            self?.scanPath = p
+        }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let node = DiskScanner.scan(root: rootURL, skip: skip, state: st)
+            st.lock.lock(); let bad = st.unreadable; st.lock.unlock()
+            DispatchQueue.main.async {
+                guard let self = self, gen == self.generation, !st.isCancelled else { return }
+                self.timer?.invalidate()
+                self.root = node
+                self.current = node
+                self.unreadable = bad
+                self.eventId = ev
+                self.scanDate = Date()
+                self.stage = .result
+                self.saveCache()
+            }
+        }
+    }
+
+    /// Дешёвое обновление: берём из журнала FSEvents только папки, менявшиеся после прошлого анализа, и перечитываем их
+    func refresh() {
+        guard stage == .result, root != nil, !refreshing else { return }
+        refreshing = true
+        let gen = generation
+        let newEvent = FSEventsGetCurrentEventId()
+        let h = FSHistory()
+        history = h
+        h.start(root: rootPath, since: eventId) { [weak self] events in
+            DispatchQueue.main.async { self?.applyChanges(events, newEvent: newEvent, gen: gen) }
+        }
+    }
+
+    private func applyChanges(_ events: [(String, Bool)]?, newEvent: UInt64, gen: Int) {
+        history = nil
+        guard gen == generation, stage == .result else { refreshing = false; return }
+        guard let events = events, events.count < 50000, let rootNode = root else {
+            refreshing = false
+            fullScan()
+            return
+        }
+        let rp = rootPath
+        let prefix = rp == "/" ? "/" : rp + "/"
+        let skip = skipSet.union(DiskScanner.skipAlways)
+        var targets: [Target] = []
+        for (raw, must) in events {
+            var p = raw
+            if p.count > 1 && p.hasSuffix("/") { p.removeLast() }
+            guard p == rp || p.hasPrefix(prefix) else { continue }
+            if skip.contains(where: { p == $0 || p.hasPrefix($0 + "/") }) { continue }
+            if DiskScanner.skipSuffixes.contains(where: { p.hasSuffix($0) || p.contains($0 + "/") }) { continue }
+            var node = rootNode
+            var depth = 0
+            if p != rp {
+                for comp in p.dropFirst(prefix.count).split(separator: "/") {
+                    let name = String(comp)
+                    if let ch = node.children.first(where: { $0.isDir && !$0.isBucket && $0.name == name }) {
+                        node = ch
+                        depth += 1
+                    } else { break }
+                }
+            }
+            let exact = node.url.path == p
+            if let idx = targets.firstIndex(where: { $0.node === node }) {
+                if must && exact { targets[idx].full = true }
+            } else {
+                targets.append(Target(node: node, full: must && exact, depth: depth))
+            }
+        }
+        targets.sort { $0.depth < $1.depth }
+        let curPath = current?.url.path
+        let st = DiskScanner.State()
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            var results: [(DiskNode, DiskNode)] = []
+            for t in targets {
+                var reuse: [String: DiskNode]? = nil
+                if !t.full {
+                    var r: [String: DiskNode] = [:]
+                    for c in t.node.children where c.isDir && !c.isBucket { r[c.name] = c }
+                    reuse = r
+                }
+                let n = DiskScanner.scanNode(t.node.url.path, name: t.node.name, skip: skip, state: st, reuse: reuse)
+                results.append((t.node, n))
+            }
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                defer { self.refreshing = false }
+                guard gen == self.generation else { return }
+                self.objectWillChange.send()
+                for (old, new) in results { self.replace(old, with: new) }
+                if let cp = curPath, let r = self.root { self.current = self.find(cp, in: r) } else { self.current = self.root }
+                self.eventId = newEvent
+                self.scanDate = Date()
+                self.saveCache()
+            }
+        }
+    }
+
+    private func find(_ path: String, in rootNode: DiskNode) -> DiskNode {
+        let rp = rootPath
+        let prefix = rp == "/" ? "/" : rp + "/"
+        guard path != rp, path.hasPrefix(prefix) else { return rootNode }
+        var node = rootNode
+        for comp in path.dropFirst(prefix.count).split(separator: "/") {
+            let name = String(comp)
+            guard let ch = node.children.first(where: { $0.isDir && !$0.isBucket && $0.name == name }) else { return node }
+            node = ch
+        }
+        return node
+    }
+
+    private func isAttached(_ n: DiskNode) -> Bool {
+        var x = n
+        while let p = x.parent {
+            if !p.children.contains(where: { $0 === x }) { return false }
+            x = p
+        }
+        return x === root
+    }
+
+    private func replace(_ old: DiskNode, with new: DiskNode) {
+        guard isAttached(old) else { return }
+        guard let parent = old.parent else { root = new; return }
+        let delta = new.size - old.size
+        parent.children.removeAll { $0 === old }
+        if new.size >= DiskScanner.threshold {
+            new.parent = parent
+            parent.children.append(new)
+        } else if let b = parent.children.first(where: { $0.isBucket }) {
+            b.size += new.size
+        } else {
+            let b = DiskNode(name: Tf("Мелкие объекты (%@)", "1"), url: parent.url, size: new.size, isDir: false)
+            b.isBucket = true
+            b.parent = parent
+            parent.children.append(b)
+        }
+        var p: DiskNode? = parent
+        while let q = p {
+            q.size += delta
+            q.children.sort { $0.size > $1.size }
+            p = q.parent
+        }
+    }
+
+    func cancel() {
+        generation += 1
+        if let st = state { st.lock.lock(); st.cancelled = true; st.lock.unlock() }
+        timer?.invalidate()
+        refreshing = false
+        stage = .choose
+    }
+
+    func drill(_ n: DiskNode) { if n.isDir && !n.isBucket { current = n } }
+    func up() { if let p = current?.parent { current = p } }
+
+    func trash(_ n: DiskNode) {
+        NSWorkspace.shared.recycle([n.url]) { _, error in
+            DispatchQueue.main.async {
+                if let e = error {
+                    self.message = Tf("Не удалось переместить в Корзину: %@", e.localizedDescription)
+                    return
+                }
+                let size = n.size
+                var p = n.parent
+                p?.children.removeAll { $0 === n }
+                while let q = p { q.size -= size; p = q.parent }
+                self.objectWillChange.send()
+                self.saveCache()
+            }
+        }
+    }
+}
+
+struct DiskSeg {
+    let node: DiskNode
+    let a0: Double
+    let a1: Double
+    let ring: Int
+    let color: Color
+}
+
+struct SunburstView: View {
+    let current: DiskNode
+    let onPick: (DiskNode) -> Void
+    let onUp: () -> Void
+    private let rings = 3
+
+    private func segments() -> [DiskSeg] {
+        var out: [DiskSeg] = []
+        func walk(_ n: DiskNode, _ a0: Double, _ a1: Double, _ ring: Int, _ hue: Double?) {
+            guard ring < rings else { return }
+            let total = Double(n.children.reduce(0) { $0 + $1.size })
+            guard total > 0 else { return }
+            var start = a0
+            for c in n.children {
+                let span = (a1 - a0) * Double(c.size) / total
+                if span >= 0.012 {
+                    let h = hue ?? ((start + span / 2) / (2 * Double.pi))
+                    let color: Color = c.isBucket
+                        ? Color(white: 0.6 - 0.05 * Double(ring))
+                        : Color(hue: h, saturation: 0.55 - 0.07 * Double(ring), brightness: 0.95 - 0.07 * Double(ring))
+                    out.append(DiskSeg(node: c, a0: start, a1: start + span, ring: ring, color: color))
+                    if c.isDir && !c.isBucket { walk(c, start, start + span, ring + 1, h) }
+                }
+                start += span
+            }
+        }
+        walk(current, 0, 2 * Double.pi, 0, nil)
+        return out
+    }
+
+    private func geometry(_ size: CGSize) -> (c: CGPoint, R: CGFloat, hole: CGFloat, ringW: CGFloat) {
+        let R = max(10, min(size.width, size.height) / 2 - 4)
+        let hole = R * 0.28
+        return (CGPoint(x: size.width / 2, y: size.height / 2), R, hole, (R - hole) / CGFloat(rings))
+    }
+
+    var body: some View {
+        GeometryReader { geo in
+            let g = geometry(geo.size)
+            let segs = segments()
+            ZStack {
+                Canvas { ctx, size in
+                    for sg in segs {
+                        let r0 = g.hole + g.ringW * CGFloat(sg.ring) + 1
+                        let r1 = g.hole + g.ringW * CGFloat(sg.ring + 1) - 1
+                        var path = Path()
+                        let steps = max(2, Int((sg.a1 - sg.a0) / 0.04))
+                        for i in 0...steps {
+                            let a = sg.a0 + (sg.a1 - sg.a0) * Double(i) / Double(steps) - Double.pi / 2
+                            let pt = CGPoint(x: g.c.x + r1 * CGFloat(cos(a)), y: g.c.y + r1 * CGFloat(sin(a)))
+                            if i == 0 { path.move(to: pt) } else { path.addLine(to: pt) }
+                        }
+                        for i in stride(from: steps, through: 0, by: -1) {
+                            let a = sg.a0 + (sg.a1 - sg.a0) * Double(i) / Double(steps) - Double.pi / 2
+                            path.addLine(to: CGPoint(x: g.c.x + r0 * CGFloat(cos(a)), y: g.c.y + r0 * CGFloat(sin(a))))
+                        }
+                        path.closeSubpath()
+                        ctx.fill(path, with: .color(sg.color))
+                    }
+                    let hole = Path(ellipseIn: CGRect(x: g.c.x - g.hole, y: g.c.y - g.hole, width: g.hole * 2, height: g.hole * 2))
+                    ctx.fill(hole, with: .color(Color.primary.opacity(0.08)))
+                }
+                VStack(spacing: 2) {
+                    if current.parent != nil { Image(systemName: "arrow.up").font(.caption).foregroundColor(.secondary) }
+                    Text(current.name).font(.system(size: 11, weight: .semibold)).lineLimit(1)
+                    Text(ByteCountFormatter.string(fromByteCount: current.size, countStyle: .file))
+                        .font(.system(size: 10)).foregroundColor(.secondary)
+                }
+                .frame(width: g.hole * 1.7)
+                .allowsHitTesting(false)
+            }
+            .contentShape(Rectangle())
+            .gesture(DragGesture(minimumDistance: 0).onEnded { v in
+                let dx = v.location.x - g.c.x
+                let dy = v.location.y - g.c.y
+                let r = (dx * dx + dy * dy).squareRoot()
+                if r <= g.hole { onUp(); return }
+                guard r <= g.R else { return }
+                let ring = Int((r - g.hole) / g.ringW)
+                var a = Double(atan2(dy, dx)) + Double.pi / 2
+                if a < 0 { a += 2 * Double.pi }
+                if let hit = segs.first(where: { $0.ring == ring && a >= $0.a0 && a < $0.a1 }) { onPick(hit.node) }
+            })
+        }
+    }
+}
+
+struct DiskPanel: View {
+    @ObservedObject var model: DiskModel
+    @ObservedObject var store: Store
+
+    private func fmt(_ b: Int64) -> String { ByteCountFormatter.string(fromByteCount: b, countStyle: .file) }
+    static let dateFmt: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .short
+        f.timeStyle = .short
+        return f
+    }()
+
+    private func openFullDiskSettings() {
+        if let u = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") { NSWorkspace.shared.open(u) }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Image(systemName: "chart.pie.fill").font(.system(size: 26)).foregroundColor(.accentColor)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(T("Анализатор диска")).font(.headline)
+                    Text(T("Что занимает место: нажмите на сектор или папку, чтобы заглянуть внутрь"))
+                        .font(.caption).foregroundColor(.secondary)
+                }
+                Spacer()
+            }
+            .padding(14)
+            Divider()
+            content
+        }
+        .frame(minWidth: 640, minHeight: 440)
+        .background(Color(NSColor.windowBackgroundColor))
+        .overlay { if let d = model.pendingDelete { confirm(d) } }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch model.stage {
+        case .choose:
+            VStack(spacing: 14) {
+                Spacer()
+                HStack(spacing: 16) {
+                    Button { model.scan(whole: false) } label: {
+                        VStack(spacing: 6) {
+                            Image(systemName: "house").font(.system(size: 26))
+                            Text(T("Домашняя папка"))
+                        }.frame(width: 150, height: 90)
+                    }
+                    Button { model.scan(whole: true) } label: {
+                        VStack(spacing: 6) {
+                            Image(systemName: "internaldrive").font(.system(size: 26))
+                            Text(T("Весь диск"))
+                        }.frame(width: 150, height: 90)
+                    }
+                }
+                if !store.fullDiskAccess {
+                    Text(T("Для анализа всего диска нужен «Полный доступ к диску», иначе часть папок будет недоступна."))
+                        .font(.caption).foregroundColor(.secondary).multilineTextAlignment(.center).padding(.horizontal, 30)
+                    Button(T("Разрешения…")) { openFullDiskSettings() }
+                }
+                Spacer()
+                HStack { Spacer(); Button(T("Закрыть")) { DiskWindowController.shared.close() } }.padding(12)
+            }
+        case .scanning:
+            VStack(spacing: 10) {
+                Spacer()
+                ProgressView()
+                Text(Tf("Просмотрено: %@", "\(model.scanned)")).foregroundColor(.secondary)
+                Text(model.scanPath).font(.caption).foregroundColor(.secondary)
+                    .lineLimit(1).truncationMode(.middle).padding(.horizontal, 30)
+                Spacer()
+                HStack { Spacer(); Button(T("Отмена")) { model.cancel() } }.padding(12)
+            }
+        case .result:
+            if let cur = model.current, let root = model.root {
+                VStack(spacing: 0) {
+                    crumbs(cur)
+                    Divider()
+                    HStack(spacing: 0) {
+                        SunburstView(current: cur, onPick: { model.drill($0) }, onUp: { model.up() })
+                            .padding(12)
+                            .frame(minWidth: 240)
+                        Divider()
+                        list(cur, root)
+                            .frame(minWidth: 280)
+                    }
+                    Divider()
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(Tf("Всего: %@", "\(fmt(root.size))")).font(.callout)
+                            if model.refreshing {
+                                Text(T("Обновляется…")).font(.caption).foregroundColor(.secondary)
+                            } else if let d = model.scanDate {
+                                Text(Tf("Данные от %@", DiskPanel.dateFmt.string(from: d))).font(.caption).foregroundColor(.secondary)
+                            }
+                            if model.unreadable > 0 {
+                                if store.fullDiskAccess {
+                                    Text(Tf("Защищено macOS и не читается: %@ папок (системные данные)", "\(model.unreadable)"))
+                                        .font(.caption).foregroundColor(.secondary)
+                                } else {
+                                    Text(Tf("Часть папок недоступна: %@. Выдайте «Полный доступ к диску».", "\(model.unreadable)"))
+                                        .font(.caption).foregroundColor(.orange)
+                                }
+                            }
+                            if let m = model.message { Text(m).font(.caption).foregroundColor(.orange) }
+                        }
+                        Spacer()
+                        if model.unreadable > 0 && !store.fullDiskAccess { Button(T("Разрешения…")) { openFullDiskSettings() } }
+                        Button(T("Пересканировать")) { model.scan(whole: model.whole, fresh: true) }
+                        Button(T("Новый анализ")) { model.stage = .choose }
+                        Button(T("Закрыть")) { DiskWindowController.shared.close() }
+                    }
+                    .padding(12)
+                }
+            }
+        }
+    }
+
+    private func crumbs(_ cur: DiskNode) -> some View {
+        var chain: [DiskNode] = []
+        var n: DiskNode? = cur
+        while let x = n { chain.insert(x, at: 0); n = x.parent }
+        return ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 4) {
+                ForEach(Array(chain.enumerated()), id: \.offset) { i, node in
+                    if i > 0 { Image(systemName: "chevron.right").font(.caption2).foregroundColor(.secondary) }
+                    Button { model.current = node } label: {
+                        Text(node.name).font(.system(size: 12, weight: node === cur ? .semibold : .regular))
+                            .padding(.horizontal, 6).padding(.vertical, 3)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .hoverHighlight(5)
+                }
+            }
+            .padding(.horizontal, 12).padding(.vertical, 6)
+        }
+    }
+
+    private func list(_ cur: DiskNode, _ root: DiskNode) -> some View {
+        ScrollView {
+            LazyVStack(spacing: 0) {
+                ForEach(cur.children.prefix(300)) { c in
+                    HStack(spacing: 8) {
+                        Image(systemName: c.isBucket ? "ellipsis.circle" : (c.isDir ? "folder.fill" : "doc"))
+                            .foregroundColor(c.isDir && !c.isBucket ? .accentColor : .secondary).frame(width: 20)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(c.name).lineLimit(1).truncationMode(.middle)
+                            GeometryReader { g in
+                                RoundedRectangle(cornerRadius: 2).fill(Color.accentColor.opacity(0.5))
+                                    .frame(width: g.size.width * CGFloat(Double(c.size) / Double(max(1, cur.size))), height: 3)
+                            }
+                            .frame(height: 3)
+                        }
+                        Text(fmt(c.size)).font(.callout).foregroundColor(.secondary)
+                        if !c.isBucket {
+                            Button { NSWorkspace.shared.activateFileViewerSelecting([c.url]) } label: {
+                                Image(systemName: "magnifyingglass.circle").foregroundColor(.secondary)
+                            }
+                            .buttonStyle(.plain).help(T("Показать в Finder"))
+                            Button { model.pendingDelete = c } label: {
+                                Image(systemName: "trash").foregroundColor(.secondary)
+                            }
+                            .buttonStyle(.plain).disabled(model.refreshing).help(T("В Корзину…"))
+                        }
+                    }
+                    .padding(.vertical, 5).padding(.horizontal, 8)
+                    .hoverHighlight(6)
+                    .contentShape(Rectangle())
+                    .onTapGesture { model.drill(c) }
+                }
+            }
+            .padding(.horizontal, 6).padding(.vertical, 4)
+        }
+    }
+
+    private func confirm(_ d: DiskNode) -> some View {
+        ZStack {
+            Color.black.opacity(0.4).contentShape(Rectangle()).onTapGesture { }
+            VStack(spacing: 12) {
+                Image(systemName: "trash.circle.fill").font(.system(size: 34)).foregroundColor(.orange)
+                Text(T("Переместить в Корзину?")).font(.title3.bold())
+                Text("\(d.name) (\(fmt(d.size)))").multilineTextAlignment(.center).lineLimit(3)
+                Text(T("Вернуть можно из Корзины, пока вы её не очистили.")).font(.caption).foregroundColor(.secondary)
+                HStack {
+                    Button(T("Нет, вернуться")) { model.pendingDelete = nil }
+                    Button(T("Да, в Корзину")) { model.trash(d); model.pendingDelete = nil }.foregroundColor(.red)
+                }
+            }
+            .padding(20)
+            .frame(width: 320)
+            .background(RoundedRectangle(cornerRadius: 12).fill(Color(NSColor.windowBackgroundColor)))
+            .shadow(radius: 20)
+        }
+    }
+}
+
+final class DiskWindowController: NSObject, NSWindowDelegate {
+    static let shared = DiskWindowController()
+    private var window: NSWindow?
+
+    /// Отдельное окно анализатора: «Пуск» его только запускает, дальше оно живёт само
+    func show(store: Store) {
+        if window == nil {
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 640),
+                             styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                             backing: .buffered, defer: false)
+            w.title = T("Анализатор диска")
+            w.isReleasedWhenClosed = false
+            w.minSize = NSSize(width: 640, height: 440)
+            w.contentView = NSHostingView(rootView: DiskWindowRoot(store: store, model: DiskModel.shared))
+            w.delegate = self
+            if !w.setFrameUsingName("DiskAnalyzerWindow") { w.center() }
+            w.setFrameAutosaveName("DiskAnalyzerWindow")
+            window = w
+            NotificationCenter.default.addObserver(self, selector: #selector(languageChanged), name: .languageChanged, object: nil)
+        }
+        NSApp.windows.compactMap { $0 as? PopupWindow }.forEach { $0.orderOut(nil) }
+        NSApp.activate(ignoringOtherApps: true)
+        window?.makeKeyAndOrderFront(nil)
+    }
+
+    func close() { window?.close() }
+
+    @objc private func languageChanged() { window?.title = T("Анализатор диска") }
+
+    func windowDidBecomeKey(_ notification: Notification) { DiskModel.shared.refresh() }
+}
+
+struct DiskWindowRoot: View {
+    @ObservedObject var store: Store
+    @ObservedObject var model: DiskModel
+    var body: some View { DiskPanel(model: model, store: store).id(store.language) }
+}
+
+// MARK: - Форматирование флешек
+
+enum FormatKind: String, CaseIterable, Identifiable {
+    case fat32, fat16, exfat, hfs, apfs
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .fat32: return "FAT32"
+        case .fat16: return "FAT16"
+        case .exfat: return "exFAT"
+        case .hfs: return "Mac OS Extended (HFS+)"
+        case .apfs: return "APFS"
+        }
+    }
+    /// Имя формата для diskutil
+    var personality: String {
+        switch self {
+        case .fat32: return "MS-DOS FAT32"
+        case .fat16: return "MS-DOS FAT16"
+        case .exfat: return "ExFAT"
+        case .hfs: return "JHFS+"
+        case .apfs: return "APFS"
+        }
+    }
+    var isFAT: Bool { self == .fat32 || self == .fat16 }
+    var maxName: Int {
+        switch self {
+        case .fat32, .fat16: return 11
+        case .exfat: return 15
+        default: return 27
+        }
+    }
+    var supportsMBR: Bool { self != .apfs }
+    var defaultScheme: String { (self == .hfs || self == .apfs) ? "GPT" : "MBR" }
+    var maxSize: Int64? {
+        switch self {
+        case .fat16: return 4_294_967_296
+        case .fat32: return 2_199_023_255_552
+        default: return nil
+        }
+    }
+    var note: String {
+        switch self {
+        case .fat32: return T("Самый совместимый: Windows, Mac, Linux, камеры, ТВ, магнитолы. Файлы до 4 ГБ.")
+        case .fat16: return T("Для очень старых устройств. Объём до 4 ГБ, файлы до 2 ГБ.")
+        case .exfat: return T("Для файлов больше 4 ГБ. Windows, Mac, современный Linux; старая техника может не понять.")
+        case .hfs: return T("Только для Mac (журналируемая).")
+        case .apfs: return T("Только для Mac, современная файловая система.")
+        }
+    }
+}
+
+struct FormatDrive: Identifiable {
+    let id: String          // disk4
+    let name: String
+    let size: Int64
+    let bus: String
+    let volumes: [String]
+}
+
+final class FormatModel: ObservableObject {
+    enum Stage { case pick, confirm, working, done }
+    enum Tab { case format, speed }
+    @Published var tab: Tab = .format
+    let speed = SpeedModel()
+
+    @Published var stage: Stage = .pick
+    @Published var drives: [FormatDrive] = []
+    @Published var loading = true
+    @Published var selectedID: String?
+    @Published var kind: FormatKind = .fat32 {
+        didSet {
+            if !kind.supportsMBR { scheme = "GPT" }
+            else if oldValue.defaultScheme != kind.defaultScheme { scheme = kind.defaultScheme }
+        }
+    }
+    @Published var scheme = "MBR"
+    @Published var label = "USB"
+    @Published var resultOK = false
+    @Published var resultText = ""
+    @Published var resultFS = ""
+    @Published var ejectNote = ""
+    private var observers: [NSObjectProtocol] = []
+    private var lastDisk = ""
+
+    init() {
+        refresh()
+        let nc = NSWorkspace.shared.notificationCenter
+        for n in [NSWorkspace.didMountNotification, NSWorkspace.didUnmountNotification] {
+            observers.append(nc.addObserver(forName: n, object: nil, queue: .main) { [weak self] _ in
+                guard let self = self, self.stage == .pick else { return }
+                self.refresh()
+            })
+        }
+    }
+
+    deinit {
+        for o in observers { NSWorkspace.shared.notificationCenter.removeObserver(o) }
+    }
+
+    var selected: FormatDrive? { drives.first { $0.id == selectedID } }
+
+    var cleanLabel: String {
+        let t = label.trimmingCharacters(in: .whitespaces)
+        let base = t.isEmpty ? "UNTITLED" : t
+        return kind.isFAT ? base.uppercased() : base
+    }
+
+    var sizeProblem: String? {
+        guard let d = selected, let m = kind.maxSize, d.size > m else { return nil }
+        return kind == .fat16 ? T("Диск слишком велик для FAT16 (максимум 4 ГБ)") : T("Диск слишком велик для FAT32 (максимум 2 ТБ)")
+    }
+
+    var nameProblem: String? {
+        let n = cleanLabel
+        if n.count > kind.maxName { return Tf("Имя слишком длинное (максимум %@ символов)", "\(kind.maxName)") }
+        let bad: Set<Character> = (kind == .hfs || kind == .apfs) ? ["/", ":"] : Set("*?.,;:/\\|+=<>[]\"")
+        if n.contains(where: { bad.contains($0) }) || n.hasPrefix("-") { return T("В имени есть недопустимые символы") }
+        return nil
+    }
+
+    var canFormat: Bool { selected != nil && sizeProblem == nil && nameProblem == nil && !speed.running }
+
+    func refresh() {
+        loading = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let list = FormatModel.loadDrives()
+            DispatchQueue.main.async {
+                self.drives = list
+                self.loading = false
+                if let s = self.selectedID, !list.contains(where: { $0.id == s }) { self.selectedID = nil }
+                if self.selectedID == nil, list.count == 1 { self.selectedID = list[0].id }
+            }
+        }
+    }
+
+    // MARK: diskutil
+
+    static func runTool(_ path: String, _ args: [String], mergeErrors: Bool, timeout: TimeInterval = 0) -> (Int32, Data) {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: path)
+        p.arguments = args
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = mergeErrors ? pipe : FileHandle.nullDevice
+        do { try p.run() } catch { return (-1, Data()) }
+        // зависший диск не должен подвесить операцию навсегда
+        var killer: DispatchWorkItem?
+        if timeout > 0 {
+            let w = DispatchWorkItem { if p.isRunning { p.terminate() } }
+            killer = w
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: w)
+        }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        killer?.cancel()
+        return (p.terminationStatus, data)
+    }
+
+    static func plist(_ args: [String]) -> [String: Any]? {
+        let (code, data) = runTool("/usr/sbin/diskutil", args, mergeErrors: false, timeout: 20)
+        guard code == 0,
+              let obj = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any] else { return nil }
+        return obj
+    }
+
+    static func wholeDisk(_ id: String) -> String {
+        guard id.hasPrefix("disk") else { return id }
+        return "disk" + String(id.dropFirst(4).prefix(while: { $0.isNumber }))
+    }
+
+    /// Только внешние физические диски; тот, с которого загружен Mac, не показываем никогда
+    private static func loadDrives() -> [FormatDrive] {
+        guard let list = plist(["list", "-plist", "external", "physical"]) else { return [] }
+        var boot = Set<String>()
+        if let root = plist(["info", "-plist", "/"]) {
+            if let stores = root["APFSPhysicalStores"] as? [[String: Any]] {
+                for st in stores { if let id = st["APFSPhysicalStore"] as? String { boot.insert(wholeDisk(id)) } }
+            }
+            if let pw = root["ParentWholeDisk"] as? String { boot.insert(pw) }
+        }
+        var out: [FormatDrive] = []
+        for d in list["AllDisksAndPartitions"] as? [[String: Any]] ?? [] {
+            guard let id = d["DeviceIdentifier"] as? String, !boot.contains(id) else { continue }
+            guard let info = plist(["info", "-plist", id]) else { continue }
+            if (info["Internal"] as? Bool) == true { continue }
+            let size = (info["TotalSize"] as? NSNumber)?.int64Value ?? (info["Size"] as? NSNumber)?.int64Value ?? 0
+            guard size > 0 else { continue }
+            var name = (info["MediaName"] as? String) ?? ""
+            if name.isEmpty { name = T("Внешний диск") }
+            var vols: [String] = []
+            for p in d["Partitions"] as? [[String: Any]] ?? [] {
+                if let v = p["VolumeName"] as? String, !v.isEmpty { vols.append(v) }
+            }
+            out.append(FormatDrive(id: id, name: name, size: size, bus: (info["BusProtocol"] as? String) ?? "", volumes: vols))
+        }
+        return out
+    }
+
+    private static func resultFS(_ disk: String) -> String {
+        guard let list = plist(["list", "-plist", disk]),
+              let first = (list["AllDisksAndPartitions"] as? [[String: Any]])?.first else { return "" }
+        for p in (first["Partitions"] as? [[String: Any]] ?? []).reversed() {
+            if let id = p["DeviceIdentifier"] as? String, let n = p["VolumeName"] as? String, !n.isEmpty,
+               let info = plist(["info", "-plist", id]) {
+                return (info["FilesystemName"] as? String) ?? (info["FilesystemType"] as? String) ?? ""
+            }
+        }
+        return ""
+    }
+
+    func run() {
+        guard canFormat, let d = selected else { return }
+        stage = .working
+        let name = cleanLabel
+        let scheme = self.scheme
+        let kind = self.kind
+        lastDisk = d.id
+        let args = ["eraseDisk", kind.personality, name, scheme, d.id]
+        DispatchQueue.global(qos: .userInitiated).async {
+            // сначала размонтируем все тома диска; если они заняты — принудительно
+            if FormatModel.runTool("/usr/sbin/diskutil", ["unmountDisk", d.id], mergeErrors: true, timeout: 25).0 != 0 {
+                _ = FormatModel.runTool("/usr/sbin/diskutil", ["unmountDisk", "force", d.id], mergeErrors: true, timeout: 25)
+            }
+            var (code, data) = FormatModel.runTool("/usr/sbin/diskutil", args, mergeErrors: true, timeout: 900)
+            var out = String(data: data, encoding: .utf8) ?? ""
+            let low = out.lowercased()
+            if code != 0 && (low.contains("privilege") || low.contains("authoriz") || low.contains("permission")) {
+                let r = Admin.run(tool: "/usr/sbin/diskutil", args: args)
+                if r.ok { out = r.output; code = r.detail.isEmpty ? 0 : 1 } else { out = r.detail; code = 1 }
+            }
+            let fs = code == 0 ? FormatModel.resultFS(d.id) : ""
+            DispatchQueue.main.async {
+                self.resultOK = code == 0
+                self.resultFS = fs.isEmpty ? kind.title : fs
+                let lines = out.split(separator: "\n").suffix(3).joined(separator: "\n")
+                self.resultText = code == 0 ? Tf("Готово: «%@» отформатирована", name)
+                    : (lines.isEmpty ? T("Диск не отвечает. Отключите его и подключите заново.")
+                       : (out.contains("69888") || out.contains("unmount")
+                          ? T("Не удалось размонтировать диск: он занят. Закройте программы, которые с ним работают, или отключите его и подключите заново.")
+                          : String(lines.prefix(400))))
+                self.ejectNote = ""
+                self.stage = .done
+            }
+        }
+    }
+
+    func eject() {
+        let id = lastDisk
+        DispatchQueue.global(qos: .userInitiated).async {
+            let (code, _) = FormatModel.runTool("/usr/sbin/diskutil", ["eject", id], mergeErrors: true, timeout: 30)
+            DispatchQueue.main.async { self.ejectNote = code == 0 ? T("Можно вынимать") : T("Не удалось извлечь: диск занят") }
+        }
+    }
+
+    func again() {
+        stage = .pick
+        refresh()
+    }
+}
+
+final class SpeedModel: ObservableObject {
+    enum Stage { case idle, writing, reading, done, failed }
+    struct Row: Identifiable {
+        let id = UUID()
+        let name: String
+        let mbps: Double
+        let mine: Bool
+    }
+
+    @Published var stage: Stage = .idle
+    @Published var progress = 0.0
+    @Published var liveMBps = 0.0
+    @Published var writeMBps: Double?
+    @Published var readMBps: Double?
+    @Published var message = ""
+    @Published var linkName = ""
+    @Published var linkCeiling: Double?
+    @Published var linkMbit: Double?
+    @Published var sizeMB = 256
+    @Published var phase = ""
+    @Published var detecting = false
+
+    private let lock = NSLock()
+    private var cancelFlag = false
+    private var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return cancelFlag }
+    var running: Bool { stage == .writing || stage == .reading }
+
+    /// Типичные скорости (последовательные, МБ/с): название, чтение, запись — приблизительные
+    static var references: [(String, Double, Double)] {
+        [(T("Флешка USB 2.0"), 35, 20),
+         (T("Карта SD (UHS-I)"), 90, 60),
+         (T("Недорогая флешка USB 3.0"), 100, 40),
+         (T("Внешний жёсткий диск 2,5″"), 110, 100),
+         (T("Внешний SSD (SATA, USB 3)"), 450, 400),
+         (T("Внешний NVMe SSD, USB 3.2 Gen 2"), 900, 800),
+         (T("Внешний NVMe SSD, Thunderbolt / USB4"), 2500, 2200)]
+    }
+
+    /// Строки для сравнения: чтение сравниваем с чтением, запись — с записью
+    func rows(read: Bool) -> [Row] {
+        var r = SpeedModel.references.map { Row(name: $0.0, mbps: read ? $0.1 : $0.2, mine: false) }
+        if let v = read ? readMBps : writeMBps { r.append(Row(name: T("Ваш диск"), mbps: v, mine: true)) }
+        return r.sorted { $0.mbps < $1.mbps }
+    }
+
+    func closest(read: Bool) -> String? {
+        guard let x = read ? readMBps : writeMBps else { return nil }
+        let refs = SpeedModel.references.sorted { ($0.1) < ($1.1) }.map { ($0.0, read ? $0.1 : $0.2) }.sorted { $0.1 < $1.1 }
+        return (refs.last(where: { $0.1 <= x }) ?? refs.first)?.0
+    }
+
+    func reset() {
+        guard !running else { return }
+        stage = .idle
+        writeMBps = nil
+        readMBps = nil
+        message = ""
+        progress = 0
+    }
+
+    func cancel() { lock.lock(); cancelFlag = true; lock.unlock() }
+
+    // MARK: подключение
+
+    private static func walkSpeed(_ node: Any, _ inherited: String?, _ disk: String) -> String? {
+        if let arr = node as? [Any] {
+            for x in arr { if let r = walkSpeed(x, inherited, disk) { return r } }
+            return nil
+        }
+        guard let d = node as? [String: Any] else { return nil }
+        let own = (d["device_speed"] as? String) ?? (d["Speed"] as? String) ?? (d["speed"] as? String) ?? inherited
+        if let b = d["bsd_name"] as? String, FormatModel.wholeDisk(b) == disk { return own ?? "" }
+        for (_, v) in d where v is [Any] || v is [String: Any] {
+            if let r = walkSpeed(v, own, disk) { return r }
+        }
+        return nil
+    }
+
+    /// Скорость подключения из системного профиля USB (JSON, затем текстовый вид)
+    private static func usbSpeedString(for disk: String) -> String? {
+        for type in ["SPUSBDataType", "SPUSBHostDataType"] {
+            let (code, data) = FormatModel.runTool("/usr/sbin/system_profiler", [type, "-json"], mergeErrors: false, timeout: 40)
+            if code == 0, let root = try? JSONSerialization.jsonObject(with: data),
+               let r = walkSpeed(root, nil, disk), !r.isEmpty { return r }
+        }
+        let (code, data) = FormatModel.runTool("/usr/sbin/system_profiler", ["SPUSBDataType"], mergeErrors: false, timeout: 40)
+        guard code == 0 else { return nil }
+        let lines = (String(data: data, encoding: .utf8) ?? "").components(separatedBy: "\n")
+        for (i, line) in lines.enumerated() {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            guard t.hasPrefix("BSD Name:"),
+                  FormatModel.wholeDisk(String(t.dropFirst(9)).trimmingCharacters(in: .whitespaces)) == disk else { continue }
+            let indent = line.prefix(while: { $0 == " " }).count
+            var j = i - 1
+            while j >= 0 {
+                let l = lines[j]
+                let ind = l.prefix(while: { $0 == " " }).count
+                let lt = l.trimmingCharacters(in: .whitespaces)
+                if ind < indent && lt.hasPrefix("Speed:") {
+                    return String(lt.dropFirst(6)).trimmingCharacters(in: .whitespaces)
+                }
+                j -= 1
+            }
+        }
+        return nil
+    }
+
+    /// Название подключения, скорость линка (Мбит/с) и практический предел (МБ/с)
+    private static func classify(_ raw: String) -> (String, Double, Double)? {
+        let s = raw.lowercased()
+        if s.contains("40 gb") || s.contains("thunderbolt") { return ("USB4 / Thunderbolt", 40000, 3000) }
+        if s.contains("20 gb") { return ("USB 3.2 Gen 2×2", 20000, 1800) }
+        if s.contains("10 gb") || s.contains("super_speed_plus") || s.contains("superspeed+") { return ("USB 3.1 Gen 2", 10000, 950) }
+        if s.contains("5 gb") || s.contains("super_speed") || s.contains("superspeed") { return ("USB 3.0 (3.2 Gen 1)", 5000, 420) }
+        if s.contains("480") || s.contains("high_speed") || s.contains("high speed") { return ("USB 2.0", 480, 38) }
+        if s.contains("12 mb") || s.contains("full_speed") { return ("USB 1.1", 12, 1.1) }
+        return nil
+    }
+
+    func detect(_ d: FormatDrive?) {
+        linkName = ""
+        linkCeiling = nil
+        linkMbit = nil
+        guard let d = d else { detecting = false; return }
+        detecting = true
+        let id = d.id
+        DispatchQueue.global(qos: .utility).async {
+            let raw = SpeedModel.usbSpeedString(for: id)
+            let info = raw.flatMap { SpeedModel.classify($0) }
+            DispatchQueue.main.async {
+                self.detecting = false
+                guard let (name, mbit, ceiling) = info else { return }
+                let rate = mbit >= 1000 ? "\(Int(mbit / 1000)) " + T("Гбит/с") : "\(Int(mbit)) " + T("Мбит/с")
+                self.linkName = name + " · " + rate
+                self.linkCeiling = ceiling
+                self.linkMbit = mbit
+            }
+        }
+    }
+
+    // MARK: тест
+
+    /// Точка монтирования тома на этом диске: сначала по его собственным разделам, потом обходом томов (APFS)
+    private static func mountPoint(of disk: String) -> String? {
+        var best: String?
+        if let list = FormatModel.plist(["list", "-plist", disk]),
+           let first = (list["AllDisksAndPartitions"] as? [[String: Any]])?.first {
+            for p in first["Partitions"] as? [[String: Any]] ?? [] {
+                if let mp = p["MountPoint"] as? String, !mp.isEmpty {
+                    if FileManager.default.isWritableFile(atPath: mp) { return mp }
+                    if best == nil { best = mp }
+                }
+            }
+            if best != nil { return best }
+        }
+        let urls = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: nil, options: [.skipHiddenVolumes]) ?? []
+        for u in urls {
+            var st = statfs()
+            guard statfs(u.path, &st) == 0 else { continue }
+            let from = withUnsafePointer(to: &st.f_mntfromname) { p in
+                p.withMemoryRebound(to: CChar.self, capacity: Int(MAXPATHLEN)) { String(cString: $0) }
+            }
+            guard from.hasPrefix("/dev/") else { continue }
+            let dev = String(from.dropFirst(5))
+            if FormatModel.wholeDisk(dev) != disk {
+                // том APFS живёт на синтезированном диске; физический диск указан в его описании
+                guard let info = FormatModel.plist(["info", "-plist", dev]),
+                      let stores = info["APFSPhysicalStores"] as? [[String: Any]] else { continue }
+                let ids = stores.compactMap { ($0["APFSPhysicalStore"] as? String).map { FormatModel.wholeDisk($0) } }
+                guard ids.contains(disk) else { continue }
+            }
+            if FileManager.default.isWritableFile(atPath: u.path) { return u.path }
+            if best == nil { best = u.path }
+        }
+        return best
+    }
+
+    private func setPhase(_ text: String) {
+        DispatchQueue.main.async { self.phase = text }
+    }
+
+    /// Каждая часть теста (запись, чтение) длится не дольше этого времени — медленная флешка не затянет тест
+    private static let maxSeconds = 10.0
+    /// Если за это время не записано ни байта, диск считаем не отвечающим
+    private static let stallSeconds = 8.0
+
+    /// Общее состояние между потоком ввода-вывода и контролёром (поток может зависнуть в системном вызове)
+    private final class IOProbe {
+        private let lock = NSLock()
+        private var _done: Int64 = 0
+        private var _finished = false
+        private var _stop = false
+        private var _abandoned = false
+        private var _flushing = false
+        private var _error: String?
+        private var _start = 0.0
+        private var _end = 0.0
+
+        var done: Int64 { lock.lock(); defer { lock.unlock() }; return _done }
+        var finished: Bool { lock.lock(); defer { lock.unlock() }; return _finished }
+        var stopRequested: Bool { lock.lock(); defer { lock.unlock() }; return _stop }
+        var abandoned: Bool { lock.lock(); defer { lock.unlock() }; return _abandoned }
+        var flushing: Bool { lock.lock(); defer { lock.unlock() }; return _flushing }
+        func setFlushing(_ v: Bool) { lock.lock(); _flushing = v; lock.unlock() }
+        var error: String? { lock.lock(); defer { lock.unlock() }; return _error }
+        func add(_ n: Int64) { lock.lock(); _done += n; lock.unlock() }
+        func stop() { lock.lock(); _stop = true; lock.unlock() }
+        func abandon() { lock.lock(); _stop = true; _abandoned = true; lock.unlock() }
+        func fail(_ e: String) { lock.lock(); _error = e; lock.unlock() }
+        func begin() { lock.lock(); _start = ProcessInfo.processInfo.systemUptime; lock.unlock() }
+        func finish() { lock.lock(); _end = ProcessInfo.processInfo.systemUptime; _finished = true; lock.unlock() }
+        func elapsed() -> Double {
+            lock.lock(); defer { lock.unlock() }
+            let e = _finished ? _end : ProcessInfo.processInfo.systemUptime
+            return max(0.001, e - _start)
+        }
+    }
+
+    private struct Outcome {
+        var bytes: Int64
+        var seconds: Double
+        var stalled: Bool
+        var cancelled: Bool
+    }
+
+    /// Последовательная запись всего файла мимо кэша системы, в конце сброс на носитель (F_FULLFSYNC).
+    /// Время считается вместе со сбросом, поэтому буферы системы и самой флешки скорость не завышают.
+    private static func writer(_ path: String, size: Int64, chunk: Int, data: [UInt8], probe: IOProbe) {
+        let fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0o644)
+        guard fd >= 0 else {
+            probe.fail(String(cString: strerror(errno)))
+            probe.finish()
+            return
+        }
+        // пишем мимо кэша системы, чтобы файл не остался в памяти и чтение потом шло с самого диска
+        _ = fcntl(fd, F_NOCACHE, 1)
+        probe.begin()
+        var done: Int64 = 0
+        while done < size && !probe.stopRequested {
+            let n = Int(min(Int64(chunk), size - done))
+            let w = data.withUnsafeBytes { write(fd, $0.baseAddress, n) }
+            if w <= 0 { probe.fail(String(cString: strerror(errno))); break }
+            done += Int64(w)
+            probe.add(Int64(w))
+        }
+        if !probe.abandoned && probe.error == nil {
+            probe.setFlushing(true)
+            _ = fcntl(fd, F_FULLFSYNC)
+            probe.setFlushing(false)
+        }
+        close(fd)
+        if probe.abandoned { unlink(path) }
+        probe.finish()
+    }
+
+    private static func reader(_ path: String, size: Int64, chunk: Int, probe: IOProbe) {
+        let fd = open(path, O_RDONLY)
+        guard fd >= 0 else {
+            probe.fail(String(cString: strerror(errno)))
+            probe.finish()
+            return
+        }
+        // читаем напрямую с устройства, минуя кэш системы (аналог purge перед чтением в dd)
+        _ = fcntl(fd, F_NOCACHE, 1)
+        var buf = [UInt8](repeating: 0, count: chunk)
+        probe.begin()
+        var got: Int64 = 0
+        while got < size && !probe.stopRequested {
+            let r = buf.withUnsafeMutableBytes { read(fd, $0.baseAddress, chunk) }
+            if r < 0 { probe.fail(String(cString: strerror(errno))); break }
+            if r == 0 { break }
+            got += Int64(r)
+            probe.add(Int64(r))
+        }
+        close(fd)
+        probe.finish()
+    }
+
+    /// Следит за потоком ввода-вывода: обновляет экран, останавливает по времени, замечает зависание
+    private func monitor(_ probe: IOProbe, size: Int64, base: Double, cap: Double?) -> Outcome {
+        let t0 = ProcessInfo.processInfo.systemUptime
+        var lastBytes: Int64 = 0
+        var lastChange = t0
+        var lastUI = t0
+        var uiBytes: Int64 = 0
+        var flushStart: Double?
+        while true {
+            usleep(100_000)
+            let now = ProcessInfo.processInfo.systemUptime
+            let b = probe.done
+            if b != lastBytes { lastBytes = b; lastChange = now }
+            if now - lastUI >= 0.25 {
+                let live = Double(b - uiBytes) / 1_048_576 / (now - lastUI)
+                let prog = base + max(Double(b) / Double(max(1, size)), cap.map { (now - t0) / $0 } ?? 0) * 0.5
+                lastUI = now
+                uiBytes = b
+                DispatchQueue.main.async { self.liveMBps = live; self.progress = min(base + 0.5, prog) }
+            }
+            if probe.finished {
+                return Outcome(bytes: probe.done, seconds: probe.elapsed(), stalled: false, cancelled: false)
+            }
+            if isCancelled {
+                probe.abandon()
+                return Outcome(bytes: probe.done, seconds: probe.elapsed(), stalled: false, cancelled: true)
+            }
+            // идёт сброс буфера диска на носитель — это не зависание, но ждём не бесконечно
+            if probe.flushing {
+                if flushStart == nil { flushStart = now }
+                if now - (flushStart ?? now) > 900 {
+                    probe.abandon()
+                    return Outcome(bytes: probe.done, seconds: probe.elapsed(), stalled: true, cancelled: false)
+                }
+                lastChange = now
+                continue
+            }
+            flushStart = nil
+            if let cap = cap, now - t0 >= cap {
+                probe.stop()
+                let end = now + 4
+                while !probe.finished && !probe.flushing && ProcessInfo.processInfo.systemUptime < end { usleep(50_000) }
+                if probe.finished {
+                    return Outcome(bytes: probe.done, seconds: probe.elapsed(), stalled: false, cancelled: false)
+                }
+                if probe.flushing { continue }
+                probe.abandon()
+                return Outcome(bytes: probe.done, seconds: probe.elapsed(), stalled: true, cancelled: false)
+            }
+            if now - lastChange >= SpeedModel.stallSeconds {
+                probe.abandon()
+                return Outcome(bytes: probe.done, seconds: probe.elapsed(), stalled: true, cancelled: false)
+            }
+        }
+    }
+
+    func start(_ d: FormatDrive) {
+        guard !running else { return }
+        lock.lock(); cancelFlag = false; lock.unlock()
+        stage = .writing
+        progress = 0
+        liveMBps = 0
+        writeMBps = nil
+        readMBps = nil
+        message = ""
+        phase = T("Ищу том диска…")
+        let want = Int64(sizeMB) * 1_048_576
+        DispatchQueue.global(qos: .userInitiated).async {
+            func fail(_ m: String) { DispatchQueue.main.async { self.message = m; self.stage = .failed; self.phase = "" } }
+            func stopped() { DispatchQueue.main.async { self.message = T("Тест остановлен"); self.stage = .idle; self.phase = "" } }
+            guard let vol = SpeedModel.mountPoint(of: d.id) else { fail(T("У диска нет подключённого тома — подключите его в Finder")); return }
+            guard FileManager.default.isWritableFile(atPath: vol) else { fail(T("Том доступен только для чтения — тест записи невозможен")); return }
+            self.setPhase(T("Проверяю свободное место…"))
+            var sfs = statfs()
+            var avail: Int64 = 0
+            if statfs(vol, &sfs) == 0 { avail = Int64(sfs.f_bavail) * Int64(sfs.f_bsize) }
+            let size = min(want, avail - 32 * 1_048_576)
+            guard size >= 32 * 1_048_576 else { fail(T("Недостаточно свободного места для теста")); return }
+
+            let base = vol + "/.pusk-speedtest-" + UUID().uuidString
+            let path1 = base + "-a.tmp"
+            let path2 = base + "-b.tmp"
+            // удаляем временные файлы в отдельном потоке: если диск завис, тест от этого не зависнет
+            func cleanup() { DispatchQueue.global(qos: .utility).async { unlink(path1); unlink(path2) } }
+
+            let chunk = 2 * 1_048_576
+            var data = [UInt8](repeating: 0, count: chunk)
+            data.withUnsafeMutableBytes { arc4random_buf($0.baseAddress, chunk) }
+
+            // --- запись
+            self.setPhase(T("Идёт запись…"))
+            let usedPath = path1
+            let wProbe = IOProbe()
+            Thread.detachNewThread { SpeedModel.writer(path1, size: size, chunk: chunk, data: data, probe: wProbe) }
+            let wOut = self.monitor(wProbe, size: size, base: 0, cap: nil)
+            if wOut.cancelled { cleanup(); stopped(); return }
+            if wOut.bytes == 0 {
+                cleanup()
+                if let e = wProbe.error { fail(Tf("Ошибка во время теста: %@", e)) }
+                else { fail(T("Диск не отвечает на запись. Возможно, он неисправен или защищён от записи.")) }
+                return
+            }
+            let written = wOut.bytes
+            let wSpeed = Double(written) / 1_048_576 / wOut.seconds
+            DispatchQueue.main.async {
+                self.writeMBps = wSpeed
+                self.stage = .reading
+                self.phase = T("Идёт чтение…")
+                self.progress = 0.5
+                self.liveMBps = 0
+            }
+
+            // --- чтение (в обход кэша)
+            let rProbe = IOProbe()
+            let readPath = usedPath
+            Thread.detachNewThread { SpeedModel.reader(readPath, size: written, chunk: chunk, probe: rProbe) }
+            let rOut = self.monitor(rProbe, size: written, base: 0.5, cap: SpeedModel.maxSeconds)
+            cleanup()
+            if rOut.cancelled { stopped(); return }
+            if rOut.bytes == 0 {
+                if let e = rProbe.error { fail(Tf("Ошибка во время теста: %@", e)) }
+                else { fail(T("Диск не отвечает на чтение.")) }
+                return
+            }
+            let rSpeed = Double(rOut.bytes) / 1_048_576 / rOut.seconds
+            DispatchQueue.main.async {
+                self.readMBps = rSpeed
+                self.liveMBps = 0
+                self.progress = 1
+                self.phase = ""
+                self.stage = .done
+            }
+        }
+    }
+}
+
+struct SpeedPanel: View {
+    @ObservedObject var model: FormatModel
+    @ObservedObject var speed: SpeedModel
+    let store: Store
+
+    private func num(_ v: Double?) -> String { v.map { String(format: "%.0f", $0) } ?? "—" }
+
+    private func stat(_ title: String, _ v: Double?) -> some View {
+        VStack(spacing: 2) {
+            Text(title).font(.caption).foregroundColor(.secondary)
+            Text(num(v)).font(.system(size: 28, weight: .semibold))
+            Text(T("МБ/с")).font(.caption).foregroundColor(.secondary)
+        }
+        .frame(minWidth: 90)
+    }
+
+    private func compare(_ title: String, read: Bool) -> some View {
+        let rows = speed.rows(read: read)
+        let maxV = max(1, rows.map { $0.mbps }.max() ?? 1)
+        return VStack(alignment: .leading, spacing: 5) {
+            Text(title).font(.subheadline.bold()).padding(.top, 4)
+            ForEach(rows) { r in
+                HStack(spacing: 8) {
+                    Text(r.name).font(.caption).fontWeight(r.mine ? .semibold : .regular)
+                        .frame(width: 200, alignment: .leading).lineLimit(1)
+                    GeometryReader { g in
+                        RoundedRectangle(cornerRadius: 3)
+                            .fill(r.mine ? Color.accentColor : Color.gray.opacity(0.4))
+                            .frame(width: max(2, g.size.width * CGFloat((r.mbps / maxV).squareRoot())), height: 10)
+                            .frame(maxHeight: .infinity, alignment: .center)
+                    }
+                    .frame(height: 12)
+                    Text(num(r.mbps)).font(.caption).frame(width: 44, alignment: .trailing)
+                }
+            }
+            if let name = speed.closest(read: read) {
+                Text(Tf(read ? "По скорости чтения ближе всего к: %@" : "По скорости записи ближе всего к: %@", name))
+                    .font(.caption).foregroundColor(.secondary)
+            }
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if speed.detecting {
+                Text(T("Определяю подключение…")).font(.caption).foregroundColor(.secondary)
+            } else if speed.linkName.isEmpty {
+                Text(model.selected.map { $0.bus.isEmpty ? T("Подключение определить не удалось") : Tf("Интерфейс: %@ (скорость подключения определить не удалось)", $0.bus) } ?? T("Подключение определить не удалось"))
+                    .font(.caption).foregroundColor(.secondary)
+            } else {
+                Text(Tf("Подключение: %@", speed.linkName)).font(.callout)
+                if let c = speed.linkCeiling {
+                    Text(Tf("Практический предел подключения ≈ %@ МБ/с", "\(Int(c))")).font(.caption).foregroundColor(.secondary)
+                }
+            }
+            HStack {
+                Text(T("Объём теста")).font(.subheadline.bold())
+                Picker("", selection: $speed.sizeMB) {
+                    Text("64 " + T("МБ")).tag(64)
+                    Text("256 " + T("МБ")).tag(256)
+                    Text("512 " + T("МБ")).tag(512)
+                    Text("1 " + T("ГБ")).tag(1024)
+                }
+                .pickerStyle(.segmented).labelsHidden().frame(width: 300).disabled(speed.running)
+                Spacer()
+            }
+            if speed.running {
+                ProgressView(value: speed.progress)
+                Text(speed.phase + (speed.liveMBps > 0 ? " " + num(speed.liveMBps) + " " + T("МБ/с") : ""))
+                    .font(.callout).foregroundColor(.secondary)
+            }
+            if !speed.message.isEmpty {
+                Text(speed.message).font(.caption).foregroundColor(.orange)
+            }
+            if speed.writeMBps != nil || speed.readMBps != nil {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 28) {
+                            stat(T("Запись"), speed.writeMBps)
+                            stat(T("Чтение"), speed.readMBps)
+                            Spacer()
+                        }
+                        if speed.writeMBps != nil {
+                            Text(T("Скорость записи у флешек может заметно колебаться — для точности повторите тест."))
+                                .font(.caption).foregroundColor(.secondary)
+                        }
+                        Text(T("Сравнение с типичными устройствами (приблизительные значения)"))
+                            .font(.caption).foregroundColor(.secondary)
+                        if speed.readMBps != nil { compare(T("Чтение"), read: true) }
+                        if speed.writeMBps != nil { compare(T("Запись"), read: false) }
+                        if let c = speed.linkCeiling, let x = speed.readMBps {
+                            Text(Tf("Это %@ практического предела подключения", "\(Int(min(999, x / c * 100)))%"))
+                                .font(.caption).foregroundColor(.secondary)
+                        }
+                        if speed.linkMbit == 480 {
+                            Text(T("Диск работает по USB 2.0. Если он умеет быстрее, проверьте кабель и порт."))
+                                .font(.caption).foregroundColor(.orange)
+                        }
+                    }
+                }
+            } else {
+                Text(T("Тест записывает и читает временный файл на диске (до выбранного объёма, но не дольше 10 секунд на каждую часть); файл удаляется."))
+                    .font(.caption).foregroundColor(.secondary)
+                Spacer(minLength: 0)
+            }
+            HStack {
+                Spacer()
+                Button(T("Закрыть")) { store.fmt = nil }
+                if speed.running {
+                    Button(T("Остановить")) { speed.cancel() }
+                } else {
+                    Button(T("Запустить тест")) { if let d = model.selected { speed.start(d) } }.disabled(model.selected == nil)
+                }
+            }
+        }
+    }
+}
+
+struct FormatOverlay: View {
+    @ObservedObject var model: FormatModel
+    let store: Store
+
+    private func fmt(_ b: Int64) -> String { ByteCountFormatter.string(fromByteCount: b, countStyle: .file) }
+
+    var body: some View {
+        ZStack {
+            ToolScrim()
+            VStack(spacing: 0) {
+                HStack(spacing: 12) {
+                    Image(systemName: "externaldrive.fill").font(.system(size: 26)).foregroundColor(.accentColor)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(T("Внешние диски")).font(.headline)
+                        Text(model.tab == .speed
+                             ? T("Измеряет последовательную скорость записи и чтения и сравнивает с типичными устройствами")
+                             : T("Стирает диск и создаёт файловую систему, которую поймут любые устройства"))
+                            .font(.caption).foregroundColor(.secondary)
+                    }
+                    Spacer()
+                }
+                .padding(14)
+                Divider()
+                content
+            }
+            .frame(width: 540, height: 640)
+            .background(RoundedRectangle(cornerRadius: 12).fill(Color(NSColor.windowBackgroundColor)))
+            .shadow(radius: 20)
+        }
+        .onChange(of: model.selectedID) { _ in
+            model.speed.reset()
+            model.speed.detect(model.selected)
+        }
+        .onChange(of: model.tab) { t in
+            if t == .speed { model.speed.detect(model.selected) }
+        }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch model.stage {
+        case .pick: pick
+        case .confirm: confirm
+        case .working:
+            VStack(spacing: 12) {
+                Spacer()
+                ProgressView()
+                Text(T("Форматирую… Не отключайте флешку.")).foregroundColor(.secondary)
+                Spacer()
+            }
+        case .done: done
+        }
+    }
+
+    private var pick: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text(T("Диск")).font(.subheadline.bold())
+                Spacer()
+                Button(T("Обновить")) { model.refresh() }
+            }
+            Group {
+                if model.loading && model.drives.isEmpty {
+                    HStack { Spacer(); ProgressView(); Spacer() }.frame(height: 90)
+                } else if model.drives.isEmpty {
+                    VStack(spacing: 4) {
+                        Text(T("Нет подключённых внешних дисков")).foregroundColor(.secondary)
+                        Text(T("Вставьте флешку и нажмите «Обновить»")).font(.caption).foregroundColor(.secondary)
+                    }
+                    .frame(maxWidth: .infinity).frame(height: 90)
+                } else {
+                    ScrollView {
+                        VStack(spacing: 0) {
+                            ForEach(model.drives) { d in
+                                HStack(spacing: 10) {
+                                    Image(systemName: model.selectedID == d.id ? "largecircle.fill.circle" : "circle")
+                                        .foregroundColor(.accentColor)
+                                    Image(systemName: "externaldrive").foregroundColor(.secondary)
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text(d.name).lineLimit(1)
+                                        Text(subtitle(d)).font(.caption).foregroundColor(.secondary).lineLimit(1)
+                                    }
+                                    Spacer()
+                                }
+                                .padding(.vertical, 6).padding(.horizontal, 8)
+                                .hoverHighlight(6)
+                                .contentShape(Rectangle())
+                                .onTapGesture { model.selectedID = d.id }
+                            }
+                        }
+                    }
+                    .frame(height: 96)
+                }
+            }
+            Picker("", selection: $model.tab) {
+                Text(T("Форматирование")).tag(FormatModel.Tab.format)
+                Text(T("Скорость")).tag(FormatModel.Tab.speed)
+            }
+            .pickerStyle(.segmented).labelsHidden()
+            if model.tab == .speed {
+                SpeedPanel(model: model, speed: model.speed, store: store)
+            } else {
+            Text(T("Формат")).font(.subheadline.bold())
+            Picker("", selection: $model.kind) {
+                ForEach(FormatKind.allCases) { k in
+                    Text(k == .fat32 ? k.title + " — " + T("по умолчанию") : k.title).tag(k)
+                }
+            }
+            .pickerStyle(.menu).labelsHidden()
+            Text(model.kind.note).font(.caption).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
+            if model.kind.supportsMBR {
+                Text(T("Схема разделов")).font(.subheadline.bold())
+                Picker("", selection: $model.scheme) {
+                    Text("MBR").tag("MBR")
+                    Text("GPT").tag("GPT")
+                }
+                .pickerStyle(.segmented).labelsHidden()
+                Text(model.scheme == "MBR"
+                     ? T("MBR — максимальная совместимость: камеры, ТВ, магнитолы, Windows")
+                     : T("GPT — современная схема, понимают только компьютеры"))
+                    .font(.caption).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            Text(T("Имя")).font(.subheadline.bold())
+            TextField("USB", text: $model.label).textFieldStyle(.roundedBorder)
+            if let e = model.nameProblem ?? model.sizeProblem {
+                Text(e).font(.caption).foregroundColor(.orange)
+            }
+            Spacer(minLength: 0)
+            HStack {
+                Spacer()
+                Button(T("Отмена")) { store.fmt = nil }
+                Button(T("Стереть и отформатировать…")) { model.stage = .confirm }.disabled(!model.canFormat)
+            }
+            }
+        }
+        .padding(14)
+    }
+
+    private func subtitle(_ d: FormatDrive) -> String {
+        var parts = [fmt(d.size)]
+        if !d.bus.isEmpty { parts.append(d.bus) }
+        parts.append(d.id)
+        var s = parts.joined(separator: " · ")
+        if !d.volumes.isEmpty { s += " · " + Tf("Тома: %@", d.volumes.joined(separator: ", ")) }
+        return s
+    }
+
+    private var confirm: some View {
+        VStack(spacing: 12) {
+            Spacer()
+            Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 38)).foregroundColor(.orange)
+            if let d = model.selected {
+                Text(Tf("Стереть «%@»?", d.name)).font(.title3.bold()).multilineTextAlignment(.center)
+                Text(Tf("Все данные на этом диске (%@) будут безвозвратно удалены.", fmt(d.size)))
+                    .multilineTextAlignment(.center)
+            }
+            Text(Tf("Будет создано: %@, схема %@, имя «%@».", model.kind.title, model.kind.supportsMBR ? model.scheme : "GPT", model.cleanLabel))
+                .font(.callout).foregroundColor(.secondary).multilineTextAlignment(.center)
+            HStack {
+                Button(T("Нет, вернуться")) { model.stage = .pick }
+                Button(T("Да, стереть")) { model.run() }.foregroundColor(.red)
+            }
+            Spacer()
+        }
+        .padding(24)
+    }
+
+    private var done: some View {
+        VStack(spacing: 10) {
+            Spacer()
+            Image(systemName: model.resultOK ? "checkmark.circle.fill" : "xmark.octagon.fill")
+                .font(.system(size: 40)).foregroundColor(model.resultOK ? .green : .red)
+            if model.resultOK {
+                Text(model.resultText).font(.title3.bold()).multilineTextAlignment(.center)
+                Text(Tf("Формат: %@", model.resultFS)).foregroundColor(.secondary)
+                if !model.ejectNote.isEmpty { Text(model.ejectNote).font(.callout).foregroundColor(.secondary) }
+            } else {
+                Text(T("Не удалось отформатировать")).font(.title3.bold())
+                Text(model.resultText).font(.caption).foregroundColor(.secondary).padding(.horizontal, 20)
+                    .multilineTextAlignment(.center)
+            }
+            HStack {
+                if model.resultOK { Button(T("Извлечь")) { model.eject() } }
+                Button(T("Ещё одну")) { model.again() }
+                Button(T("Закрыть")) { store.fmt = nil }
+            }
+            .padding(.top, 6)
+            Spacer()
+        }
+        .padding(20)
+    }
+}
+
+// MARK: - Отдельные окна инструментов
+
+private struct InToolWindowKey: EnvironmentKey { static let defaultValue = false }
+extension EnvironmentValues {
+    var inToolWindow: Bool {
+        get { self[InToolWindowKey.self] }
+        set { self[InToolWindowKey.self] = newValue }
+    }
+}
+
+/// Затемнение под окном-карточкой: в «Пуске» оно нужно, в отдельном окне — нет
+struct ToolScrim: View {
+    @Environment(\.inToolWindow) private var inWindow
+    var body: some View {
+        if inWindow {
+            Color.clear
+        } else {
+            Color.black.opacity(0.4).contentShape(Rectangle()).onTapGesture { }
+        }
+    }
+}
+
+enum ToolKind: String {
+    case clean, big, maint, fmt
+
+    var title: String {
+        switch self {
+        case .clean: return T("Очистка мусора")
+        case .big: return T("Большие и старые файлы")
+        case .maint: return T("Обслуживание")
+        case .fmt: return T("Внешние диски")
+        }
+    }
+    var size: NSSize {
+        switch self {
+        case .fmt: return NSSize(width: 540, height: 640)
+        default: return NSSize(width: 560, height: 410)
+        }
+    }
+}
+
+struct ToolWindowRoot: View {
+    @ObservedObject var store: Store
+    let kind: ToolKind
+
+    private var gone: Bool {
+        switch kind {
+        case .clean: return store.clean == nil
+        case .big: return store.big == nil
+        case .maint: return store.maint == nil
+        case .fmt: return store.fmt == nil
+        }
+    }
+
+    var body: some View {
+        ZStack {
+            switch kind {
+            case .clean: if let m = store.clean { CleanOverlay(model: m, store: store) }
+            case .big: if let m = store.big { BigFilesOverlay(model: m, store: store) }
+            case .maint: if let m = store.maint { MaintenanceOverlay(model: m, store: store) }
+            case .fmt: if let m = store.fmt { FormatOverlay(model: m, store: store) }
+            }
+            if let pr = store.pwRequest, store.pwTool == kind { PasswordOverlay(request: pr, store: store) }
+        }
+        .environment(\.inToolWindow, true)
+        .frame(width: kind.size.width, height: kind.size.height)
+        .id(store.language)
+        .onChange(of: gone) { isGone in
+            if isGone { ToolWindows.shared.close(kind) }
+        }
+    }
+}
+
+/// Инструменты открываются в своих окнах: «Пуск» их только запускает, дальше они живут независимо
+final class ToolWindows: NSObject, NSWindowDelegate {
+    static let shared = ToolWindows()
+    private var windows: [ToolKind: NSWindow] = [:]
+    private weak var store: Store?
+    private var observing = false
+
+    func show(_ kind: ToolKind, store: Store) {
+        self.store = store
+        let w: NSWindow
+        if let existing = windows[kind] {
+            w = existing
+        } else {
+            w = NSWindow(contentRect: NSRect(origin: .zero, size: kind.size),
+                         styleMask: [.titled, .closable, .miniaturizable],
+                         backing: .buffered, defer: false)
+            w.isReleasedWhenClosed = false
+            w.contentView = NSHostingView(rootView: ToolWindowRoot(store: store, kind: kind))
+            w.setContentSize(kind.size)
+            w.delegate = self
+            w.center()
+            windows[kind] = w
+            if !observing {
+                observing = true
+                NotificationCenter.default.addObserver(self, selector: #selector(languageChanged), name: .languageChanged, object: nil)
+            }
+        }
+        w.title = kind.title
+        NSApp.windows.compactMap { $0 as? PopupWindow }.forEach { $0.orderOut(nil) }
+        NSApp.activate(ignoringOtherApps: true)
+        w.makeKeyAndOrderFront(nil)
+    }
+
+    func close(_ kind: ToolKind) { windows[kind]?.close() }
+
+    func keyKind() -> ToolKind? {
+        guard let kw = NSApp.keyWindow else { return nil }
+        return windows.first { $0.value === kw }?.key
+    }
+
+    /// Esc закрывает окно инструмента, если оно ничего не делает прямо сейчас
+    func handleEscape(_ w: NSWindow) -> Bool {
+        guard let kind = windows.first(where: { $0.value === w })?.key, let st = store else { return false }
+        if st.pwRequest != nil { return false }
+        if isBusy(kind, st) { return true }
+        w.close()
+        return true
+    }
+
+    private func isBusy(_ kind: ToolKind, _ st: Store) -> Bool {
+        switch kind {
+        case .clean: return st.clean?.stage == .working
+        case .big: return st.big?.stage == .working
+        case .maint: return st.maint?.running == true
+        case .fmt: return st.fmt?.stage == .working || st.fmt?.speed.running == true
+        }
+    }
+
+    @objc private func languageChanged() {
+        for (k, w) in windows { w.title = k.title }
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        guard let w = notification.object as? NSWindow,
+              let kind = windows.first(where: { $0.value === w })?.key, let st = store else { return }
+        if isBusy(kind, st) { return }   // операция продолжается; окно можно открыть снова
+        switch kind {
+        case .clean: st.clean = nil
+        case .big: st.big = nil
+        case .maint: st.maint = nil
+        case .fmt: st.fmt = nil
+        }
+    }
+}
+
+// MARK: - Закрыть все программы
+
+final class QuitAllModel: ObservableObject {
+    struct Item: Identifiable {
+        let app: NSRunningApplication
+        let name: String
+        let icon: NSImage
+        var selected: Bool
+        var id: pid_t { app.processIdentifier }
+    }
+    enum Stage { case review, working, done }
+
+    private static let keepKey = "quitAll.keep"   // программы, которые пользователь снял с закрытия
+
+    @Published var stage: Stage = .review
+    @Published var items: [Item] = []
+    @Published var closedCount = 0
+    @Published var remaining: [String] = []
+
+    var selectedCount: Int { items.filter { $0.selected }.count }
+
+    init() {
+        let keep = Set(UserDefaults.standard.stringArray(forKey: QuitAllModel.keepKey) ?? [])
+        let me = Bundle.main.bundleIdentifier
+        items = NSWorkspace.shared.runningApplications
+            .filter { $0.activationPolicy == .regular && !$0.isTerminated
+                && $0.bundleIdentifier != me && $0.bundleIdentifier != "com.apple.finder" }
+            .map { a in
+                Item(app: a, name: a.localizedName ?? a.bundleIdentifier ?? "?",
+                     icon: a.icon ?? NSImage(), selected: !keep.contains(a.bundleIdentifier ?? ""))
+            }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    /// Вежливо просит выбранные программы завершиться: если есть несохранённое, они сами спросят
+    func run() {
+        let chosen = items.filter { $0.selected }
+        guard !chosen.isEmpty else { return }
+        var keep = Set(UserDefaults.standard.stringArray(forKey: QuitAllModel.keepKey) ?? [])
+        for it in items {
+            guard let bid = it.app.bundleIdentifier else { continue }
+            if it.selected { keep.remove(bid) } else { keep.insert(bid) }
+        }
+        UserDefaults.standard.set(Array(keep), forKey: QuitAllModel.keepKey)
+        stage = .working
+        for it in chosen { it.app.terminate() }
+        DispatchQueue.global(qos: .userInitiated).async {
+            var waited = 0
+            while waited < 50 && chosen.contains(where: { !$0.app.isTerminated }) {
+                usleep(100_000); waited += 1
+            }
+            DispatchQueue.main.async {
+                self.remaining = chosen.filter { !$0.app.isTerminated }.map { $0.name }
+                self.closedCount = chosen.count - self.remaining.count
+                self.stage = .done
+            }
+        }
+    }
+}
+
+struct QuitAllOverlay: View {
+    @ObservedObject var model: QuitAllModel
+    let store: Store
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.4).contentShape(Rectangle()).onTapGesture { }
+            VStack(spacing: 0) {
+                HStack(spacing: 12) {
+                    Image(systemName: "xmark.circle.fill").font(.system(size: 26)).foregroundColor(.accentColor)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(T("Закрыть все программы")).font(.headline)
+                        Text(T("Если в программе есть несохранённые данные, она сама спросит, что делать"))
+                            .font(.caption).foregroundColor(.secondary)
+                    }
+                    Spacer()
+                }
+                .padding(14)
+                Divider()
+                content
+            }
+            .frame(width: 460, height: 440)
+            .background(RoundedRectangle(cornerRadius: 12).fill(Color(NSColor.windowBackgroundColor)))
+            .shadow(radius: 20)
+        }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch model.stage {
+        case .review:
+            if model.items.isEmpty {
+                VStack(spacing: 12) {
+                    Spacer()
+                    Text(T("Других запущенных программ нет")).foregroundColor(.secondary)
+                    Button(T("Закрыть")) { store.quitAll = nil }
+                    Spacer()
+                }
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach($model.items) { $it in
+                            HStack(spacing: 10) {
+                                Toggle("", isOn: $it.selected).labelsHidden().toggleStyle(.checkbox)
+                                Image(nsImage: it.icon).resizable().frame(width: 24, height: 24)
+                                Text(it.name).lineLimit(1)
+                                Spacer()
+                            }
+                            .padding(.vertical, 5).padding(.horizontal, 6)
+                            .hoverHighlight(6)
+                            .contentShape(Rectangle())
+                            .onTapGesture { it.selected.toggle() }
+                        }
+                    }
+                    .padding(.horizontal, 14).padding(.vertical, 6)
+                }
+                Divider()
+                HStack {
+                    Text(Tf("Будет закрыто: %@", "\(model.selectedCount)")).font(.callout).foregroundColor(.secondary)
+                    Spacer()
+                    Button(T("Отмена")) { store.quitAll = nil }
+                    Button(T("Закрыть программы")) { model.run() }.disabled(model.selectedCount == 0)
+                }
+                .padding(12)
+            }
+        case .working:
+            VStack(spacing: 12) {
+                Spacer()
+                ProgressView()
+                Text(T("Закрываю…")).foregroundColor(.secondary)
+                Spacer()
+            }
+        case .done:
+            VStack(spacing: 10) {
+                Spacer()
+                Image(systemName: model.remaining.isEmpty ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                    .font(.system(size: 36))
+                    .foregroundColor(model.remaining.isEmpty ? .green : .orange)
+                Text(Tf("Закрыто: %@", "\(model.closedCount)")).font(.title3.bold())
+                if !model.remaining.isEmpty {
+                    Text(T("Эти программы ждут вашего ответа (например, сохранить документ):"))
+                        .font(.callout).foregroundColor(.secondary)
+                        .multilineTextAlignment(.center).padding(.horizontal, 24)
+                    Text(model.remaining.joined(separator: ", "))
+                        .font(.callout).multilineTextAlignment(.center).padding(.horizontal, 24)
+                }
+                Spacer()
+                HStack { Spacer(); Button(T("Закрыть")) { store.quitAll = nil } }.padding(12)
+            }
+        }
+    }
+}
+
 struct MaintenanceOverlay: View {
     @ObservedObject var model: MaintModel
     let store: Store
 
     var body: some View {
         ZStack {
-            Color.black.opacity(0.4).contentShape(Rectangle()).onTapGesture { }
+            ToolScrim()
             VStack(spacing: 0) {
                 HStack(spacing: 12) {
                     Image(systemName: "wrench.and.screwdriver.fill").font(.system(size: 26)).foregroundColor(.accentColor)
@@ -1982,7 +4113,7 @@ struct BigFilesOverlay: View {
 
     var body: some View {
         ZStack {
-            Color.black.opacity(0.4).contentShape(Rectangle()).onTapGesture { }
+            ToolScrim()
             VStack(spacing: 0) {
                 HStack(spacing: 12) {
                     Image(systemName: "archivebox").font(.system(size: 26)).foregroundColor(.accentColor)
@@ -2497,6 +4628,15 @@ struct LinkEditorOverlay: View {
 }
 
 /// Настройки «Пуска»: язык, горячие клавиши, жест, функции «Свернуть всё» и запуск (всё, что раньше было в меню строки меню)
+enum AppInfo {
+    static var version: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "2.0"
+    }
+    static var copyright: String {
+        Bundle.main.object(forInfoDictionaryKey: "NSHumanReadableCopyright") as? String ?? "© 2026 Andy Khristoforov"
+    }
+}
+
 struct SettingsOverlay: View {
     let store: Store
     @ObservedObject var mc: MinimizeController
@@ -2587,6 +4727,17 @@ struct SettingsOverlay: View {
                             toggleRow(T("Возвращать окна, если экран пуст"), mc.restoreOn) { mc.setRestore($0) }
                             toggleRow(T("Сворачивать по клику в Dock"), mc.dockOn) { mc.setDock($0) }
                             Button(T("Разрешения…")) { store.showSettings = false; store.showPermissions = true }
+                        }
+                        section(T("О программе")) {
+                            HStack(spacing: 12) {
+                                Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 48, height: 48)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(T("Пуск")).font(.system(size: 14, weight: .semibold))
+                                    Text(Tf("Версия %@", AppInfo.version)).font(.caption).foregroundColor(.secondary)
+                                    Text(AppInfo.copyright).font(.caption).foregroundColor(.secondary)
+                                }
+                                Spacer()
+                            }
                         }
                         section(T("Система")) {
                             toggleRow(T("Запускать при входе в систему"), mc.loginOn) { mc.setLogin($0) }
@@ -2745,6 +4896,13 @@ struct RootView: View {
                 TextField(T("Поиск приложений"), text: $query)
                     .textFieldStyle(.roundedBorder)
                     .focused($searchFocused)
+                    .disabled(overlayOpen)
+                    .onChange(of: overlayOpen) { open in
+                        if open {
+                            searchFocused = false
+                            NSApp.keyWindow?.makeFirstResponder(nil)
+                        }
+                    }
                     .onSubmit { if let first = visibleApps.first { launch(first) } }
                     .padding([.top, .horizontal], 14)
                 HStack {
@@ -2800,13 +4958,11 @@ struct RootView: View {
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay {
             if let m = store.uninstall { UninstallOverlay(model: m, store: store) }
-            if let c = store.clean { CleanOverlay(model: c, store: store) }
-            if let mm = store.maint { MaintenanceOverlay(model: mm, store: store) }
-            if let bf = store.big { BigFilesOverlay(model: bf, store: store) }
+            if let q = store.quitAll { QuitAllOverlay(model: q, store: store) }
             if store.showSettings, let mc = store.minimize { SettingsOverlay(store: store, mc: mc) }
             if let d = store.folderDraft { FolderEditorOverlay(draft: d, store: store).id(d.key) }
             if let d = store.linkDraft { LinkEditorOverlay(draft: d, store: store).id(d.key) }
-            if let pr = store.pwRequest { PasswordOverlay(request: pr, store: store) }
+            if let pr = store.pwRequest, store.pwTool == nil { PasswordOverlay(request: pr, store: store) }
             if store.showPermissions { PermissionsOverlay(store: store) }
         }
         .overlay(alignment: .bottom) { dropBanner }
@@ -2820,13 +4976,16 @@ struct RootView: View {
             store.folderDraft = nil
             store.openFolder = nil
             store.showSettings = false
+            if store.quitAll?.stage != .working { store.quitAll = nil }
             store.minimize?.cancelRecording()
             if store.uninstall?.stage != .working { store.uninstall = nil }
-            if store.clean?.stage != .working { store.clean = nil }
-            if store.maint?.running != true { store.maint = nil }
-            if store.big?.stage != .working { store.big = nil }
             DispatchQueue.main.async { searchFocused = true }
         }
+    }
+
+    private var overlayOpen: Bool {
+        store.quitAll != nil || store.showSettings || store.linkDraft != nil || store.folderDraft != nil
+            || store.uninstall != nil
     }
 
     // Боковая панель
@@ -2906,6 +5065,18 @@ struct RootView: View {
             ToolRow(title: T("Обслуживание"), symbol: "wrench.and.screwdriver") {
                 showTools = false
                 store.beginMaint()
+            }
+            ToolRow(title: T("Анализатор диска"), symbol: "chart.pie") {
+                showTools = false
+                store.beginDisk()
+            }
+            ToolRow(title: T("Внешние диски"), symbol: "externaldrive") {
+                showTools = false
+                store.beginFormat()
+            }
+            ToolRow(title: T("Закрыть все программы"), symbol: "xmark.circle") {
+                showTools = false
+                store.beginQuitAll()
             }
         }
         .padding(6)
@@ -3130,6 +5301,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         minimize.start()
         // Esc закрывает «Пуск» из любого места окна, даже если фокус не в SwiftUI-элементе
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
+            if e.keyCode == 53, let w = e.window, ToolWindows.shared.handleEscape(w) { return nil }
             guard let self = self, e.keyCode == 53, self.window.isKeyWindow,
                   NSApp.modalWindow == nil, self.window.attachedSheet == nil,
                   self.store.pwRequest == nil, self.minimize.recordingFor == nil else { return e }
@@ -3226,6 +5398,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let main = NSMenu()
         let appItem = NSMenuItem(); main.addItem(appItem)
         let appMenu = NSMenu(); appItem.submenu = appMenu
+        appMenu.addItem(withTitle: T("О программе «Пуск»"), action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(.separator())
         appMenu.addItem(withTitle: T("Завершить Пуск"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
 
         let editItem = NSMenuItem(); main.addItem(editItem)
