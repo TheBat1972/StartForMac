@@ -46,6 +46,10 @@ func Tf(_ s: String, _ args: String...) -> String {
 }
 
 private let translations: [String: String] = [
+    "Скопировано": "Copied",
+    "Нажмите, чтобы скопировать результат": "Click to copy the result",
+    "Курс на %@": "Rate as of %@",
+    "Нет связи — последний сохранённый курс на %@": "Offline — last saved rate as of %@",
     "Очистить поиск": "Clear search",
     "Лежит в iCloud, не скачан на этот Мак — откроется после загрузки": "In iCloud, not downloaded to this Mac — opens after downloading",
     "в тексте": "in text",

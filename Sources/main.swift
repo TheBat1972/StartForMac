@@ -4372,6 +4372,523 @@ struct ToolRow: View {
     }
 }
 
+// MARK: - Быстрый ответ в поиске: калькулятор, единицы измерения, валюты
+
+struct QuickItem {
+    let expr: String      // что распознано
+    let result: String    // как показать
+    let copy: String      // что попадёт в буфер обмена
+    var note: String? = nil
+}
+
+func copyToPasteboard(_ s: String) {
+    NSPasteboard.general.clearContents()
+    NSPasteboard.general.setString(s, forType: .string)
+}
+
+/// Безопасный разбор арифметики (без NSExpression, который падает на неверном вводе)
+private struct MathParser {
+    let chars: [Character]
+    var i = 0
+    var sawOp = false
+    var failed = false
+
+    init(_ s: String) { chars = Array(s) }
+
+    private func isDigit(_ c: Character) -> Bool { c >= "0" && c <= "9" }
+
+    mutating func skipSpaces() { while i < chars.count, chars[i] == " " { i += 1 } }
+
+    mutating func expression() -> Double {
+        var v = term().0
+        while true {
+            skipSpaces()
+            guard i < chars.count, chars[i] == "+" || chars[i] == "-" else { break }
+            let op = chars[i]
+            i += 1
+            sawOp = true
+            let (r0, pct) = term()
+            let r = pct ? v * r0 : r0          // «8400 + 15%» — процент от 8400
+            v = (op == "+") ? v + r : v - r
+        }
+        return v
+    }
+
+    mutating func term() -> (Double, Bool) {
+        var (v, pct) = power()
+        while true {
+            skipSpaces()
+            guard i < chars.count else { break }
+            let c = chars[i]
+            if c == "*" || c == "×" || c == "/" || c == "÷" {
+                i += 1
+                sawOp = true
+                let (r, _) = power()
+                if c == "/" || c == "÷" {
+                    if r == 0 { failed = true; return (0, false) }
+                    v /= r
+                } else { v *= r }
+                pct = false
+            } else { break }
+        }
+        return (v, pct)
+    }
+
+    mutating func power() -> (Double, Bool) {
+        let (b, pct) = unary()
+        skipSpaces()
+        if i < chars.count, chars[i] == "^" || (chars[i] == "*" && i + 1 < chars.count && chars[i + 1] == "*") {
+            i += (chars[i] == "^") ? 1 : 2
+            sawOp = true
+            let (e, _) = power()
+            return (pow(b, e), false)
+        }
+        return (b, pct)
+    }
+
+    mutating func unary() -> (Double, Bool) {
+        skipSpaces()
+        if i < chars.count, chars[i] == "-" { i += 1; let (v, p) = unary(); return (-v, p) }
+        if i < chars.count, chars[i] == "+" { i += 1; return unary() }
+        return primary()
+    }
+
+    mutating func primary() -> (Double, Bool) {
+        skipSpaces()
+        guard i < chars.count else { failed = true; return (0, false) }
+        var v = 0.0
+        let c = chars[i]
+        if c == "(" {
+            i += 1
+            v = expression()
+            skipSpaces()
+            if i < chars.count, chars[i] == ")" { i += 1 } else { failed = true }
+        } else if isDigit(c) || c == "." || c == "," {
+            v = number()
+        } else if c == "π" {
+            i += 1
+            v = Double.pi
+        } else if c.isLetter {
+            var w = ""
+            while i < chars.count, chars[i].isLetter { w.append(chars[i]); i += 1 }
+            switch w.lowercased() {
+            case "pi":
+                v = Double.pi
+            case "sqrt", "корень":
+                sawOp = true
+                skipSpaces()
+                guard i < chars.count, chars[i] == "(" else { failed = true; return (0, false) }
+                i += 1
+                let x = expression()
+                skipSpaces()
+                if i < chars.count, chars[i] == ")" { i += 1 } else { failed = true }
+                if x < 0 { failed = true }
+                v = x.squareRoot()
+            default:
+                failed = true
+                return (0, false)
+            }
+        } else {
+            failed = true
+            return (0, false)
+        }
+        skipSpaces()
+        if i < chars.count, chars[i] == "%" { i += 1; sawOp = true; return (v / 100, true) }
+        return (v, false)
+    }
+
+    mutating func number() -> Double {
+        var s = ""
+        var sep = false
+        while i < chars.count {
+            let c = chars[i]
+            if isDigit(c) {
+                s.append(c)
+                i += 1
+            } else if (c == "." || c == ",") && !sep, i + 1 < chars.count, isDigit(chars[i + 1]) {
+                s.append(".")
+                sep = true
+                i += 1
+            } else { break }
+        }
+        guard let d = Double(s) else { failed = true; return 0 }
+        return d
+    }
+}
+
+enum QuickUnits {
+    static let table: [String: Dimension] = {
+        var t: [String: Dimension] = [:]
+        func add(_ u: Dimension, _ names: [String]) { for n in names { t[n] = u } }
+        // длина
+        add(UnitLength.millimeters, ["мм", "mm", "миллиметр", "миллиметра", "миллиметров", "millimeter", "millimeters"])
+        add(UnitLength.centimeters, ["см", "cm", "сантиметр", "сантиметра", "сантиметров", "centimeter", "centimeters"])
+        add(UnitLength.meters, ["м", "m", "метр", "метра", "метров", "meter", "meters", "metre", "metres"])
+        add(UnitLength.kilometers, ["км", "km", "километр", "километра", "километров", "kilometer", "kilometers"])
+        add(UnitLength.inches, ["дюйм", "дюйма", "дюймов", "in", "inch", "inches"])
+        add(UnitLength.feet, ["фут", "фута", "футов", "ft", "foot", "feet"])
+        add(UnitLength.yards, ["ярд", "ярда", "ярдов", "yd", "yard", "yards"])
+        add(UnitLength.miles, ["миля", "мили", "миль", "mi", "mile", "miles"])
+        // масса
+        add(UnitMass.milligrams, ["мг", "mg", "миллиграмм", "миллиграмма", "миллиграммов"])
+        add(UnitMass.grams, ["г", "гр", "грамм", "грамма", "граммов", "g", "gram", "grams"])
+        add(UnitMass.kilograms, ["кг", "kg", "килограмм", "килограмма", "килограммов", "kilogram", "kilograms"])
+        add(UnitMass.metricTons, ["т", "тонна", "тонны", "тонн", "ton", "tons", "tonne", "tonnes"])
+        add(UnitMass.pounds, ["фунт", "фунта", "фунтов", "lb", "lbs", "pound", "pounds"])
+        add(UnitMass.ounces, ["унция", "унции", "унций", "oz", "ounce", "ounces"])
+        // объём
+        add(UnitVolume.milliliters, ["мл", "ml", "миллилитр", "миллилитра", "миллилитров"])
+        add(UnitVolume.liters, ["л", "литр", "литра", "литров", "l", "liter", "liters", "litre", "litres"])
+        add(UnitVolume.gallons, ["галлон", "галлона", "галлонов", "gal", "gallon", "gallons"])
+        add(UnitVolume.pints, ["пинта", "пинты", "пинт", "pint", "pints"])
+        // температура
+        add(UnitTemperature.celsius, ["°c", "°с", "c", "цельсий", "цельсия", "градус цельсия", "градусов цельсия", "градуса цельсия"])
+        add(UnitTemperature.fahrenheit, ["°f", "°ф", "f", "фаренгейт", "фаренгейта", "градус фаренгейта", "градусов фаренгейта", "градуса фаренгейта"])
+        add(UnitTemperature.kelvin, ["k", "кельвин", "кельвина", "кельвинов"])
+        // скорость
+        add(UnitSpeed.kilometersPerHour, ["км/ч", "km/h", "kmh", "kph"])
+        add(UnitSpeed.metersPerSecond, ["м/с", "m/s"])
+        add(UnitSpeed.milesPerHour, ["миль/ч", "mph"])
+        add(UnitSpeed.knots, ["узел", "узла", "узлов", "kn", "knot", "knots"])
+        // время
+        add(UnitDuration.seconds, ["с", "сек", "секунда", "секунды", "секунд", "s", "sec", "second", "seconds"])
+        add(UnitDuration.minutes, ["мин", "минута", "минуты", "минут", "min", "minute", "minutes"])
+        add(UnitDuration.hours, ["ч", "час", "часа", "часов", "h", "hr", "hour", "hours"])
+        add(UnitDuration(symbol: "d", converter: UnitConverterLinear(coefficient: 86400)),
+            ["сут", "сутки", "суток", "день", "дня", "дней", "d", "day", "days"])
+        add(UnitDuration(symbol: "wk", converter: UnitConverterLinear(coefficient: 604800)),
+            ["нед", "неделя", "недели", "недель", "week", "weeks"])
+        // данные
+        add(UnitInformationStorage.bytes, ["байт", "байта", "байтов", "byte", "bytes"])
+        add(UnitInformationStorage.kilobytes, ["кб", "kb", "килобайт", "килобайта", "килобайтов"])
+        add(UnitInformationStorage.megabytes, ["мб", "mb", "мегабайт", "мегабайта", "мегабайтов"])
+        add(UnitInformationStorage.gigabytes, ["гб", "gb", "гигабайт", "гигабайта", "гигабайтов"])
+        add(UnitInformationStorage.terabytes, ["тб", "tb", "терабайт", "терабайта", "терабайтов"])
+        add(UnitInformationStorage.kibibytes, ["kib", "кибибайт"])
+        add(UnitInformationStorage.mebibytes, ["mib", "мебибайт"])
+        add(UnitInformationStorage.gibibytes, ["gib", "гибибайт"])
+        // площадь
+        add(UnitArea.squareMeters, ["м2", "м²", "m2", "m²", "кв.м", "кв м"])
+        add(UnitArea.squareKilometers, ["км2", "км²", "km2", "km²"])
+        add(UnitArea.hectares, ["га", "гектар", "гектара", "гектаров", "ha", "hectare", "hectares"])
+        add(UnitArea.acres, ["акр", "акра", "акров", "acre", "acres"])
+        return t
+    }()
+
+    static func convert(_ v: Double, from: Dimension, to: Dimension) -> Double? {
+        guard type(of: from) == type(of: to) else { return nil }
+        let base = from.converter.baseUnitValue(fromValue: v)
+        return to.converter.value(fromBaseUnitValue: base)
+    }
+}
+
+/// Курсы валют: свежие берём из интернета (не чаще раза в час), без связи — последние сохранённые
+final class Rates {
+    static let shared = Rates()
+    private(set) var rates: [String: Double] = [:]     // единиц валюты за 1 USD
+    private(set) var date: Date?
+    private var fetching = false
+    private var waiters: [(Bool, Bool) -> Void] = []
+
+    private init() {
+        if let d = UserDefaults.standard.data(forKey: "pusk.rates"),
+           let r = try? JSONDecoder().decode([String: Double].self, from: d) {
+            rates = r
+            date = UserDefaults.standard.object(forKey: "pusk.rates.date") as? Date
+        }
+    }
+
+    private func save() {
+        if let d = try? JSONEncoder().encode(rates) { UserDefaults.standard.set(d, forKey: "pusk.rates") }
+        UserDefaults.standard.set(date, forKey: "pusk.rates.date")
+    }
+
+    /// done(есть ли курсы, свежие ли они) вызывается на главном потоке
+    func ensure(_ done: @escaping (Bool, Bool) -> Void) {
+        if !rates.isEmpty, let d = date, Date().timeIntervalSince(d) < 3600 { done(true, true); return }
+        waiters.append(done)
+        if fetching { return }
+        fetching = true
+        fetch { newRates, newDate in
+            DispatchQueue.main.async {
+                self.fetching = false
+                var fresh = false
+                if let r = newRates, !r.isEmpty {
+                    self.rates = r
+                    self.date = newDate ?? Date()
+                    self.save()
+                    fresh = true
+                }
+                let has = !self.rates.isEmpty
+                let ws = self.waiters
+                self.waiters = []
+                ws.forEach { $0(has, fresh) }
+            }
+        }
+    }
+
+    private func fetch(_ done: @escaping ([String: Double]?, Date?) -> Void) {
+        func get(_ url: String, _ cb: @escaping (Data?) -> Void) {
+            guard let u = URL(string: url) else { cb(nil); return }
+            var req = URLRequest(url: u)
+            req.timeoutInterval = 6
+            URLSession.shared.dataTask(with: req) { data, resp, _ in
+                if let h = resp as? HTTPURLResponse, h.statusCode == 200 { cb(data) } else { cb(nil) }
+            }.resume()
+        }
+        get("https://open.er-api.com/v6/latest/USD") { data in
+            if let data = data,
+               let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               (j["result"] as? String) == "success",
+               let r = j["rates"] as? [String: Any] {
+                var out: [String: Double] = [:]
+                for (k, v) in r { if let d = (v as? NSNumber)?.doubleValue, d > 0 { out[k] = d } }
+                var date: Date? = nil
+                if let t = (j["time_last_update_unix"] as? NSNumber)?.doubleValue { date = Date(timeIntervalSince1970: t) }
+                if !out.isEmpty { done(out, date); return }
+            }
+            // запасной источник — Банк России (курсы к рублю)
+            get("https://www.cbr-xml-daily.ru/daily_json.js") { data in
+                guard let data = data,
+                      let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let vals = j["Valute"] as? [String: Any] else { done(nil, nil); return }
+                var rubPer: [String: Double] = ["RUB": 1]
+                for (k, v) in vals {
+                    if let o = v as? [String: Any],
+                       let val = (o["Value"] as? NSNumber)?.doubleValue,
+                       let nom = (o["Nominal"] as? NSNumber)?.doubleValue, nom > 0 { rubPer[k] = val / nom }
+                }
+                guard let usd = rubPer["USD"], usd > 0 else { done(nil, nil); return }
+                var out: [String: Double] = [:]
+                for (k, v) in rubPer where v > 0 { out[k] = usd / v }
+                done(out, nil)
+            }
+        }
+    }
+}
+
+struct CurrencyRequest {
+    let value: Double
+    let from: String
+    let to: String
+}
+
+enum QuickCalc {
+    // MARK: форматирование
+
+    static func format(_ v: Double, maxFrac: Int, minFrac: Int = 0, grouping: Bool = true) -> String {
+        if v == 0 { return "0" }
+        if abs(v) >= 1e15 || abs(v) < 1e-9 { return String(format: "%.6g", v) }
+        let f = NumberFormatter()
+        f.numberStyle = .decimal
+        f.locale = Locale.current
+        f.usesGroupingSeparator = grouping
+        f.maximumFractionDigits = maxFrac
+        f.minimumFractionDigits = minFrac
+        return f.string(from: NSNumber(value: v)) ?? String(v)
+    }
+
+    private static func unitFrac(_ v: Double) -> Int { abs(v) >= 1000 ? 2 : (abs(v) >= 1 ? 4 : 6) }
+
+    // MARK: разбор
+
+    private static func match(_ pattern: String, _ s: String) -> [String]? {
+        guard let re = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return nil }
+        let ns = s as NSString
+        guard let m = re.firstMatch(in: s, options: [], range: NSRange(location: 0, length: ns.length)) else { return nil }
+        return (0..<m.numberOfRanges).map { m.range(at: $0).location == NSNotFound ? "" : ns.substring(with: m.range(at: $0)) }
+    }
+
+    private static func number(_ s: String) -> Double? {
+        Double(s.replacingOccurrences(of: " ", with: "").replacingOccurrences(of: ",", with: "."))
+    }
+
+    private static func token(_ s: String) -> String {
+        var t = s.lowercased().trimmingCharacters(in: .whitespaces)
+        while t.hasSuffix(".") { t.removeLast() }
+        while t.contains("  ") { t = t.replacingOccurrences(of: "  ", with: " ") }
+        return t
+    }
+
+    private static func calc(_ s: String, needOp: Bool) -> Double? {
+        var p = MathParser(s)
+        let v = p.expression()
+        p.skipSpaces()
+        guard !p.failed, p.i == p.chars.count, v.isFinite, !needOp || p.sawOp else { return nil }
+        return v
+    }
+
+    private static let num = "([-+]?(?:\\d[\\d ]*(?:[.,]\\d+)?|[.,]\\d+))"
+
+    /// «100 usd в rub» → (100, "usd", "rub"); «100 usd» → (100, "usd", nil); «$100» тоже понимаем
+    private static func parseConversion(_ q: String) -> (Double, String, String?)? {
+        var s = q
+        if let m = match("^\\s*([$€£¥₽])\\s*" + num + "(.*)$", s) {
+            s = m[2] + " " + m[1] + m[3]
+        }
+        if let m = match("^\\s*" + num + "\\s*([^\\d\\s=→\\-.,][^=→]*?)\\s+(?:в|во|to|in|into|->|=>|→|=)\\s+(.+?)\\s*$", s),
+           let v = number(m[1]) {
+            return (v, token(m[2]), token(m[3]))
+        }
+        if let m = match("^\\s*" + num + "\\s*([^\\d\\s=→\\-.,][^=→]*?)\\s*$", s), let v = number(m[1]) {
+            return (v, token(m[2]), nil)
+        }
+        return nil
+    }
+
+    // MARK: ответы без сети: арифметика и единицы
+
+    static func answer(_ q: String) -> QuickItem? {
+        // даты и похожие записи не считаем
+        if match("^\\d{1,4}[-./]\\d{1,2}[-./]\\d{1,4}$", q) != nil { return nil }
+
+        // «15% от 8400»
+        if let m = match("^\\s*(.+?)\\s*%\\s*(?:от|of)\\s+(.+?)\\s*$", q),
+           let a = calc(m[1], needOp: false), let b = calc(m[2], needOp: false) {
+            let r = a / 100 * b
+            return QuickItem(expr: q, result: format(r, maxFrac: 10), copy: format(r, maxFrac: 10, grouping: false))
+        }
+        // арифметика
+        if let r = calc(q, needOp: true) {
+            return QuickItem(expr: q, result: format(r, maxFrac: 10), copy: format(r, maxFrac: 10, grouping: false))
+        }
+        // единицы измерения
+        if let conv = parseConversion(q), let toTok = conv.2,
+           let uf = QuickUnits.table[conv.1], let ut = QuickUnits.table[toTok],
+           let r = QuickUnits.convert(conv.0, from: uf, to: ut) {
+            let fr = unitFrac(r)
+            return QuickItem(expr: format(conv.0, maxFrac: 6) + " " + conv.1 + " → " + toTok,
+                             result: format(r, maxFrac: fr) + " " + toTok,
+                             copy: format(r, maxFrac: fr, grouping: false))
+        }
+        return nil
+    }
+
+    // MARK: валюты
+
+    private static let currencyAliases: [String: String] = {
+        var t: [String: String] = [:]
+        func add(_ code: String, _ names: [String]) { for n in names { t[n] = code } }
+        add("USD", ["usd", "$", "доллар", "доллара", "долларов", "доллары", "доллар сша", "dollar", "dollars", "бакс", "баксов"])
+        add("EUR", ["eur", "€", "евро", "euro", "euros"])
+        add("RUB", ["rub", "₽", "руб", "рубль", "рубля", "рублей", "рубли", "ruble", "rubles"])
+        add("GBP", ["gbp", "£", "фунт стерлингов", "фунта стерлингов", "фунтов стерлингов", "pound sterling"])
+        add("CNY", ["cny", "rmb", "юань", "юаня", "юаней", "yuan"])
+        add("JPY", ["jpy", "¥", "иена", "иены", "иен", "yen"])
+        add("TRY", ["try", "лира", "лиры", "лир", "турецкая лира", "турецких лир"])
+        add("KZT", ["kzt", "тенге"])
+        add("UAH", ["uah", "гривна", "гривны", "гривен"])
+        add("BYN", ["byn", "белорусский рубль", "белорусских рублей"])
+        add("CHF", ["chf", "франк", "франка", "франков"])
+        add("AED", ["aed", "дирхам", "дирхама", "дирхамов"])
+        add("THB", ["thb", "бат", "бата", "батов"])
+        add("INR", ["inr", "рупия", "рупии", "рупий"])
+        add("KRW", ["krw", "вона", "воны", "вон"])
+        add("GEL", ["gel", "лари"])
+        add("AMD", ["amd", "драм", "драма", "драмов"])
+        add("AZN", ["azn", "манат", "маната", "манатов"])
+        add("UZS", ["uzs", "сум", "сума", "сумов"])
+        add("KGS", ["kgs", "сом", "сома", "сомов"])
+        add("PLN", ["pln", "злотый", "злотого", "злотых"])
+        return t
+    }()
+
+    private static func currencyCode(_ tok: String) -> String? {
+        if let c = currencyAliases[tok] { return c }
+        if tok.count == 3, tok.allSatisfy({ $0 >= "a" && $0 <= "z" }) {
+            let u = tok.uppercased()
+            if Rates.shared.rates[u] != nil { return u }
+        }
+        return nil
+    }
+
+    /// Похоже ли на просьбу конвертировать валюту (курсы подтянутся отдельно)
+    static func currencyRequest(_ q: String) -> CurrencyRequest? {
+        guard let conv = parseConversion(q), QuickUnits.table[conv.1] == nil,
+              let cf = currencyCode(conv.1) else { return nil }
+        if let toTok = conv.2 {
+            guard let ct = currencyCode(toTok) else { return nil }
+            return CurrencyRequest(value: conv.0, from: cf, to: ct)
+        }
+        // «100 долларов» без «в …»: показываем в рублях (а рубли — в долларах)
+        return CurrencyRequest(value: conv.0, from: cf, to: cf == "RUB" ? "USD" : "RUB")
+    }
+
+    static func currencyAnswer(_ r: CurrencyRequest, fresh: Bool) -> QuickItem? {
+        let rates = Rates.shared.rates
+        guard let rf = rates[r.from], let rt = rates[r.to], rf > 0 else { return nil }
+        let out = r.value * rt / rf
+        let frac = abs(out) < 1 ? 4 : 2
+        var note: String? = nil
+        if let d = Rates.shared.date {
+            let f = DateFormatter()
+            f.dateStyle = .medium
+            f.timeStyle = .short
+            let ds = f.string(from: d)
+            note = fresh ? Tf("Курс на %@", ds) : Tf("Нет связи — последний сохранённый курс на %@", ds)
+        }
+        return QuickItem(expr: format(r.value, maxFrac: 6) + " " + r.from + " → " + r.to,
+                         result: format(out, maxFrac: frac, minFrac: 2) + " " + r.to,
+                         copy: format(out, maxFrac: frac, minFrac: 2, grouping: false),
+                         note: note)
+    }
+}
+
+final class QuickAnswer: ObservableObject {
+    @Published var item: QuickItem?
+    private var gen = 0
+
+    func update(_ raw: String) {
+        gen += 1
+        let g = gen
+        let q = raw.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty, q.count <= 80 else { item = nil; return }
+        if let it = QuickCalc.answer(q) { item = it; return }
+        if let cur = QuickCalc.currencyRequest(q) {
+            item = nil
+            Rates.shared.ensure { [weak self] has, fresh in
+                guard let self = self, g == self.gen else { return }
+                self.item = has ? QuickCalc.currencyAnswer(cur, fresh: fresh) : nil
+            }
+            return
+        }
+        item = nil
+    }
+}
+
+struct QuickAnswerCard: View {
+    let item: QuickItem
+    let onCopied: () -> Void
+    @State private var copied = false
+
+    var body: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(item.expr).font(.callout).foregroundColor(.secondary).lineLimit(1)
+                Text(item.result).font(.system(size: 28, weight: .semibold))
+                    .lineLimit(1).minimumScaleFactor(0.5)
+                if let n = item.note { Text(n).font(.caption).foregroundColor(.secondary) }
+            }
+            Spacer(minLength: 8)
+            VStack(spacing: 2) {
+                Image(systemName: copied ? "checkmark.circle.fill" : "doc.on.doc").font(.system(size: 16))
+                Text(copied ? T("Скопировано") : T("Копировать")).font(.caption)
+            }
+            .foregroundColor(copied ? .green : .secondary)
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.07)))
+        .contentShape(Rectangle())
+        .onTapGesture {
+            copyToPasteboard(item.copy)
+            copied = true
+            onCopied()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
+        }
+        .help(T("Нажмите, чтобы скопировать результат"))
+    }
+}
+
 // MARK: - Поиск файлов и папок через системный Spotlight (как в Spotlight на iPhone)
 
 struct FileHit: Identifiable {
@@ -4989,6 +5506,7 @@ struct RootView: View {
     @State private var dropTarget: String? = nil
     @State private var showTools = false
     @StateObject private var files = FileSearch()
+    @StateObject private var quick = QuickAnswer()
     @FocusState private var searchFocused: Bool
     @FocusState private var nameFocused: Bool
 
@@ -5109,9 +5627,13 @@ struct RootView: View {
                                 NSApp.keyWindow?.makeFirstResponder(nil)
                             }
                         }
-                        .onChange(of: query) { files.update($0) }
+                        .onChange(of: query) { q in
+                            files.update(q)
+                            quick.update(q)
+                        }
                         .onSubmit {
                             if let first = visibleApps.first { launch(first) }
+                            else if let a = quick.item { copyToPasteboard(a.copy); close() }
                             else if let f = files.hits.first { openFile(f) }
                         }
                     if !query.isEmpty {
@@ -5177,6 +5699,9 @@ struct RootView: View {
                 .padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 4)
                 ScrollView {
                   VStack(alignment: .leading, spacing: 0) {
+                    if searching, let a = quick.item {
+                        QuickAnswerCard(item: a, onCopied: {}).padding(.horizontal, 14).padding(.top, 14)
+                    }
                     if showingLinks {
                         linksGrid
                     } else {
@@ -5266,24 +5791,37 @@ struct RootView: View {
                 .hoverHighlight(7)
                 .help(T("Создать свою категорию"))
 
-                HStack(spacing: 12) {
-                    shortcut("com.apple.Terminal", T("Терминал"), "terminal")
-                    shortcut("com.apple.ActivityMonitor", T("Мониторинг системы"), "waveform.path.ecg")
-                    shortcut("com.apple.AppStore", "App Store", "bag")
+                HStack(spacing: 0) {
+                    HStack(spacing: 7) {
+                        shortcut("com.apple.Terminal", T("Терминал"), "terminal")
+                        shortcut("com.apple.ActivityMonitor", T("Мониторинг системы"), "waveform.path.ecg")
+                        shortcut("com.apple.AppStore", "App Store", "bag")
+                    }
                     Spacer(minLength: 0)
+                    HStack(spacing: 7) {
                     // Инструменты: меню открывается выше кнопки (см. toolsMenu)
                     Button { showTools.toggle() } label: {
-                        Image(systemName: "wrench.and.screwdriver.fill")
-                            .font(.system(size: 16))
-                            .foregroundColor(.accentColor)
-                            .frame(width: 24, height: 24)
-                            .padding(4)
-                            .contentShape(Rectangle())
+                        // значок в том же стиле, что у «Системных настроек»: скруглённый квадрат с градиентом и белым знаком
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 5.5, style: .continuous)
+                                .fill(LinearGradient(colors: [Color(red: 0.38, green: 0.68, blue: 1.0),
+                                                              Color(red: 0.04, green: 0.40, blue: 0.95)],
+                                                     startPoint: .top, endPoint: .bottom))
+                            Image(systemName: "wrench.and.screwdriver.fill")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundColor(.white)
+                        }
+                        // у настоящих значков macOS есть прозрачные поля, поэтому наш квадрат чуть меньше рамки 24×24
+                        .frame(width: 21, height: 21)
+                        .frame(width: 24, height: 24)
+                        .padding(4)
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .hoverHighlight(8)
                     .help(T("Инструменты"))
                     shortcut("com.apple.systempreferences", T("Системные настройки"), "gearshape")
+                    }
                 }
             }
             .padding(12)

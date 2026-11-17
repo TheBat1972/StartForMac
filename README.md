@@ -9,7 +9,7 @@ Personal project, built with SwiftUI + AppKit, no third-party dependencies. Univ
 ## Features
 
 - **Apps by category.** Categories come from each app's App Store category; create your own and drag apps into them. The target category is highlighted while dragging.
-- **Search**, resizable and movable window (size and position are remembered, with minimum and maximum limits), `Esc` closes it.
+- **Search** across apps, files and folders (via Spotlight, including text inside files and iCloud Drive), plus a calculator, unit conversion and currency conversion right in the search field; resizable and movable window (size and position are remembered, with minimum and maximum limits), `Esc` closes it.
 - **Uninstaller.** Right-click an app → Delete: finds leftovers (caches, preferences, containers, logs, launch agents…), shows a preview, asks for confirmation, moves items to the Trash. Items that need admin rights are deleted with the administrator password.
 - **Tools** (wrench button). Each one opens in its own window, does not get in the way of Start and lives independently; "Close all apps" stays inside Start:
   - *Junk cleanup:* app caches, logs, system caches, Trash, Xcode builds and device support files, installers in Downloads, leftovers of removed apps. Every category expands, and you can pick individual items.
@@ -26,7 +26,7 @@ Personal project, built with SwiftUI + AppKit, no third-party dependencies. Univ
 
 ## Privacy and security
 
-- No telemetry, no accounts. The app only contacts the websites you add, to download their icons.
+- No telemetry, no accounts. The app only contacts the websites you add, to download their icons, and — when you ask for a currency conversion — an exchange-rate service (open.er-api.com, with cbr-xml-daily.ru as a fallback).
 - The administrator password is typed into an in-app field, passed to `sudo` through stdin, kept in memory for 5 minutes and never written to disk.
 - Settings live in `~/Library/Application Support/StartMenu/config.json`.
 
