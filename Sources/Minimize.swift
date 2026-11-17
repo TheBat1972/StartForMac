@@ -459,6 +459,35 @@ final class MinimizeController: NSObject, ObservableObject {
     var openStart: (() -> Void)?
     /// Открыть/скрыть «Пуск» по горячей клавише (задаёт AppDelegate)
     var toggleStart: (() -> Void)?
+    /// «Не давать уснуть»: переключить (задаёт AppDelegate) и текущее состояние для значка и меню
+    var toggleAwake: (() -> Void)?
+    private var awakeOn = false
+
+    /// Пока компьютеру не дают уснуть, значок в строке меню голубой (цвет акцента)
+    func setAwake(_ on: Bool) {
+        awakeOn = on
+        setTrayIcon(on)
+        statusItem.button?.toolTip = on
+            ? T("Компьютеру не дают уснуть. Клик — свернуть все окна, правый клик — меню")
+            : T("Клик — свернуть все окна (если экран пуст — вернуть), правый клик — меню")
+    }
+
+    /// Обычный значок — шаблонный (цвет задаёт система); при «не давать уснуть» — того же рисунка цвета акцента
+    private func setTrayIcon(_ awake: Bool) {
+        guard let b = statusItem.button,
+              let base = NSImage(systemSymbolName: "rectangle.bottomhalf.inset.filled",
+                                 accessibilityDescription: T("Свернуть все окна")) else { return }
+        if awake, #available(macOS 12.0, *) {
+            let cfg = NSImage.SymbolConfiguration(paletteColors: [.controlAccentColor])
+            let tinted = base.withSymbolConfiguration(cfg) ?? base
+            tinted.isTemplate = false
+            b.image = tinted
+        } else {
+            base.isTemplate = true
+            b.image = base
+        }
+        b.contentTintColor = nil
+    }
 
     func start() {
         if let b = statusItem.button {
@@ -511,6 +540,9 @@ final class MinimizeController: NSObject, ObservableObject {
     func showMenu() {
         let m = NSMenu()
         m.addItem(withTitle: T("Открыть «Пуск»"), action: #selector(openStartMenu), keyEquivalent: "").target = self
+        let awake = m.addItem(withTitle: T("Не давать компьютеру уснуть"), action: #selector(toggleAwakeItem), keyEquivalent: "")
+        awake.target = self
+        awake.state = awakeOn ? .on : .off
         m.addItem(.separator())
         m.addItem(withTitle: T("Выход"), action: #selector(quit), keyEquivalent: "q").target = self
         statusItem.menu = m
@@ -519,6 +551,7 @@ final class MinimizeController: NSObject, ObservableObject {
     }
 
     @objc func openStartMenu() { openStart?() }
+    @objc func toggleAwakeItem() { toggleAwake?() }
     @objc func quit() { NSApp.terminate(nil) }
 
     // MARK: Настройки (вызываются из окна «Настройки» в «Пуске»)

@@ -4,6 +4,14 @@
 
 ## Русский
 
+### Версия 3.0 — 2026-11-17
+
+**Новое**
+- **Поиск по всему компьютеру.** Кроме приложений, строка поиска находит файлы и папки через системный Spotlight (домашняя папка, iCloud Drive и внешние диски; файлы, не скачанные из iCloud, помечены значком облака) и показывает их отдельным блоком «Файлы и папки», как в Spotlight на iPhone: значок, имя, папка и тип. Ищет и по именам, и по тексту внутри файлов (то, что проиндексировал Spotlight); найденные по тексту помечены «в тексте». Клик открывает файл, правый клик — «Показать в Finder» и «Копировать путь»; Enter открывает первое приложение, а если приложений нет, — первый файл. Текст в строке поиска не пропадает, если «Пуск» свернули и открыли снова (или переключились в другую программу); очищается кнопкой с крестиком в конце строки.
+- **Не давать компьютеру уснуть**: кнопка с чашкой рядом с настройками (включается и из меню значка в строке меню). Пока включена, Мак и экран не засыпают от бездействия (как Amphetamine); чашка и значок в строке меню становятся голубыми, а рядом с чашкой появляется подпись «Не давать компьютеру уснуть». Закрытие крышки по-прежнему усыпляет Мак.
+
+---
+
 ### Версия 2.0 — 2026-11-17
 
 **Новое**
@@ -32,6 +40,14 @@
 ---
 
 ## English
+
+### Version 3.0 — 2026-11-17
+
+**New**
+- **Search the whole computer.** Besides apps, the search field finds files and folders through system Spotlight (home folder, iCloud Drive and external drives; files not yet downloaded from iCloud get a cloud icon) and shows them in a separate “Files and folders” block, like Spotlight on iPhone: icon, name, folder and kind. It searches both names and text inside files (whatever Spotlight has indexed); items found by text are marked “in text”. Click opens the file; right click gives “Show in Finder” and “Copy path”. Enter opens the first app, or the first file when there are no apps. The search text is kept when “Пуск” is hidden and opened again (or you switch to another app); it is cleared with the ✕ button at the end of the field.
+- **Keep the Mac awake**: a cup button next to Settings (also available from the menu-bar icon menu). While on, the Mac and its display do not sleep from inactivity (like Amphetamine); the cup and the menu-bar icon turn blue, and a “Keep the Mac awake” label appears next to the cup. Closing the lid still puts the Mac to sleep.
+
+---
 
 ### Version 2.0 — 2026-11-17
 

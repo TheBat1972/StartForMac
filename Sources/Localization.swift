@@ -46,6 +46,14 @@ func Tf(_ s: String, _ args: String...) -> String {
 }
 
 private let translations: [String: String] = [
+    "Очистить поиск": "Clear search",
+    "Лежит в iCloud, не скачан на этот Мак — откроется после загрузки": "In iCloud, not downloaded to this Mac — opens after downloading",
+    "в тексте": "in text",
+    "Файлы и папки": "Files and folders",
+    "Копировать путь": "Copy path",
+    "Компьютеру не дают уснуть. Клик — свернуть все окна, правый клик — меню": "The Mac is kept awake. Click — minimize all windows, right click — menu",
+    "Не давать компьютеру уснуть": "Keep the Mac awake",
+    "Компьютер не уснёт — нажмите, чтобы отключить": "The Mac will stay awake — click to turn off",
     "Скорость записи у флешек может заметно колебаться — для точности повторите тест.": "Write speed of flash drives can vary noticeably — repeat the test for accuracy.",
     "Ваш диск": "Your drive",
     "По скорости записи ближе всего к: %@": "By write speed it is closest to: %@",
@@ -294,7 +302,7 @@ private let translations: [String: String] = [
     "Пересоздаёт поисковый индекс, если Spotlight не находит файлы. Индексация займёт какое-то время.": "Rebuilds the search index if Spotlight can’t find files. Indexing will take a while.",
     "По размеру": "By size",
     "Повторить с паролем": "Retry with password",
-    "Поиск приложений": "Search apps",
+    "Поиск": "Search",
     "Показать в Finder": "Show in Finder",
     "Полный доступ к диску": "Full Disk Access",
     "Помогает, если сайты не открываются или открываются по старым адресам.": "Helps if websites don’t open or open at old addresses.",

@@ -4,6 +4,7 @@
 import SwiftUI
 import AppKit
 import CoreServices
+import IOKit.pwr_mgt
 import Carbon
 import ApplicationServices
 import Security
@@ -107,6 +108,25 @@ final class Store: ObservableObject, @unchecked Sendable {
     @Published var openFolder: UUID? = nil
     @Published var folderDraft: FolderDraft? = nil
     @Published var showSettings = false
+
+    // «Не давать уснуть»: пока включено, Мак и экран не засыпают от бездействия (как Amphetamine).
+    // Закрытие крышки всё равно усыпляет Мак. При выходе из приложения система снимает блокировку сама.
+    @Published var keepAwake = false
+    private var awakeAssertion: IOPMAssertionID = 0
+    func setKeepAwake(_ on: Bool) {
+        if on {
+            guard awakeAssertion == 0 else { keepAwake = true; return }
+            var id: IOPMAssertionID = 0
+            let r = IOPMAssertionCreateWithName("PreventUserIdleDisplaySleep" as CFString,
+                                                IOPMAssertionLevel(kIOPMAssertionLevelOn),
+                                                "Пуск: не давать компьютеру уснуть" as CFString, &id)
+            if r == kIOReturnSuccess { awakeAssertion = id; keepAwake = true }
+        } else {
+            if awakeAssertion != 0 { IOPMAssertionRelease(awakeAssertion); awakeAssertion = 0 }
+            keepAwake = false
+        }
+        minimize?.setAwake(keepAwake)
+    }
     @Published var quitAll: QuitAllModel? = nil
     @Published var fmt: FormatModel? = nil
     var minimize: MinimizeController?
@@ -4352,6 +4372,184 @@ struct ToolRow: View {
     }
 }
 
+// MARK: - Поиск файлов и папок через системный Spotlight (как в Spotlight на iPhone)
+
+struct FileHit: Identifiable {
+    let id: String      // полный путь
+    let name: String
+    let dir: String
+    let kind: String
+    let byContent: Bool   // найден по тексту внутри файла, а не по имени
+    let inCloud: Bool     // лежит в облаке и не скачан на этот Мак
+    let icon: NSImage
+}
+
+final class FileSearch: ObservableObject {
+    @Published var hits: [FileHit] = []
+    private var mdq: NSMetadataQuery?
+    private var pending: DispatchWorkItem?
+    private var tokens: [NSObjectProtocol] = []
+
+    /// Вызывается при каждом изменении строки поиска (с небольшой задержкой, чтобы не искать на каждую букву)
+    func update(_ raw: String) {
+        pending?.cancel()
+        stop()
+        let t = raw.trimmingCharacters(in: .whitespaces)
+        guard t.count >= 2 else { if !hits.isEmpty { hits = [] }; return }
+        let w = DispatchWorkItem { [weak self] in self?.run(t) }
+        pending = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: w)
+    }
+
+    private func stop() {
+        mdq?.stop()
+        mdq = nil
+        tokens.forEach { NotificationCenter.default.removeObserver($0) }
+        tokens = []
+    }
+
+    /// Домашняя папка и подключённые внешние тома (системные папки и загрузочный том не ищем)
+    private static func scopes() -> [Any] {
+        var r: [Any] = [NSMetadataQueryUserHomeScope]
+        let keys: [URLResourceKey] = [.volumeIsInternalKey, .volumeIsLocalKey]
+        for u in FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: keys, options: [.skipHiddenVolumes]) ?? [] {
+            guard u.path.hasPrefix("/Volumes/") else { continue }
+            let v = try? u.resourceValues(forKeys: Set(keys))
+            if v?.volumeIsInternal == true { continue }
+            r.append(u.path)
+        }
+        // iCloud Drive и облачные папки (Dropbox, Google Drive…) лежат в ~/Library — добавляем явно
+        let home = NSHomeDirectory()
+        for sub in ["/Library/Mobile Documents/com~apple~CloudDocs", "/Library/CloudStorage"]
+        where FileManager.default.fileExists(atPath: home + sub) { r.append(home + sub) }
+        return r
+    }
+
+    private func run(_ t: String) {
+        let q = NSMetadataQuery()
+        // по имени и по тексту внутри файлов (то, что Spotlight проиндексировал)
+        q.predicate = NSPredicate(format: "%K CONTAINS[cd] %@ OR %K CONTAINS[cd] %@",
+                                  NSMetadataItemDisplayNameKey, t, "kMDItemTextContent", t)
+        q.searchScopes = FileSearch.scopes()
+        q.notificationBatchingInterval = 0.2
+        for n in [Notification.Name.NSMetadataQueryDidFinishGathering, .NSMetadataQueryDidUpdate] {
+            tokens.append(NotificationCenter.default.addObserver(forName: n, object: q, queue: .main) { [weak self, weak q] _ in
+                guard let self = self, let q = q else { return }
+                self.collect(q, t)
+            })
+        }
+        mdq = q
+        q.start()
+    }
+
+    private static let skipPrefixes = ["/System/", "/Library/", "/private/", "/usr/", "/opt/", "/bin/", "/sbin/", "/cores/", "/Applications/"]
+
+    private static func skip(_ path: String, home: String) -> Bool {
+        if path.hasSuffix(".app") || path.contains(".app/") { return true }    // приложения ищутся отдельно
+        if skipPrefixes.contains(where: { path.hasPrefix($0) }) { return true }
+        if path.hasPrefix(home + "/Library/") {
+            // из Library нужны только iCloud Drive и облачные папки
+            let ok = [home + "/Library/Mobile Documents/com~apple~CloudDocs/", home + "/Library/CloudStorage/"]
+            if !ok.contains(where: { path.hasPrefix($0) }) { return true }
+        }
+        for c in path.split(separator: "/") where c == "node_modules" { return true }
+        for c in path.split(separator: "/") where c.hasPrefix(".") && !(c.hasSuffix(".icloud")) { return true }
+        return false
+    }
+
+    /// Файл числится в iCloud, но его содержимое ещё не скачано на этот Мак
+    private static func notDownloaded(_ path: String) -> Bool {
+        let v = try? URL(fileURLWithPath: path).resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey])
+        guard let st = v?.ubiquitousItemDownloadingStatus else { return false }
+        return st != .current
+    }
+
+    private func collect(_ q: NSMetadataQuery, _ t: String) {
+        q.disableUpdates()
+        defer { q.enableUpdates() }
+        let home = NSHomeDirectory()
+        let lower = t.lowercased()
+        var seen = Set<String>()
+        var items: [(path: String, name: String, type: String, used: Date, placeholder: Bool)] = []
+        for i in 0..<min(q.resultCount, 5000) {
+            guard let it = q.result(at: i) as? NSMetadataItem,
+                  var path = it.value(forAttribute: NSMetadataItemPathKey) as? String else { continue }
+            if FileSearch.skip(path, home: home) { continue }
+            // старый вид незагруженного файла iCloud: «.Имя.icloud» — показываем настоящее имя
+            var placeholder = false
+            let last = (path as NSString).lastPathComponent
+            if last.hasPrefix(".") && last.hasSuffix(".icloud") && last.count > 8 {
+                path = (path as NSString).deletingLastPathComponent + "/" + String(last.dropFirst().dropLast(7))
+                placeholder = true
+            }
+            if !seen.insert(path).inserted { continue }
+            let name = placeholder ? (path as NSString).lastPathComponent
+                : ((it.value(forAttribute: NSMetadataItemDisplayNameKey) as? String) ?? (path as NSString).lastPathComponent)
+            let type = (it.value(forAttribute: NSMetadataItemContentTypeKey) as? String) ?? ""
+            let used = (it.value(forAttribute: "kMDItemLastUsedDate") as? Date)
+                ?? (it.value(forAttribute: NSMetadataItemFSContentChangeDateKey) as? Date) ?? .distantPast
+            items.append((path, name, type, used, placeholder))
+        }
+        // порядок: имя начинается с запроса → имя содержит запрос → найдено только в тексте; внутри группы — недавние выше
+        func group(_ n: String) -> Int {
+            let l = n.lowercased()
+            return l.hasPrefix(lower) ? 0 : (l.contains(lower) ? 1 : 2)
+        }
+        items.sort {
+            let a = group($0.name), b = group($1.name)
+            if a != b { return a < b }
+            return $0.used > $1.used
+        }
+        hits = items.prefix(40).map { i in
+            FileHit(id: i.path, name: i.name,
+                    dir: ((i.path as NSString).deletingLastPathComponent as NSString).abbreviatingWithTildeInPath,
+                    kind: UTType(i.type)?.localizedDescription ?? "",
+                    byContent: group(i.name) == 2,
+                    inCloud: i.placeholder || FileSearch.notDownloaded(i.path),
+                    icon: NSWorkspace.shared.icon(forFile: i.path))
+        }
+    }
+}
+
+struct FileRow: View {
+    let hit: FileHit
+    let onOpen: () -> Void
+    @State private var hover = false
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(nsImage: hit.icon).resizable().frame(width: 30, height: 30)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(hit.name).font(.system(size: 13)).lineLimit(1)
+                Text(hit.dir).font(.caption).foregroundColor(.secondary).lineLimit(1).truncationMode(.head)
+            }
+            Spacer(minLength: 8)
+            if hit.inCloud {
+                Image(systemName: "icloud").font(.caption).foregroundColor(.secondary)
+                    .help(T("Лежит в iCloud, не скачан на этот Мак — откроется после загрузки"))
+            }
+            if hit.byContent {
+                Text(T("в тексте")).font(.caption).foregroundColor(.accentColor).lineLimit(1)
+            }
+            Text(hit.kind).font(.caption).foregroundColor(.secondary).lineLimit(1)
+        }
+        .padding(.horizontal, 8).padding(.vertical, 5)
+        .background(RoundedRectangle(cornerRadius: 8).fill(hover ? Color.primary.opacity(0.12) : Color.clear))
+        .contentShape(Rectangle())
+        .onHover { hover = $0 }
+        .onTapGesture { onOpen() }
+        .contextMenu {
+            Button(T("Показать в Finder")) {
+                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: hit.id)])
+            }
+            Button(T("Копировать путь")) {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(hit.id, forType: .string)
+            }
+        }
+    }
+}
+
 struct AppCell: View {
     let app: AppItem
     let icon: NSImage
@@ -4783,10 +4981,14 @@ struct RootView: View {
     let resetPlacement: () -> Void
 
     @State private var query = ""
+    /// Меняется при очистке поиска: поле создаётся заново, иначе после длинного текста оно остаётся прокрученным
+    /// вправо и в нём не видно ни подсказки, ни вводимого текста
+    @State private var searchGen = 0
     @State private var editingOriginal: String? = nil   // "" — новая категория
     @State private var draft = ""
     @State private var dropTarget: String? = nil
     @State private var showTools = false
+    @StateObject private var files = FileSearch()
     @FocusState private var searchFocused: Bool
     @FocusState private var nameFocused: Bool
 
@@ -4893,22 +5095,52 @@ struct RootView: View {
             sidebar.frame(width: 236)
             Divider()
             VStack(spacing: 0) {
-                TextField(T("Поиск приложений"), text: $query)
-                    .textFieldStyle(.roundedBorder)
-                    .focused($searchFocused)
-                    .disabled(overlayOpen)
-                    .onChange(of: overlayOpen) { open in
-                        if open {
-                            searchFocused = false
-                            NSApp.keyWindow?.makeFirstResponder(nil)
+                // своя рамка вокруг поля: крестик очистки стоит рядом с полем ввода, а не поверх него,
+                // поэтому над ним обычная стрелка, а не «палочка» ввода
+                HStack(spacing: 4) {
+                    TextField(T("Поиск"), text: $query)
+                        .id(searchGen)
+                        .textFieldStyle(.plain)
+                        .focused($searchFocused)
+                        .disabled(overlayOpen)
+                        .onChange(of: overlayOpen) { open in
+                            if open {
+                                searchFocused = false
+                                NSApp.keyWindow?.makeFirstResponder(nil)
+                            }
                         }
+                        .onChange(of: query) { files.update($0) }
+                        .onSubmit {
+                            if let first = visibleApps.first { launch(first) }
+                            else if let f = files.hits.first { openFile(f) }
+                        }
+                    if !query.isEmpty {
+                        Button {
+                            clearSearch()
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundColor(.secondary)
+                                .padding(2)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .help(T("Очистить поиск"))
                     }
-                    .onSubmit { if let first = visibleApps.first { launch(first) } }
-                    .padding([.top, .horizontal], 14)
+                }
+                .padding(.horizontal, 8).padding(.vertical, 5)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Color(NSColor.textBackgroundColor)))
+                .overlay(RoundedRectangle(cornerRadius: 6)
+                    .stroke(searchFocused ? Color.accentColor.opacity(0.8) : Color.gray.opacity(0.35),
+                            lineWidth: searchFocused ? 2 : 1))
+                .padding([.top, .horizontal], 14)
                 HStack {
                     Text(searching ? T("Результаты поиска") : T(store.currentSelection))
                         .font(.headline)
                     Spacer()
+                    if store.keepAwake {
+                        Text(T("Не давать компьютеру уснуть"))
+                            .font(.caption).foregroundColor(.accentColor).lineLimit(1)
+                    }
                     Button { store.showSettings = true } label: {
                         Image(systemName: "gearshape.2")
                             .padding(5).contentShape(Rectangle())
@@ -4917,6 +5149,14 @@ struct RootView: View {
                     .hoverHighlight(6)
                     .foregroundColor(.secondary)
                     .help(T("Настройки Пуска"))
+                    Button { store.setKeepAwake(!store.keepAwake) } label: {
+                        Image(systemName: store.keepAwake ? "cup.and.saucer.fill" : "cup.and.saucer")
+                            .padding(5).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .hoverHighlight(6)
+                    .foregroundColor(store.keepAwake ? .accentColor : .secondary)
+                    .help(store.keepAwake ? T("Компьютер не уснёт — нажмите, чтобы отключить") : T("Не давать компьютеру уснуть"))
                     Button { store.showPermissions = true } label: {
                         Image(systemName: store.permissionsOK ? "lock.shield" : "exclamationmark.shield")
                             .padding(5).contentShape(Rectangle())
@@ -4936,6 +5176,7 @@ struct RootView: View {
                 }
                 .padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 4)
                 ScrollView {
+                  VStack(alignment: .leading, spacing: 0) {
                     if showingLinks {
                         linksGrid
                     } else {
@@ -4948,6 +5189,15 @@ struct RootView: View {
                     }
                     .padding(14)
                     }
+                    if searching && !files.hits.isEmpty {
+                        Text(T("Файлы и папки")).font(.headline)
+                            .padding(.horizontal, 16).padding(.top, visibleApps.isEmpty ? 2 : 4).padding(.bottom, 4)
+                        VStack(spacing: 0) {
+                            ForEach(files.hits) { h in FileRow(hit: h, onOpen: { openFile(h) }) }
+                        }
+                        .padding(.horizontal, 8).padding(.bottom, 12)
+                    }
+                  }
                 }
             }
         }
@@ -4969,7 +5219,7 @@ struct RootView: View {
         .onExitCommand { close() }
         .id(store.language)
         .onReceive(store.$showTick) { _ in
-            query = ""
+            // строка поиска не сбрасывается при сворачивании и повторном открытии «Пуска» — только кнопкой очистки
             editingOriginal = nil
             showTools = false
             store.linkDraft = nil
@@ -5116,7 +5366,7 @@ struct RootView: View {
                 .stroke(Color.accentColor, lineWidth: isDropTarget ? 2 : 0))
             .hoverHighlight(7)
             .contentShape(Rectangle())
-            .onTapGesture { store.selected = name; query = "" }
+            .onTapGesture { store.selected = name; clearSearch() }
             .contextMenu {
                 if isCustom {
                     Button(T("Переименовать")) { beginEdit(name, text: name) }
@@ -5233,6 +5483,17 @@ struct RootView: View {
     private func openSettings() { openBundle("com.apple.systempreferences") }
     private func openAppStore() { openBundle("com.apple.AppStore") }
 
+    private func clearSearch() {
+        query = ""
+        searchGen += 1
+        DispatchQueue.main.async { searchFocused = true }
+    }
+
+    private func openFile(_ f: FileHit) {
+        NSWorkspace.shared.open(URL(fileURLWithPath: f.id))
+        close()
+    }
+
     private func launch(_ app: AppItem) {
         NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: app.path),
                                            configuration: NSWorkspace.OpenConfiguration(),
@@ -5293,6 +5554,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         store.minimize = minimize
+        minimize.toggleAwake = { [weak store] in if let st = store { st.setKeepAwake(!st.keepAwake) } }
         minimize.openStart = { [weak self] in self?.show() }
         minimize.toggleStart = { [weak self] in
             guard let self = self else { return }
