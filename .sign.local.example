@@ -1,0 +1,4 @@
+# Скопируйте этот файл в .sign.local и подставьте свои значения.
+# Copy this file to .sign.local and put your own values.
+SIGN_ID="${SIGN_ID-Developer ID Application: Your Name (TEAMID)}"
+NOTARY_PROFILE="${NOTARY_PROFILE-your-notary-profile}"

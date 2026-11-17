@@ -1,0 +1,3245 @@
+// «Пуск» — меню приложений в стиле кнопки ПУСК из Windows.
+// Открывается кликом по иконке в Dock. Категории — автоматические (из Info.plist приложений)
+// и свои; раскладку можно менять перетаскиванием или через контекстное меню.
+import SwiftUI
+import AppKit
+import Carbon
+import ApplicationServices
+import Security
+import UniformTypeIdentifiers
+
+let allCategory = "Все приложения"
+/// Вкладка быстрого доступа к сайтам (служебное имя, как у категорий)
+let webCategory = "Сайты"
+
+// Допустимые размеры окна — чтобы вёрстка не ломалась
+let minWindowSize = NSSize(width: 640, height: 440)
+let maxWindowSize = NSSize(width: 1100, height: 800)
+let defaultWindowSize = NSSize(width: 800, height: 679)   // +114: ещё один ряд значков (значок 52 + название 32 + отступы)
+
+let builtInNames = ["Работа", "Разработка", "Графика и фото", "Медиа", "Игры", "Общение",
+                    "Утилиты", "Образование", "Финансы", "Образ жизни", "Прочее"]
+
+func symbol(for category: String) -> String {
+    switch category {
+    case allCategory: return "square.grid.2x2.fill"
+    case webCategory: return "globe"
+    case "Работа": return "briefcase"
+    case "Разработка": return "hammer"
+    case "Графика и фото": return "paintbrush"
+    case "Медиа": return "play.rectangle"
+    case "Игры": return "gamecontroller"
+    case "Общение": return "bubble.left.and.bubble.right"
+    case "Утилиты": return "wrench.and.screwdriver"
+    case "Образование": return "book"
+    case "Финансы": return "creditcard"
+    case "Образ жизни": return "leaf"
+    case "Прочее": return "square.grid.2x2"
+    default: return "folder"
+    }
+}
+
+// MARK: - Модель
+
+struct AppItem: Identifiable, Hashable {
+    let id: String          // bundle id (или путь, если его нет)
+    let name: String
+    let path: String
+    let autoCategory: String
+}
+
+struct WebLink: Codable, Identifiable {
+    var id = UUID()
+    var title: String
+    var url: String
+    var folder: UUID? = nil
+}
+
+struct WebFolder: Codable, Identifiable {
+    var id = UUID()
+    var title: String
+}
+
+/// Черновик папки (id == nil — новая)
+struct FolderDraft: Identifiable {
+    let key = UUID()
+    var id: UUID?
+    var title: String
+}
+
+/// Черновик ссылки в окне добавления/правки (id == nil — новая)
+struct LinkDraft: Identifiable {
+    let key = UUID()
+    var id: UUID?
+    var title: String
+    var url: String
+    var folder: UUID? = nil
+}
+
+struct Config: Codable {
+    var customCategories: [String] = []
+    var assignments: [String: String] = [:]
+    var links: [WebLink]? = nil
+    var folders: [WebFolder]? = nil
+}
+
+extension Notification.Name {
+    static let languageChanged = Notification.Name("ru.local.StartMenu.languageChanged")
+}
+
+final class Store: ObservableObject, @unchecked Sendable {
+    @Published var apps: [AppItem] = []
+    @Published var customCategories: [String] = []
+    @Published var assignments: [String: String] = [:]
+    @Published var selected = allCategory
+    @Published var showTick = 0
+    @Published var uninstall: UninstallModel? = nil
+    @Published var clean: CleanModel? = nil
+    @Published var maint: MaintModel? = nil
+    @Published var big: BigFilesModel? = nil
+    @Published var pwRequest: PasswordRequest? = nil
+    @Published var language: AppLanguage = Loc.setting
+    @Published var links: [WebLink] = []
+    @Published var linkDraft: LinkDraft? = nil
+    @Published var folders: [WebFolder] = []
+    @Published var openFolder: UUID? = nil
+    @Published var folderDraft: FolderDraft? = nil
+    @Published var showSettings = false
+    var minimize: MinimizeController?
+    @Published var iconTick = 0
+    private var iconMemory: [UUID: NSImage] = [:]
+    private var iconAttempted = Set<UUID>()
+    static weak var current: Store?
+    @Published var showPermissions = false
+    @Published var fullDiskAccess = true
+    @Published var accessibility = true
+    static var suppressAutoHide = false
+
+    private var iconCache: [String: NSImage] = [:]
+    private let configURL: URL
+
+    init() {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("StartMenu", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        configURL = dir.appendingPathComponent("config.json")
+        if let data = try? Data(contentsOf: configURL),
+           let cfg = try? JSONDecoder().decode(Config.self, from: data) {
+            customCategories = cfg.customCategories
+            assignments = cfg.assignments
+            links = cfg.links ?? []
+            folders = cfg.folders ?? []
+        }
+        Store.current = self
+        rescan()
+        refreshPermissions()
+        // при первом запуске сами спрашиваем про разрешения
+        if (!fullDiskAccess || !accessibility) && !UserDefaults.standard.bool(forKey: "askedPermissions") {
+            UserDefaults.standard.set(true, forKey: "askedPermissions")
+            showPermissions = true
+        }
+    }
+
+    func refreshPermissions() {
+        fullDiskAccess = Permissions.hasFullDiskAccess()
+        accessibility = Permissions.hasAccessibility()
+    }
+
+    var permissionsOK: Bool { fullDiskAccess && accessibility }
+
+    private func save() {
+        let cfg = Config(customCategories: customCategories, assignments: assignments, links: links, folders: folders)
+        if let data = try? JSONEncoder().encode(cfg) {
+            try? data.write(to: configURL, options: .atomic)
+        }
+    }
+
+    // Категории
+
+    func category(of app: AppItem) -> String { assignments[app.id] ?? app.autoCategory }
+
+    // Быстрый доступ к сайтам
+
+    /// Адрес для открытия: если схема не указана, для IP-адреса и localhost берём http://, для сайтов https://.
+    /// Сохраняем адрес в том виде, как его ввёл пользователь.
+    static func normalizedURL(_ text: String) -> URL? {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return nil }
+        if t.contains("://") {
+            guard let u = URL(string: t), let h = u.host, !h.isEmpty,
+                  u.scheme == "http" || u.scheme == "https" else { return nil }
+            return u
+        }
+        guard let probe = URL(string: "http://" + t), let h = probe.host, !h.isEmpty else { return nil }
+        let isIPv4 = h.split(separator: ".", omittingEmptySubsequences: false).count == 4
+            && h.split(separator: ".").allSatisfy { Int($0) != nil }
+        let isIPv6 = h.contains(":")
+        if isIPv4 || isIPv6 || h == "localhost" { return probe }
+        guard h.contains(".") else { return nil }
+        return URL(string: "https://" + t)
+    }
+
+    // Значки сайтов: берём у самого сайта (apple-touch-icon / favicon) и кладём в ~/Library/Application Support/StartMenu/icons
+
+    private var iconDir: URL {
+        let dir = configURL.deletingLastPathComponent().appendingPathComponent("icons", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    func linkIcon(_ l: WebLink) -> NSImage? {
+        if let i = iconMemory[l.id] { return i }
+        if let i = NSImage(contentsOf: iconDir.appendingPathComponent("\(l.id.uuidString).png")) {
+            iconMemory[l.id] = i
+            return i
+        }
+        return nil
+    }
+
+    /// Докачивает значки тем сайтам, у которых их ещё нет (по одной попытке за запуск)
+    func ensureIcons() {
+        for l in links where linkIcon(l) == nil && !iconAttempted.contains(l.id) {
+            iconAttempted.insert(l.id)
+            fetchIcon(l)
+        }
+    }
+
+    private func forgetIcon(_ id: UUID) {
+        iconMemory[id] = nil
+        iconAttempted.remove(id)
+        try? FileManager.default.removeItem(at: iconDir.appendingPathComponent("\(id.uuidString).png"))
+    }
+
+    private func fetchIcon(_ l: WebLink) {
+        guard let base = Store.normalizedURL(l.url) else { return }
+        let id = l.id
+        let file = iconDir.appendingPathComponent("\(id.uuidString).png")
+        Task.detached(priority: .utility) { [weak self] in
+            guard let png = await Store.downloadIconPNG(for: base) else { return }
+            try? png.write(to: file, options: .atomic)
+            DispatchQueue.main.async {
+                self?.iconMemory[id] = nil
+                self?.iconTick += 1
+            }
+        }
+    }
+
+    private static func request(_ url: URL) -> URLRequest {
+        var r = URLRequest(url: url, timeoutInterval: 6)
+        r.setValue("Mozilla/5.0 (Macintosh) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+                   forHTTPHeaderField: "User-Agent")
+        return r
+    }
+
+    /// Ищет значок сайта: сперва в разметке страницы, потом /favicon.ico
+    private static func downloadIconPNG(for base: URL) async -> Data? {
+        var candidates: [(Int, URL)] = []
+        if let (data, _) = try? await URLSession.shared.data(for: request(base)) {
+            let html = String(decoding: data.prefix(600_000), as: UTF8.self)
+            let tagRx = try? NSRegularExpression(pattern: "<link[^>]+>", options: [.caseInsensitive])
+            let relRx = try? NSRegularExpression(pattern: "rel\\s*=\\s*[\"']([^\"']+)[\"']", options: [.caseInsensitive])
+            let hrefRx = try? NSRegularExpression(pattern: "href\\s*=\\s*[\"']([^\"']+)[\"']", options: [.caseInsensitive])
+            func first(_ rx: NSRegularExpression?, _ str: String) -> String? {
+                let ns = str as NSString
+                guard let m = rx?.firstMatch(in: str, range: NSRange(location: 0, length: ns.length)), m.numberOfRanges > 1 else { return nil }
+                return ns.substring(with: m.range(at: 1))
+            }
+            let ns = html as NSString
+            for m in tagRx?.matches(in: html, range: NSRange(location: 0, length: ns.length)) ?? [] {
+                let tag = ns.substring(with: m.range)
+                guard let rel = first(relRx, tag)?.lowercased(), rel.contains("icon"),
+                      let href = first(hrefRx, tag),
+                      let u = URL(string: href.replacingOccurrences(of: "&amp;", with: "&"), relativeTo: base)?.absoluteURL else { continue }
+                candidates.append((rel.contains("apple-touch") ? 0 : 1, u))
+            }
+        }
+        candidates.sort { $0.0 < $1.0 }
+        var urls = candidates.map { $0.1 }
+        if var c = URLComponents(url: base, resolvingAgainstBaseURL: true) {
+            c.path = "/favicon.ico"; c.query = nil; c.fragment = nil
+            if let u = c.url { urls.append(u) }
+        }
+        for u in urls {
+            guard let (data, resp) = try? await URLSession.shared.data(for: request(u)),
+                  (resp as? HTTPURLResponse)?.statusCode ?? 200 < 400,
+                  let img = NSImage(data: data), img.size.width >= 16,
+                  let tiff = img.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
+                  let png = rep.representation(using: .png, properties: [:]) else { continue }
+            return png
+        }
+        return nil
+    }
+
+    func saveLink(_ d: LinkDraft) {
+        guard let u = Store.normalizedURL(d.url) else { return }
+        let title = d.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let typed = d.url.trimmingCharacters(in: .whitespacesAndNewlines)
+        let existing = d.id.flatMap { id in links.first(where: { $0.id == id }) }
+        let link = WebLink(id: d.id ?? UUID(), title: title.isEmpty ? (u.host ?? typed) : title, url: typed,
+                           folder: existing?.folder ?? d.folder)
+        if let id = d.id, let i = links.firstIndex(where: { $0.id == id }) {
+            if links[i].url != link.url { forgetIcon(id) }
+            links[i] = link
+        } else { links.append(link) }
+        save()
+        ensureIcons()
+    }
+
+    func saveFolder(_ d: FolderDraft) {
+        let t = d.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return }
+        if let id = d.id, let i = folders.firstIndex(where: { $0.id == id }) { folders[i].title = t }
+        else { folders.append(WebFolder(title: t)) }
+        save()
+    }
+
+    /// Удаляет папку; сайты из неё не пропадают, а выходят в корень вкладки
+    func deleteFolder(_ f: WebFolder) {
+        for i in links.indices where links[i].folder == f.id { links[i].folder = nil }
+        folders.removeAll { $0.id == f.id }
+        if openFolder == f.id { openFolder = nil }
+        save()
+    }
+
+    func moveLink(_ id: UUID, to folder: UUID?) {
+        guard let i = links.firstIndex(where: { $0.id == id }), links[i].folder != folder else { return }
+        links[i].folder = folder
+        save()
+    }
+
+    func deleteLink(_ l: WebLink) {
+        links.removeAll { $0.id == l.id }
+        forgetIcon(l.id)
+        save()
+    }
+
+    func setLanguage(_ l: AppLanguage) {
+        Loc.setting = l
+        language = l
+        NotificationCenter.default.post(name: .languageChanged, object: nil)
+    }
+
+    var categoryList: [String] {
+        let used = Set(apps.map { category(of: $0) })
+        var builtIn = used.subtracting(customCategories).sorted()
+        if let i = builtIn.firstIndex(of: "Прочее") { builtIn.remove(at: i); builtIn.append("Прочее") }
+        return builtIn + customCategories
+    }
+
+    var assignableCategories: [String] {
+        builtInNames + customCategories
+    }
+
+    var currentSelection: String {
+        (selected == allCategory || selected == webCategory || categoryList.contains(selected)) ? selected : allCategory
+    }
+
+    func count(in category: String) -> Int {
+        category == webCategory ? links.count : category == allCategory ? apps.count : apps.filter { self.category(of: $0) == category }.count
+    }
+
+    func isValidNewName(_ name: String) -> Bool {
+        !name.isEmpty && name != allCategory && name != webCategory && !builtInNames.contains(name) && !customCategories.contains(name)
+    }
+
+    func addCategory(_ raw: String) {
+        let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard isValidNewName(name) else { return }
+        customCategories.append(name)
+        selected = name
+        save()
+    }
+
+    func renameCategory(_ old: String, to raw: String) {
+        let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard name != old, isValidNewName(name), let i = customCategories.firstIndex(of: old) else { return }
+        customCategories[i] = name
+        for (k, v) in assignments where v == old { assignments[k] = name }
+        if selected == old { selected = name }
+        save()
+    }
+
+    func deleteCategory(_ name: String) {
+        customCategories.removeAll { $0 == name }
+        assignments = assignments.filter { $0.value != name }
+        if selected == name { selected = allCategory }
+        save()
+    }
+
+    func assign(id: String, to category: String) {
+        guard let app = apps.first(where: { $0.id == id }) else { return }
+        assign(app, to: category)
+    }
+
+    func assign(_ app: AppItem, to category: String) {
+        if category == app.autoCategory { assignments.removeValue(forKey: app.id) }
+        else { assignments[app.id] = category }
+        save()
+    }
+
+    func resetAssignment(_ app: AppItem) {
+        assignments.removeValue(forKey: app.id)
+        save()
+    }
+
+    // Удаление
+
+    func beginUninstall(_ app: AppItem) {
+        let m = UninstallModel(app: app)
+        m.wasRunning = Uninstaller.isRunning(app)
+        uninstall = m
+        let ids = Set(apps.map { $0.id })
+        DispatchQueue.global(qos: .userInitiated).async {
+            var items = Uninstaller.find(for: app, installedIDs: ids)
+            for i in items.indices { items[i].size = Uninstaller.size(of: items[i].url) }
+            DispatchQueue.main.async {
+                m.items = items
+                m.stage = .review
+            }
+        }
+    }
+
+    func performUninstall(_ m: UninstallModel) {
+        m.stage = .working
+        m.workText = T("Перемещаю в Корзину…")
+        Store.suppressAutoHide = true
+        let selected = m.selectedItems
+        let direct = selected.filter { !$0.needsAdmin }
+        let app = m.app
+        DispatchQueue.global(qos: .userInitiated).async {
+            // закрываем приложение, если оно запущено
+            if let bid = Uninstaller.bundleID(of: app) {
+                let running = NSRunningApplication.runningApplications(withBundleIdentifier: bid)
+                running.forEach { $0.terminate() }
+                var waited = 0
+                while running.contains(where: { !$0.isTerminated }) && waited < 30 {
+                    usleep(100_000); waited += 1
+                }
+                running.filter { !$0.isTerminated }.forEach { $0.forceTerminate() }
+                if !running.isEmpty { usleep(300_000) }
+            }
+            DispatchQueue.main.async {
+                if direct.isEmpty {
+                    self.afterRecycle(m, selected: selected, trashedPaths: [])
+                } else {
+                    NSWorkspace.shared.recycle(direct.map { $0.url }) { trashed, _ in
+                        DispatchQueue.main.async {
+                            self.afterRecycle(m, selected: selected, trashedPaths: Set(trashed.keys.map { $0.path }))
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func afterRecycle(_ m: UninstallModel, selected: [Leftover], trashedPaths: Set<String>) {
+        m.trashedCount = selected.filter { trashedPaths.contains($0.url.path) }.count
+        let remaining = selected.filter { !trashedPaths.contains($0.url.path) }.map { $0.url.path }
+        if remaining.isEmpty { finishUninstall(m, failed: []) }
+        else { removeWithAdmin(m, paths: remaining) }
+    }
+
+    /// То, что не удалось переместить в Корзину, удаляем с правами администратора (запрашивается пароль)
+    func removeWithAdmin(_ m: UninstallModel, paths: [String]) {
+        m.stage = .working
+        m.workText = T("Введите пароль администратора в окне системы…")
+        Store.suppressAutoHide = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            _ = Uninstaller.removeAsAdmin(paths)
+            DispatchQueue.main.async {
+                let fm = FileManager.default
+                let left = paths.filter { fm.fileExists(atPath: $0) }
+                m.adminRemoved += paths.count - left.count
+                self.finishUninstall(m, failed: left)
+            }
+        }
+    }
+
+    private func finishUninstall(_ m: UninstallModel, failed: [String]) {
+        m.failed = failed
+        if !FileManager.default.fileExists(atPath: m.app.path) {
+            assignments.removeValue(forKey: m.app.id)
+            save()
+        }
+        m.stage = .done
+        Store.suppressAutoHide = false
+        rescan()
+    }
+
+    // Очистка мусора
+
+    func beginClean() {
+        let m = CleanModel()
+        clean = m
+        let ids = Set(apps.map { $0.id }.filter { !$0.hasPrefix("/") })
+        DispatchQueue.global(qos: .userInitiated).async {
+            let cats = Junk.scan(installedIDs: ids) { text in
+                DispatchQueue.main.async { m.scanText = text }
+            }
+            DispatchQueue.main.async {
+                m.categories = cats
+                m.stage = .review
+            }
+        }
+    }
+
+    func performClean(_ m: CleanModel) {
+        m.stage = .working
+        m.workText = T("Удаляю…")
+        Store.suppressAutoHide = true
+        let items = m.selectedItems
+        DispatchQueue.global(qos: .userInitiated).async {
+            let fm = FileManager.default
+            var freed: Int64 = 0
+            var removed = 0
+            var failed: [JunkItem] = []
+            for it in items {
+                if it.needsAdmin { failed.append(it); continue }
+                do { try fm.removeItem(at: it.url); freed += it.size; removed += 1 }
+                catch { failed.append(it) }
+            }
+            // системные файлы удаляем с паролем администратора
+            let admin = failed.filter { $0.needsAdmin }
+            if !admin.isEmpty {
+                DispatchQueue.main.async { m.workText = T("Введите пароль администратора в окне системы…") }
+                _ = Uninstaller.removeAsAdmin(admin.map { $0.url.path })
+                for it in admin where !fm.fileExists(atPath: it.url.path) {
+                    freed += it.size; removed += 1
+                }
+            }
+            let left = failed.filter { fm.fileExists(atPath: $0.url.path) }.map { $0.url.path }
+            DispatchQueue.main.async {
+                m.freed = freed
+                m.removedCount = removed
+                m.failed = left
+                m.stage = .done
+                Store.suppressAutoHide = false
+            }
+        }
+    }
+
+    // Обслуживание
+
+    func beginMaint() { maint = MaintModel() }
+
+    func runMaint(_ m: MaintModel) {
+        let ids = m.tasks.filter { $0.selected }.map { $0.id }
+        guard !ids.isEmpty, !m.running else { return }
+        m.running = true
+        m.note = T("Выполняю…")
+        Store.suppressAutoHide = true
+        for id in ids { m.set(id, .running) }
+        DispatchQueue.global(qos: .userInitiated).async {
+            // 1. то, что не требует пароля
+            for id in ids {
+                if let result = Maintenance.runUser(id) {
+                    DispatchQueue.main.async { m.set(id, result) }
+                }
+            }
+            // 2. всё, что требует администратора, — одним запуском и одним вводом пароля
+            let adminIDs = ids.filter { Maintenance.adminCommand($0) != nil }
+            if !adminIDs.isEmpty {
+                DispatchQueue.main.async { m.note = T("Введите пароль администратора в окне системы…") }
+                let script = adminIDs.map { "\(Maintenance.adminCommand($0)!); echo \"@@\($0):$?\"" }
+                    .joined(separator: "\n")
+                let res = Admin.run(tool: "/bin/sh", args: ["-c", script])
+                var codes: [String: String] = [:]
+                for line in res.output.split(separator: "\n") where line.hasPrefix("@@") {
+                    let parts = line.dropFirst(2).split(separator: ":")
+                    if parts.count == 2 { codes[String(parts[0])] = String(parts[1]) }
+                }
+                DispatchQueue.main.async {
+                    for id in adminIDs {
+                        if !res.ok { m.set(id, .failed(Tf("Нет прав администратора: %@", "\(res.detail)"))) }
+                        else if codes[id] == "0" { m.set(id, .ok(T("Готово"))) }
+                        else { m.set(id, .failed(Tf("Не удалось (код %@)", "\(codes[id] ?? "?")"))) }
+                    }
+                }
+            }
+            DispatchQueue.main.async {
+                m.running = false
+                m.note = ""
+                Store.suppressAutoHide = false
+            }
+        }
+    }
+
+    // Большие и старые файлы
+
+    func beginBig() {
+        let m = BigFilesModel()
+        big = m
+        DispatchQueue.global(qos: .userInitiated).async {
+            let files = BigFiles.scan { text in
+                DispatchQueue.main.async { m.scanText = text }
+            }
+            DispatchQueue.main.async {
+                m.items = files
+                m.stage = .review
+            }
+        }
+    }
+
+    func performBig(_ m: BigFilesModel) {
+        m.stage = .working
+        let selected = m.selectedVisible
+        NSWorkspace.shared.recycle(selected.map { $0.url }) { trashed, _ in
+            DispatchQueue.main.async {
+                let ok = Set(trashed.keys.map { $0.path })
+                let done = selected.filter { ok.contains($0.url.path) }
+                m.trashedCount = done.count
+                m.trashedSize = done.reduce(0) { $0 + $1.size }
+                m.failed = selected.filter { !ok.contains($0.url.path) }.map { $0.url.path }
+                m.items.removeAll { f in ok.contains(f.url.path) }
+                m.stage = .done
+            }
+        }
+    }
+
+    // Иконки
+
+    func icon(for app: AppItem) -> NSImage {
+        if let i = iconCache[app.id] { return i }
+        let i = NSWorkspace.shared.icon(forFile: app.path)
+        iconCache[app.id] = i
+        return i
+    }
+
+    // Сканирование
+
+    func rescan() {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let found = Store.scan()
+            DispatchQueue.main.async { self.apps = found }
+        }
+    }
+
+    static func mapCategory(_ type: String) -> String {
+        let s = type.replacingOccurrences(of: "public.app-category.", with: "")
+        if s.hasSuffix("games") { return "Игры" }
+        switch s {
+        case "productivity", "business": return "Работа"
+        case "developer-tools": return "Разработка"
+        case "graphics-design", "photography": return "Графика и фото"
+        case "music", "video", "entertainment": return "Медиа"
+        case "social-networking": return "Общение"
+        case "utilities": return "Утилиты"
+        case "education", "reference", "news", "books": return "Образование"
+        case "finance": return "Финансы"
+        case "lifestyle", "healthcare-fitness", "medical", "food-drink", "travel", "weather", "sports", "navigation":
+            return "Образ жизни"
+        default: return "Прочее"
+        }
+    }
+
+    static func scan() -> [AppItem] {
+        let fm = FileManager.default
+        let roots = ["/Applications", "/System/Applications", NSHomeDirectory() + "/Applications"]
+        let myID = Bundle.main.bundleIdentifier
+        var result: [String: AppItem] = [:]
+
+        func add(_ url: URL) {
+            let info = Bundle(url: url)?.infoDictionary
+            let bid = info?["CFBundleIdentifier"] as? String
+            if bid != nil && bid == myID { return }
+            let id = bid ?? url.path
+            if result[id] != nil { return }
+            var name = fm.displayName(atPath: url.path)
+            if name.hasSuffix(".app") { name = String(name.dropLast(4)) }
+            var cat: String
+            if let t = info?["LSApplicationCategoryType"] as? String { cat = mapCategory(t) }
+            else { cat = "Прочее" }
+            if cat == "Прочее" && url.path.contains("/Utilities/") { cat = "Утилиты" }
+            result[id] = AppItem(id: id, name: name, path: url.path, autoCategory: cat)
+        }
+
+        func walk(_ dir: URL, depth: Int) {
+            guard let items = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.isDirectoryKey],
+                                                          options: [.skipsHiddenFiles]) else { return }
+            for u in items {
+                if u.pathExtension == "app" { add(u) }
+                else if depth < 2, (try? u.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
+                    walk(u, depth: depth + 1)
+                }
+            }
+        }
+
+        for r in roots { walk(URL(fileURLWithPath: r), depth: 0) }
+        return result.values.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+}
+
+// MARK: - Удаление приложений
+
+struct Leftover: Identifiable {
+    let id = UUID()
+    let url: URL
+    let kind: String
+    var size: Int64 = 0
+    var selected: Bool = true
+    var needsAdmin: Bool = false
+}
+
+final class UninstallModel: ObservableObject {
+    enum Stage { case scanning, review, confirm, working, done }
+    let app: AppItem
+    @Published var stage: Stage = .scanning
+    @Published var items: [Leftover] = []
+    @Published var wasRunning = false
+    @Published var trashedCount = 0
+    @Published var adminRemoved = 0
+    @Published var workText = T("Перемещаю в Корзину…")
+    @Published var failed: [String] = []
+    init(app: AppItem) { self.app = app }
+    var selectedItems: [Leftover] { items.filter { $0.selected } }
+    var selectedSize: Int64 { selectedItems.reduce(0) { $0 + $1.size } }
+}
+
+enum Uninstaller {
+    static func bundleID(of app: AppItem) -> String? { Bundle(path: app.path)?.bundleIdentifier }
+
+    static func isRunning(_ app: AppItem) -> Bool {
+        guard let bid = bundleID(of: app) else { return false }
+        return !NSRunningApplication.runningApplications(withBundleIdentifier: bid).isEmpty
+    }
+
+    /// Имена, которые никогда не считаем «остатками» по совпадению названия — это данные самой системы
+    private static let protectedNames: Set<String> = [
+        "mail", "safari", "messages", "calendars", "calendar", "addressbook", "contacts", "photos", "notes",
+        "icloud", "clouddocs", "knowledge", "music", "tv", "podcasts", "books", "keychains", "preferences",
+        "caches", "logs", "containers", "fonts", "colorsync", "dock", "finder", "mobile documents"
+    ]
+
+    static func find(for app: AppItem, installedIDs: Set<String>) -> [Leftover] {
+        let fm = FileManager.default
+        let home = NSHomeDirectory()
+        let info = Bundle(path: app.path)?.infoDictionary
+        let bid = info?["CFBundleIdentifier"] as? String
+        let exe = info?["CFBundleExecutable"] as? String
+        let fileName = ((app.path as NSString).lastPathComponent as NSString).deletingPathExtension
+        let appIsApple = bid?.hasPrefix("com.apple.") ?? false
+
+        let names: Set<String> = Set([app.name, fileName, exe ?? ""]
+            .filter { $0.count >= 3 }
+            .map { $0.lowercased() }
+            .filter { !protectedNames.contains($0) })
+
+        func stem(_ n: String) -> String {
+            for suf in [".plist", ".savedState", ".binarycookies", ".binarycookies-journal"] where n.hasSuffix(suf) {
+                return String(n.dropLast(suf.count))
+            }
+            return n
+        }
+        func idMatch(_ n: String) -> Bool {
+            guard let bid = bid else { return false }
+            if n.hasPrefix("com.apple.") && !appIsApple { return false }
+            let st = stem(n)
+            guard st == bid || st.hasPrefix(bid + ".") else { return false }
+            // запись принадлежит другому установленному приложению (например, Chrome и Chrome.canary)
+            for other in installedIDs where other != app.id && other.count > bid.count && other.hasPrefix(bid + ".") {
+                if st == other || st.hasPrefix(other + ".") { return false }
+            }
+            return true
+        }
+        func nameMatch(_ n: String) -> Bool { names.contains(n.lowercased()) }
+        func reportMatch(_ n: String) -> Bool {
+            let l = n.lowercased()
+            return names.contains { l.hasPrefix($0 + "_") || l.hasPrefix($0 + "-") }
+        }
+
+        struct Spec { let dir: String; let kind: String; let match: (String) -> Bool }
+        let U = home + "/Library"
+        let S = "/Library"
+        let anyMatch: (String) -> Bool = { idMatch($0) || nameMatch($0) }
+        let groupMatch: (String) -> Bool = { n in
+            guard let bid = bid else { return false }
+            return n.contains(bid) && !n.hasPrefix("com.apple.") || (appIsApple && n.contains(bid))
+        }
+        let specs: [Spec] = [
+            Spec(dir: U + "/Application Support", kind: "Данные приложения", match: anyMatch),
+            Spec(dir: U + "/Caches", kind: "Кэш", match: anyMatch),
+            Spec(dir: U + "/Preferences", kind: "Настройки", match: idMatch),
+            Spec(dir: U + "/Preferences/ByHost", kind: "Настройки", match: idMatch),
+            Spec(dir: U + "/Containers", kind: "Контейнер", match: idMatch),
+            Spec(dir: U + "/Group Containers", kind: "Общие данные", match: groupMatch),
+            Spec(dir: U + "/Saved Application State", kind: "Состояние окон", match: idMatch),
+            Spec(dir: U + "/Logs", kind: "Логи", match: anyMatch),
+            Spec(dir: U + "/Logs/DiagnosticReports", kind: "Отчёты о сбоях", match: reportMatch),
+            Spec(dir: U + "/Application Support/CrashReporter", kind: "Отчёты о сбоях", match: reportMatch),
+            Spec(dir: U + "/WebKit", kind: "Данные WebKit", match: idMatch),
+            Spec(dir: U + "/HTTPStorages", kind: "Сетевое хранилище", match: idMatch),
+            Spec(dir: U + "/Cookies", kind: "Cookies", match: idMatch),
+            Spec(dir: U + "/Application Scripts", kind: "Скрипты", match: idMatch),
+            Spec(dir: U + "/LaunchAgents", kind: "Автозапуск", match: idMatch),
+            Spec(dir: S + "/Application Support", kind: "Данные (система)", match: anyMatch),
+            Spec(dir: S + "/Caches", kind: "Кэш (система)", match: anyMatch),
+            Spec(dir: S + "/Preferences", kind: "Настройки (система)", match: idMatch),
+            Spec(dir: S + "/LaunchAgents", kind: "Автозапуск (система)", match: idMatch),
+            Spec(dir: S + "/LaunchDaemons", kind: "Службы (система)", match: idMatch),
+            Spec(dir: S + "/PrivilegedHelperTools", kind: "Помощник (система)", match: idMatch),
+        ]
+
+        var found: [String: Leftover] = [:]
+        found[app.path] = Leftover(url: URL(fileURLWithPath: app.path), kind: "Приложение",
+                                   needsAdmin: !fm.isDeletableFile(atPath: app.path))
+        for spec in specs {
+            guard let entries = try? fm.contentsOfDirectory(atPath: spec.dir) else { continue }
+            for n in entries where spec.match(n) {
+                let p = spec.dir + "/" + n
+                if found[p] != nil { continue }
+                found[p] = Leftover(url: URL(fileURLWithPath: p), kind: spec.kind,
+                                    needsAdmin: !fm.isDeletableFile(atPath: p))
+            }
+        }
+        return found.values.sorted { a, b in
+            if (a.kind == "Приложение") != (b.kind == "Приложение") { return a.kind == "Приложение" }
+            return a.url.path < b.url.path
+        }
+    }
+
+    /// Удаляет пути навсегда с правами администратора.
+    /// Используется стандартное окно авторизации macOS (то же, что у установщиков): имя пользователя подставляется само.
+    static func removeAsAdmin(_ paths: [String]) -> Bool {
+        let home = NSHomeDirectory()
+        let safe = paths.filter { p in
+            let comps = (p as NSString).pathComponents
+            return p.hasPrefix("/") && comps.count >= 3 && !comps.contains("..")
+                && !p.hasPrefix("/System/") && p != home
+        }
+        guard !safe.isEmpty else { return false }
+
+        return Admin.run(tool: "/bin/rm", args: ["-rf", "--"] + safe).ok
+    }
+
+    static func size(of url: URL) -> Int64 {
+        let fm = FileManager.default
+        var isDir: ObjCBool = false
+        guard fm.fileExists(atPath: url.path, isDirectory: &isDir) else { return 0 }
+        let keys: Set<URLResourceKey> = [.totalFileAllocatedSizeKey, .fileAllocatedSizeKey, .isRegularFileKey]
+        if !isDir.boolValue {
+            let v = try? url.resourceValues(forKeys: keys)
+            return Int64(v?.totalFileAllocatedSize ?? v?.fileAllocatedSize ?? 0)
+        }
+        guard let en = fm.enumerator(at: url, includingPropertiesForKeys: Array(keys), options: [],
+                                     errorHandler: { _, _ in true }) else { return 0 }
+        var total: Int64 = 0
+        for case let u as URL in en {
+            if let v = try? u.resourceValues(forKeys: keys), v.isRegularFile == true {
+                total += Int64(v.totalFileAllocatedSize ?? v.fileAllocatedSize ?? 0)
+            }
+        }
+        return total
+    }
+}
+
+struct UninstallOverlay: View {
+    @ObservedObject var model: UninstallModel
+    let store: Store
+
+    private func fmt(_ b: Int64) -> String { ByteCountFormatter.string(fromByteCount: b, countStyle: .file) }
+    private func shortDir(_ u: URL) -> String {
+        u.deletingLastPathComponent().path.replacingOccurrences(of: NSHomeDirectory(), with: "~")
+    }
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.4).contentShape(Rectangle()).onTapGesture { }
+            VStack(spacing: 0) {
+                header
+                Divider()
+                content
+            }
+            .frame(width: 540, height: 400)
+            .background(RoundedRectangle(cornerRadius: 12).fill(Color(NSColor.windowBackgroundColor)))
+            .shadow(radius: 20)
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: 12) {
+            Image(nsImage: store.icon(for: model.app)).resizable().frame(width: 40, height: 40)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(Tf("Удаление «%@»", "\(model.app.name)")).font(.headline)
+                Text(T("Приложение и связанные с ним файлы")).font(.caption).foregroundColor(.secondary)
+            }
+            Spacer()
+        }
+        .padding(14)
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch model.stage {
+        case .scanning:
+            VStack(spacing: 12) {
+                Spacer()
+                ProgressView()
+                Text(T("Ищу связанные файлы…")).foregroundColor(.secondary)
+                Spacer()
+                HStack { Spacer(); Button(T("Отмена")) { store.uninstall = nil } }.padding(12)
+            }
+        case .review:
+            review
+        case .confirm:
+            confirm
+        case .working:
+            VStack(spacing: 12) {
+                Spacer()
+                ProgressView()
+                Text(model.workText).foregroundColor(.secondary).multilineTextAlignment(.center).padding(.horizontal, 24)
+                Spacer()
+            }
+        case .done:
+            done
+        }
+    }
+
+    private var review: some View {
+        VStack(spacing: 0) {
+            if model.wasRunning {
+                Label(T("Приложение запущено — оно будет закрыто перед удалением"), systemImage: "exclamationmark.triangle")
+                    .font(.caption).foregroundColor(.orange).padding(.top, 8)
+            }
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach($model.items) { $item in row($item) }
+                }
+                .padding(.horizontal, 14)
+            }
+            Divider()
+            HStack {
+                Text(Tf("Выбрано: %@ из %@ · %@", "\(model.selectedItems.count)", "\(model.items.count)", "\(fmt(model.selectedSize))"))
+                    .font(.callout)
+                Spacer()
+                Button(T("Отмена")) { store.uninstall = nil }
+                Button(T("Удалить…")) { model.stage = .confirm }
+                    .disabled(model.selectedItems.isEmpty)
+            }
+            .padding(12)
+        }
+    }
+
+    private func row(_ item: Binding<Leftover>) -> some View {
+        HStack(spacing: 8) {
+            Toggle("", isOn: item.selected).labelsHidden().toggleStyle(.checkbox)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(item.wrappedValue.url.lastPathComponent).lineLimit(1)
+                Text(shortDir(item.wrappedValue.url))
+                    .font(.caption).foregroundColor(.secondary)
+                    .lineLimit(1).truncationMode(.middle)
+            }
+            Spacer(minLength: 8)
+            if item.wrappedValue.needsAdmin {
+                Image(systemName: "lock").foregroundColor(.secondary).help(T("Могут понадобиться права администратора"))
+            }
+            VStack(alignment: .trailing, spacing: 1) {
+                Text(T(item.wrappedValue.kind)).font(.caption).foregroundColor(.secondary)
+                Text(fmt(item.wrappedValue.size)).font(.caption)
+            }
+        }
+        .padding(.vertical, 5).padding(.horizontal, 6)
+        .hoverHighlight(6)
+        .contentShape(Rectangle())
+        .onTapGesture { item.wrappedValue.selected.toggle() }
+    }
+
+    private var confirm: some View {
+        VStack(spacing: 12) {
+            Spacer()
+            Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 36)).foregroundColor(.orange)
+            Text(T("Вы уверены?")).font(.title3.bold())
+            Text(Tf("В Корзину будет перемещено объектов: %@ (%@).\n", "\(model.selectedItems.count)", "\(fmt(model.selectedSize))")
+                 + (model.wasRunning ? T("Приложение сейчас запущено и будет закрыто.\n") : "")
+                 + T("Вернуть файлы можно из Корзины, пока вы её не очистили.\n")
+                 + T("Что не удастся переместить в Корзину (нужны права администратора), будет удалено сразу и безвозвратно — система запросит пароль."))
+                .multilineTextAlignment(.center)
+                .foregroundColor(.secondary)
+                .padding(.horizontal, 24)
+            Spacer()
+            HStack {
+                Button(T("Нет, вернуться")) { model.stage = .review }
+                Button(T("Да, удалить")) { store.performUninstall(model) }
+                    .foregroundColor(.red)
+            }
+            .padding(.bottom, 16)
+        }
+    }
+
+    private var done: some View {
+        VStack(spacing: 10) {
+            Spacer()
+            Image(systemName: model.failed.isEmpty ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                .font(.system(size: 36))
+                .foregroundColor(model.failed.isEmpty ? .green : .orange)
+            Text(Tf("Перемещено в Корзину: %@", "\(model.trashedCount)")).font(.title3.bold())
+            if model.adminRemoved > 0 {
+                Text(Tf("Удалено с паролем администратора (без Корзины): %@", "\(model.adminRemoved)"))
+                    .font(.callout).foregroundColor(.secondary)
+            }
+            if !model.failed.isEmpty {
+                Text(Tf("Не удалось удалить (%@). Пароль не введён, файл защищён системой или нужен «Полный доступ к диску» для «Пуск»:", "\(model.failed.count)"))
+                    .font(.caption).foregroundColor(.secondary)
+                    .multilineTextAlignment(.center).padding(.horizontal, 24)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(model.failed, id: \.self) { p in
+                            Text(p.replacingOccurrences(of: NSHomeDirectory(), with: "~"))
+                                .font(.caption).lineLimit(1).truncationMode(.middle)
+                        }
+                    }
+                    .padding(.horizontal, 24)
+                }
+                .frame(maxHeight: 90)
+            }
+            Spacer()
+            HStack {
+                if !model.failed.isEmpty {
+                    Button(T("Повторить с паролем")) { store.removeWithAdmin(model, paths: model.failed) }
+                }
+                Button(T("Закрыть")) { store.uninstall = nil }
+            }
+            .padding(.bottom, 16)
+        }
+    }
+}
+
+// MARK: - Разрешения
+
+enum Permissions {
+    /// Полный доступ к диску: без него системная база TCC не открывается на чтение
+    static func hasFullDiskAccess() -> Bool {
+        let fd = open("/Library/Application Support/com.apple.TCC/TCC.db", O_RDONLY)
+        if fd >= 0 { close(fd); return true }
+        return false
+    }
+
+    /// Универсальный доступ (Accessibility): нужен для «Свернуть всё»
+    static func hasAccessibility() -> Bool { AXIsProcessTrusted() }
+
+    static func requestAccessibility() {
+        _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
+    }
+
+    static func openAccessibilityPane() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    static func openFullDiskAccessPane() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    static func revealApp() {
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: Bundle.main.bundlePath)])
+    }
+
+    /// Запрошенный доступ вступает в силу только после перезапуска приложения
+    static func relaunch() {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/sh")
+        p.arguments = ["-c", "sleep 1; open \"$0\"", Bundle.main.bundlePath]
+        try? p.run()
+        NSApp.terminate(nil)
+    }
+}
+
+struct PermissionsOverlay: View {
+    @ObservedObject var store: Store
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.4).contentShape(Rectangle()).onTapGesture { }
+            VStack(spacing: 0) {
+                HStack(spacing: 12) {
+                    Image(systemName: "lock.shield").font(.system(size: 28)).foregroundColor(.accentColor)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(T("Разрешения")).font(.headline)
+                        Text(T("Что нужно «Пуск» для полного удаления приложений")).font(.caption).foregroundColor(.secondary)
+                    }
+                    Spacer()
+                }
+                .padding(14)
+                Divider()
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 14) {
+                        fullDisk
+                        accessibilityRow
+                        info("key", T("Права администратора"),
+                             T("Заранее не нужны. Окно с паролем появится само, когда понадобится удалить файлы в /Library."))
+                        info("lock.open", T("Данные других приложений"),
+                             T("Если macOS спросит про доступ к данным других приложений — нажмите «Разрешить». Полный доступ к диску снимает эти вопросы."))
+                    }
+                    .padding(14)
+                }
+                Divider()
+                HStack {
+                    Spacer()
+                    Button(T("Закрыть")) { store.showPermissions = false }
+                }
+                .padding(12)
+            }
+            .frame(width: 540, height: 400)
+            .background(RoundedRectangle(cornerRadius: 12).fill(Color(NSColor.windowBackgroundColor)))
+            .shadow(radius: 20)
+        }
+        .onAppear { store.refreshPermissions() }
+    }
+
+    private var fullDisk: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: store.fullDiskAccess ? "checkmark.circle.fill" : "xmark.circle.fill")
+                    .foregroundColor(store.fullDiskAccess ? .green : .orange)
+                Text(T("Полный доступ к диску")).font(.system(size: 13, weight: .semibold))
+                Spacer()
+                Text(store.fullDiskAccess ? T("Выдан") : T("Не выдан"))
+                    .font(.caption).foregroundColor(.secondary)
+            }
+            Text(T("Нужен, чтобы полностью чистить данные приложений: контейнеры, почту, данные Safari и другие защищённые папки."))
+                .font(.caption).foregroundColor(.secondary)
+            if !store.fullDiskAccess {
+                Text(T("1. Нажмите «Открыть настройки».\n2. Нажмите «+» и выберите «Пуск» (кнопка «Показать в Finder» покажет файл, его можно перетащить в список).\n3. Включите переключатель и нажмите «Перезапустить»."))
+                    .font(.caption)
+                HStack {
+                    Button(T("Открыть настройки")) { Permissions.openFullDiskAccessPane() }
+                    Button(T("Показать в Finder")) { Permissions.revealApp() }
+                    Button(T("Проверить снова")) { store.refreshPermissions() }
+                    Button(T("Перезапустить")) { Permissions.relaunch() }
+                }
+            }
+        }
+    }
+
+    private var accessibilityRow: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: store.accessibility ? "checkmark.circle.fill" : "xmark.circle.fill")
+                    .foregroundColor(store.accessibility ? .green : .orange)
+                Text(T("Универсальный доступ")).font(.system(size: 13, weight: .semibold))
+                Spacer()
+                Text(store.accessibility ? T("Выдан") : T("Не выдан"))
+                    .font(.caption).foregroundColor(.secondary)
+            }
+            Text(T("Нужен для «Свернуть всё»: кнопка в строке меню, горячая клавиша и сворачивание кликом по иконке в Dock."))
+                .font(.caption).foregroundColor(.secondary)
+            if !store.accessibility {
+                HStack {
+                    Button(T("Запросить")) { Permissions.requestAccessibility() }
+                    Button(T("Открыть настройки")) { Permissions.openAccessibilityPane() }
+                    Button(T("Проверить снова")) { store.refreshPermissions() }
+                }
+            }
+        }
+    }
+
+    private func info(_ symbol: String, _ title: String, _ text: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Image(systemName: symbol).foregroundColor(.secondary)
+                Text(title).font(.system(size: 13, weight: .semibold))
+            }
+            Text(text).font(.caption).foregroundColor(.secondary)
+        }
+    }
+}
+
+// MARK: - Очистка мусора (как «Системный мусор» в CleanMyMac)
+
+struct JunkItem: Identifiable {
+    let id = UUID()
+    let url: URL
+    var size: Int64
+    var needsAdmin: Bool
+    var selected = false
+}
+
+struct JunkCategory: Identifiable {
+    let id: String
+    let title: String
+    let symbol: String
+    let note: String
+    var items: [JunkItem]
+    var expanded = false
+    var size: Int64 { items.reduce(0) { $0 + $1.size } }
+    var selectedCount: Int { items.filter { $0.selected }.count }
+    var selectedSize: Int64 { items.filter { $0.selected }.reduce(0) { $0 + $1.size } }
+    var allSelected: Bool { !items.isEmpty && selectedCount == items.count }
+    mutating func setAll(_ on: Bool) { for i in items.indices { items[i].selected = on } }
+}
+
+final class CleanModel: ObservableObject {
+    enum Stage { case scanning, review, confirm, working, done }
+    @Published var stage: Stage = .scanning
+    @Published var categories: [JunkCategory] = []
+    @Published var scanText = T("Начинаю проверку…")
+    @Published var workText = T("Удаляю…")
+    @Published var freed: Int64 = 0
+    @Published var removedCount = 0
+    @Published var failed: [String] = []
+    var selectedItems: [JunkItem] { categories.flatMap { $0.items.filter { $0.selected } } }
+    var selectedSize: Int64 { categories.reduce(0) { $0 + $1.selectedSize } }
+    var totalSize: Int64 { categories.reduce(0) { $0 + $1.size } }
+}
+
+enum Junk {
+    private static let skipNames: Set<String> = [".DS_Store", ".localized", ".com.apple.timemachine.donotpresent"]
+
+    static func children(_ dir: String, skip: (String) -> Bool = { _ in false }) -> [URL] {
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir) else { return [] }
+        return names.filter { !skipNames.contains($0) && !skip($0) }.map { URL(fileURLWithPath: dir + "/" + $0) }
+    }
+
+    /// Размеры считаем параллельно — кэши бывают огромными
+    static func sizes(_ urls: [URL]) -> [Int64] {
+        var out = [Int64](repeating: 0, count: urls.count)
+        let lock = NSLock()
+        DispatchQueue.concurrentPerform(iterations: urls.count) { i in
+            let s = Uninstaller.size(of: urls[i])
+            lock.lock(); out[i] = s; lock.unlock()
+        }
+        return out
+    }
+
+    static func isInstalled(_ bid: String, ids: Set<String>) -> Bool {
+        if ids.contains(bid) { return true }
+        if ids.contains(where: { bid.hasPrefix($0 + ".") || $0.hasPrefix(bid + ".") }) { return true }
+        return NSWorkspace.shared.urlForApplication(withBundleIdentifier: bid) != nil
+    }
+
+    static func scan(installedIDs: Set<String>, progress: @escaping (String) -> Void) -> [JunkCategory] {
+        let fm = FileManager.default
+        let home = NSHomeDirectory()
+        let lib = home + "/Library"
+        var result: [JunkCategory] = []
+
+        func make(_ id: String, _ title: String, _ symbol: String, _ note: String,
+                  _ urls: [URL], selected: Bool) {
+            guard !urls.isEmpty else { return }
+            progress(title)
+            let sz = sizes(urls)
+            var items: [JunkItem] = []
+            for (i, u) in urls.enumerated() where sz[i] > 0 {
+                items.append(JunkItem(url: u, size: sz[i], needsAdmin: !fm.isDeletableFile(atPath: u.path)))
+            }
+            guard !items.isEmpty else { return }
+            items.sort { $0.size > $1.size }
+            for i in items.indices { items[i].selected = selected }
+            result.append(JunkCategory(id: id, title: title, symbol: symbol, note: note, items: items))
+        }
+
+        // 1. Пользовательские кэши (данные Apple не трогаем)
+        make("caches", T("Кэш приложений"), "internaldrive",
+             T("Временные данные программ из ~/Library/Caches. Программы создадут их заново."),
+             children(lib + "/Caches", skip: { $0.hasPrefix("com.apple.") }), selected: true)
+
+        // 2. Логи и отчёты о сбоях
+        var logs: [URL] = []
+        for u in children(lib + "/Logs") {
+            if u.lastPathComponent == "DiagnosticReports" { logs += children(u.path) } else { logs.append(u) }
+        }
+        make("logs", T("Логи и отчёты о сбоях"), "doc.text",
+             T("Журналы работы программ и отчёты о сбоях из ~/Library/Logs."), logs, selected: true)
+
+        // 3. Системные кэши и логи (нужен пароль)
+        make("syscaches", T("Системные кэши и логи"), "gearshape.2",
+             T("Файлы из /Library/Caches и /Library/Logs. Для удаления понадобится пароль администратора."),
+             children("/Library/Caches", skip: { $0.hasPrefix("com.apple.") }) + children("/Library/Logs"),
+             selected: true)
+
+        // 4. Корзина
+        make("trash", T("Корзина"), "trash",
+             T("Всё, что лежит в Корзине. Удаляется безвозвратно. Для чтения нужен «Полный доступ к диску»."),
+             children(home + "/.Trash"), selected: true)
+
+        // 5. Xcode
+        let dev = lib + "/Developer"
+        make("xcode", T("Xcode: временные сборки"), "hammer",
+             T("DerivedData и кэши симуляторов. Xcode пересоберёт их при следующей сборке."),
+             children(dev + "/Xcode/DerivedData") + children(dev + "/CoreSimulator/Caches"), selected: true)
+        make("xcodeDevice", T("Xcode: данные устройств"), "iphone",
+             T("Файлы поддержки iOS/watchOS/tvOS (DeviceSupport). Xcode скачает их заново при подключении устройства."),
+             children(dev + "/Xcode/iOS DeviceSupport") + children(dev + "/Xcode/watchOS DeviceSupport")
+                + children(dev + "/Xcode/tvOS DeviceSupport"), selected: false)
+
+        // 6. Установщики в «Загрузках»
+        let installers = children(home + "/Downloads").filter {
+            ["dmg", "pkg", "iso"].contains($0.pathExtension.lowercased())
+        }
+        make("installers", T("Установщики в «Загрузках»"), "shippingbox",
+             T("Файлы .dmg, .pkg и .iso. Проверьте список: вдруг что-то ещё нужно."), installers, selected: false)
+
+        // 7. Остатки удалённых приложений
+        progress(T("Остатки удалённых приложений"))
+        var orphans: [URL] = []
+        for u in children(lib + "/Preferences") where u.pathExtension == "plist" && !u.lastPathComponent.hasPrefix(".") {
+            let bid = u.deletingPathExtension().lastPathComponent
+            if isOrphanID(bid, ids: installedIDs) { orphans.append(u) }
+        }
+        for u in children(lib + "/Saved Application State") where u.pathExtension == "savedState" {
+            let bid = u.deletingPathExtension().lastPathComponent
+            if isOrphanID(bid, ids: installedIDs) { orphans.append(u) }
+        }
+        make("orphans", T("Остатки удалённых приложений"), "puzzlepiece",
+             T("Настройки и состояние окон программ, которых уже нет на Маке. Проверьте список перед удалением."),
+             orphans, selected: false)
+
+        return result
+    }
+
+    private static func isOrphanID(_ bid: String, ids: Set<String>) -> Bool {
+        guard bid.split(separator: ".").count >= 3,
+              !bid.hasPrefix("com.apple."), !bid.hasPrefix("group."), !bid.hasPrefix(".") else { return false }
+        return !isInstalled(bid, ids: ids)
+    }
+}
+
+struct CleanOverlay: View {
+    @ObservedObject var model: CleanModel
+    let store: Store
+
+    private func fmt(_ b: Int64) -> String { ByteCountFormatter.string(fromByteCount: b, countStyle: .file) }
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.4).contentShape(Rectangle()).onTapGesture { }
+            VStack(spacing: 0) {
+                HStack(spacing: 12) {
+                    Image(systemName: "sparkles").font(.system(size: 28)).foregroundColor(.accentColor)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(T("Очистка мусора")).font(.headline)
+                        Text(T("Кэши, логи, Корзина, временные файлы Xcode")).font(.caption).foregroundColor(.secondary)
+                    }
+                    Spacer()
+                }
+                .padding(14)
+                Divider()
+                content
+            }
+            .frame(width: 560, height: 410)
+            .background(RoundedRectangle(cornerRadius: 12).fill(Color(NSColor.windowBackgroundColor)))
+            .shadow(radius: 20)
+        }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch model.stage {
+        case .scanning:
+            VStack(spacing: 12) {
+                Spacer()
+                ProgressView()
+                Text(T("Ищу мусор…")).foregroundColor(.secondary)
+                Text(model.scanText).font(.caption).foregroundColor(.secondary)
+                Spacer()
+                HStack { Spacer(); Button(T("Отмена")) { store.clean = nil } }.padding(12)
+            }
+        case .review: review
+        case .confirm: confirm
+        case .working:
+            VStack(spacing: 12) {
+                Spacer()
+                ProgressView()
+                Text(model.workText).foregroundColor(.secondary)
+                    .multilineTextAlignment(.center).padding(.horizontal, 24)
+                Spacer()
+            }
+        case .done: done
+        }
+    }
+
+    private var review: some View {
+        VStack(spacing: 0) {
+            if model.categories.isEmpty {
+                Spacer()
+                Image(systemName: "checkmark.seal.fill").font(.system(size: 36)).foregroundColor(.green)
+                Text(T("Мусора не найдено")).font(.title3.bold()).padding(.top, 6)
+                Spacer()
+                HStack { Spacer(); Button(T("Закрыть")) { store.clean = nil } }.padding(12)
+            } else {
+                Text(Tf("Найдено: %@", "\(fmt(model.totalSize))")).font(.title3.bold()).padding(.top, 10)
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach($model.categories) { $cat in categoryRow($cat); Divider() }
+                    }
+                    .padding(.horizontal, 14)
+                }
+                Divider()
+                HStack {
+                    Text(Tf("Выбрано: %@", "\(fmt(model.selectedSize))")).font(.callout)
+                    Spacer()
+                    Button(T("Отмена")) { store.clean = nil }
+                    Button(T("Очистить…")) { model.stage = .confirm }.disabled(model.selectedItems.isEmpty)
+                }
+                .padding(12)
+            }
+        }
+    }
+
+    private func categoryRow(_ cat: Binding<JunkCategory>) -> some View {
+        let c = cat.wrappedValue
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Button {
+                    cat.wrappedValue.setAll(!c.allSelected)
+                } label: {
+                    Image(systemName: c.allSelected ? "checkmark.square.fill"
+                          : (c.selectedCount > 0 ? "minus.square.fill" : "square"))
+                        .font(.system(size: 15))
+                        .foregroundColor(c.selectedCount > 0 ? .accentColor : .secondary)
+                }
+                .buttonStyle(.plain)
+                HStack(spacing: 8) {
+                    Image(systemName: c.symbol).frame(width: 22).foregroundColor(.accentColor)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(c.title).font(.system(size: 13, weight: .medium))
+                        Text(c.note).font(.caption).foregroundColor(.secondary).lineLimit(2)
+                    }
+                    Spacer(minLength: 8)
+                    VStack(alignment: .trailing, spacing: 1) {
+                        Text(fmt(c.size)).font(.callout)
+                        if c.selectedCount > 0 && !c.allSelected {
+                            Text(Tf("выбрано %@", "\(fmt(c.selectedSize))")).font(.caption2).foregroundColor(.accentColor)
+                        }
+                    }
+                    Image(systemName: c.expanded ? "chevron.down" : "chevron.right")
+                        .frame(width: 14).foregroundColor(.secondary)
+                }
+                .padding(.vertical, 3).padding(.horizontal, 4)
+                .hoverHighlight(6)
+                .contentShape(Rectangle())
+                .onTapGesture { withAnimation(.easeInOut(duration: 0.15)) { cat.wrappedValue.expanded.toggle() } }
+            }
+            if c.expanded {
+                VStack(alignment: .leading, spacing: 1) {
+                    ForEach(cat.items) { $it in
+                        HStack(spacing: 8) {
+                            Toggle("", isOn: $it.selected).labelsHidden().toggleStyle(.checkbox)
+                            Text(it.url.lastPathComponent).lineLimit(1).truncationMode(.middle)
+                            if it.needsAdmin { Image(systemName: "lock").foregroundColor(.secondary) }
+                            Spacer()
+                            Text(fmt(it.size)).foregroundColor(.secondary)
+                        }
+                        .font(.caption)
+                        .padding(.vertical, 2).padding(.horizontal, 4)
+                        .hoverHighlight(5)
+                        .contentShape(Rectangle())
+                        .onTapGesture { it.selected.toggle() }
+                    }
+                }
+                .padding(.leading, 30)
+            }
+        }
+        .padding(.vertical, 7)
+    }
+
+    private var confirm: some View {
+        let needsPassword = model.selectedItems.contains { $0.needsAdmin }
+        return VStack(spacing: 12) {
+            Spacer()
+            Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 36)).foregroundColor(.orange)
+            Text(T("Вы уверены?")).font(.title3.bold())
+            Text(Tf("Будет удалено безвозвратно: %@ объектов (%@).\n", "\(model.selectedItems.count)", "\(fmt(model.selectedSize))")
+                 + T("Вернуть их из Корзины не получится.")
+                 + (needsPassword ? T("\nДля системных файлов система запросит пароль.") : ""))
+                .multilineTextAlignment(.center)
+                .foregroundColor(.secondary)
+                .padding(.horizontal, 24)
+            Spacer()
+            HStack {
+                Button(T("Нет, вернуться")) { model.stage = .review }
+                Button(T("Да, очистить")) { store.performClean(model) }.foregroundColor(.red)
+            }
+            .padding(.bottom, 16)
+        }
+    }
+
+    private var done: some View {
+        VStack(spacing: 10) {
+            Spacer()
+            Image(systemName: model.failed.isEmpty ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                .font(.system(size: 36))
+                .foregroundColor(model.failed.isEmpty ? .green : .orange)
+            Text(Tf("Освобождено: %@", "\(fmt(model.freed))")).font(.title3.bold())
+            Text(Tf("Удалено объектов: %@", "\(model.removedCount)")).font(.callout).foregroundColor(.secondary)
+            if !model.failed.isEmpty {
+                Text(Tf("Не удалось удалить (%@): файлы используются, защищены системой или нужен «Полный доступ к диску»:", "\(model.failed.count)"))
+                    .font(.caption).foregroundColor(.secondary)
+                    .multilineTextAlignment(.center).padding(.horizontal, 24)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(model.failed, id: \.self) { p in
+                            Text(p.replacingOccurrences(of: NSHomeDirectory(), with: "~"))
+                                .font(.caption).lineLimit(1).truncationMode(.middle)
+                        }
+                    }
+                    .padding(.horizontal, 24)
+                }
+                .frame(maxHeight: 80)
+            }
+            Spacer()
+            Button(T("Закрыть")) { store.clean = nil }.padding(.bottom, 16)
+        }
+    }
+}
+
+// MARK: - Права администратора (стандартное окно авторизации macOS)
+
+/// Запрос пароля администратора: показывается внутри окна «Пуск»
+final class PasswordRequest: Identifiable {
+    let id = UUID()
+    let user: String
+    let message: String?
+    let completion: (String?) -> Void
+    init(user: String, message: String?, completion: @escaping (String?) -> Void) {
+        self.user = user
+        self.message = message
+        self.completion = completion
+    }
+}
+
+enum Admin {
+    struct Result {
+        var ok: Bool
+        var output: String = ""
+        /// Короткое пояснение, если что-то пошло не так (попадает в сообщение пользователю)
+        var detail: String = ""
+    }
+
+    private static var cached: (password: String, date: Date)?
+    private static let lock = NSLock()
+
+    /// Спрашиваем пароль в окне «Пуск» и ждём ответа (вызывать только не из главного потока)
+    private static func ask(message: String?) -> String? {
+        let sem = DispatchSemaphore(value: 0)
+        var answer: String?
+        DispatchQueue.main.async {
+            guard let store = Store.current else { sem.signal(); return }
+            store.pwRequest = PasswordRequest(user: NSUserName(), message: message) { pw in
+                answer = pw
+                sem.signal()
+            }
+        }
+        sem.wait()
+        return answer
+    }
+
+    /// sudo читает пароль со стандартного входа — в списке процессов он не виден
+    private static func sudo(_ password: String, _ args: [String]) -> (Int32, String) {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+        p.arguments = ["-S", "-k", "-p", ""] + args
+        let inPipe = Pipe()
+        let outPipe = Pipe()
+        p.standardInput = inPipe
+        p.standardOutput = outPipe
+        p.standardError = outPipe
+        do { try p.run() } catch { return (-1, "") }
+        inPipe.fileHandleForWriting.write((password + "\n").data(using: .utf8) ?? Data())
+        try? inPipe.fileHandleForWriting.close()
+        let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        return (p.terminationStatus, String(data: data, encoding: .utf8) ?? "")
+    }
+
+    /// Запускает программу с правами администратора. Пароль пользователь вводит в окне «Пуск»;
+    /// он держится в памяти 5 минут, чтобы не спрашивать несколько раз подряд.
+    static func run(tool: String, args: [String]) -> Result {
+        var message: String? = nil
+        for _ in 0..<3 {
+            let password: String
+            lock.lock(); let c = cached; lock.unlock()
+            if let c = c, Date().timeIntervalSince(c.date) < 300 {
+                password = c.password
+            } else {
+                guard let asked = ask(message: message) else {
+                    return Result(ok: false, detail: T("отменено пользователем"))
+                }
+                password = asked
+            }
+            if sudo(password, ["/usr/bin/true"]).0 != 0 {
+                lock.lock(); cached = nil; lock.unlock()
+                message = T("Неверный пароль, попробуйте ещё раз")
+                continue
+            }
+            lock.lock(); cached = (password, Date()); lock.unlock()
+            let (code, out) = sudo(password, [tool] + args)
+            return Result(ok: true, output: out, detail: code == 0 ? "" : Tf("код %@", "\(code)"))
+        }
+        return Result(ok: false, detail: T("неверный пароль"))
+    }
+}
+
+/// На время ввода пароля переключаем раскладку на английскую, потом возвращаем прежнюю
+enum InputSourceSwitcher {
+    private static var saved: TISInputSource?
+
+    static func switchToASCII() {
+        saved = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue()
+        if let ascii = TISCopyCurrentASCIICapableKeyboardInputSource()?.takeRetainedValue() {
+            TISSelectInputSource(ascii)
+        }
+    }
+
+    static func restore() {
+        if let s = saved { TISSelectInputSource(s) }
+        saved = nil
+    }
+}
+
+/// Невидимый элемент, который ловит нажатия клавиш и собирает пароль
+struct PasswordCapture: NSViewRepresentable {
+    @Binding var text: String
+    var onSubmit: () -> Void
+    var onCancel: () -> Void
+
+    final class Catcher: NSView {
+        var parent: PasswordCapture?
+        override var acceptsFirstResponder: Bool { true }
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self, let w = self.window else { return }
+                w.makeFirstResponder(self)
+            }
+        }
+        override func keyDown(with event: NSEvent) {
+            guard let p = parent else { return }
+            switch event.keyCode {
+            case 36, 76: p.onSubmit(); return
+            case 53: p.onCancel(); return
+            case 51:
+                if event.modifierFlags.contains(.command) || event.modifierFlags.contains(.option) { p.text = "" }
+                else if !p.text.isEmpty { p.text.removeLast() }
+                return
+            default: break
+            }
+            if event.modifierFlags.contains(.command) || event.modifierFlags.contains(.control) { return }
+            if let chars = event.characters {
+                let printable = chars.filter { !$0.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) } }
+                p.text += printable
+            }
+        }
+        override func performKeyEquivalent(with event: NSEvent) -> Bool {
+            guard let p = parent else { return false }
+            if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers == "v" {
+                if let str = NSPasteboard.general.string(forType: .string) {
+                    p.text += str.filter { !$0.isNewline }
+                }
+                return true
+            }
+            return false
+        }
+    }
+
+    func makeNSView(context: Context) -> Catcher {
+        let v = Catcher()
+        v.parent = self
+        return v
+    }
+
+    func updateNSView(_ v: Catcher, context: Context) { v.parent = self }
+}
+
+struct PasswordOverlay: View {
+    let request: PasswordRequest
+    let store: Store
+    @State private var password = ""
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.45).contentShape(Rectangle()).onTapGesture { }
+            VStack(spacing: 12) {
+                Image(systemName: "lock.shield.fill").font(.system(size: 30)).foregroundColor(.accentColor)
+                Text(T("Нужен пароль администратора")).font(.headline)
+                Text(Tf("«Пуск» вносит изменения в систему.\nПользователь: %@", "\(request.user)"))
+                    .font(.callout).foregroundColor(.secondary).multilineTextAlignment(.center)
+                if let m = request.message {
+                    Text(m).font(.callout).foregroundColor(.orange)
+                }
+                // Своё поле ввода: никаких подсказок менеджеров паролей и пароль никогда не виден
+                ZStack {
+                    RoundedRectangle(cornerRadius: 6).fill(Color(NSColor.textBackgroundColor))
+                    RoundedRectangle(cornerRadius: 6).stroke(Color.accentColor, lineWidth: 2)
+                    if password.isEmpty {
+                        Text(T("Пароль")).foregroundColor(.secondary)
+                    } else {
+                        Text(String(repeating: "●", count: password.count))
+                            .lineLimit(1).truncationMode(.head).padding(.horizontal, 8)
+                    }
+                    PasswordCapture(text: $password, onSubmit: { submit() }, onCancel: {
+                        cancel()
+                        // Esc закрывает и само окно «Пуск»
+                        NSApp.windows.compactMap { $0 as? PopupWindow }.forEach { $0.orderOut(nil) }
+                    })
+                }
+                .frame(width: 260, height: 26)
+                HStack {
+                    Button(T("Отмена")) { cancel() }
+                    Button(T("Разрешить")) { submit() }.disabled(password.isEmpty)
+                }
+            }
+            .padding(22)
+            .frame(width: 340)
+            .background(RoundedRectangle(cornerRadius: 12).fill(Color(NSColor.windowBackgroundColor)))
+            .shadow(radius: 20)
+        }
+        .onAppear {
+            InputSourceSwitcher.switchToASCII()
+        }
+        .onDisappear { InputSourceSwitcher.restore() }
+    }
+
+    private func submit() {
+        let pw = password
+        password = ""
+        store.pwRequest = nil
+        request.completion(pw)
+    }
+
+    private func cancel() {
+        password = ""
+        store.pwRequest = nil
+        request.completion(nil)
+    }
+}
+
+// MARK: - Обслуживание системы
+
+enum MaintStatus: Equatable {
+    case idle, running, ok(String), failed(String)
+}
+
+struct MaintTask: Identifiable {
+    let id: String
+    let title: String
+    let symbol: String
+    let info: String
+    let needsAdmin: Bool
+    var selected = false
+    var status: MaintStatus = .idle
+}
+
+final class MaintModel: ObservableObject {
+    @Published var tasks: [MaintTask] = Maintenance.allTasks
+    @Published var running = false
+    @Published var note = ""
+
+    var selectedCount: Int { tasks.filter { $0.selected }.count }
+
+    func set(_ id: String, _ status: MaintStatus) {
+        if let i = tasks.firstIndex(where: { $0.id == id }) { tasks[i].status = status }
+    }
+}
+
+enum Maintenance {
+    static let allTasks: [MaintTask] = [
+        MaintTask(id: "ram", title: T("Освободить оперативную память"), symbol: "memorychip",
+                  info: T("Выгружает неиспользуемые данные из памяти, чтобы программы открывались быстрее."),
+                  needsAdmin: true),
+        MaintTask(id: "scripts", title: T("Запустить скрипты обслуживания"), symbol: "checklist",
+                  info: T("Ежедневные, еженедельные и ежемесячные задачи macOS: ротация логов и очистка временных данных."),
+                  needsAdmin: true),
+        MaintTask(id: "dns", title: T("Сбросить кэш DNS"), symbol: "network",
+                  info: T("Помогает, если сайты не открываются или открываются по старым адресам."),
+                  needsAdmin: true),
+        MaintTask(id: "mail", title: T("Ускорить Почту"), symbol: "envelope",
+                  info: T("Оптимизирует базу писем в «Почте». Почта должна быть закрыта, нужен «Полный доступ к диску»."),
+                  needsAdmin: false),
+        MaintTask(id: "spotlight", title: T("Переиндексировать Spotlight"), symbol: "magnifyingglass",
+                  info: T("Пересоздаёт поисковый индекс, если Spotlight не находит файлы. Индексация займёт какое-то время."),
+                  needsAdmin: true),
+        MaintTask(id: "perms", title: T("Восстановить права доступа"), symbol: "lock.rotation",
+                  info: T("Сбрасывает права на файлы вашей домашней папки к стандартным."),
+                  needsAdmin: false),
+        MaintTask(id: "tm", title: T("Прореживание снимков Time Machine"), symbol: "clock.arrow.circlepath",
+                  info: T("Удаляет локальные снимки Time Machine и освобождает занятое ими место."),
+                  needsAdmin: true),
+    ]
+
+    /// Команды, которым нужен администратор (выполняются все вместе, пароль спрашивается один раз)
+    static func adminCommand(_ id: String) -> String? {
+        switch id {
+        case "ram": return "/usr/sbin/purge"
+        case "scripts": return "/usr/sbin/periodic daily weekly monthly"
+        case "dns": return "/usr/bin/dscacheutil -flushcache && /usr/bin/killall -HUP mDNSResponder"
+        case "spotlight": return "/usr/bin/mdutil -E /"
+        case "tm": return "/usr/bin/tmutil thinlocalsnapshots / 99999999999 4"
+        default: return nil
+        }
+    }
+
+    /// Задачи, которые выполняются от имени пользователя
+    static func runUser(_ id: String) -> MaintStatus? {
+        switch id {
+        case "mail": return speedUpMail()
+        case "perms": return resetPermissions()
+        default: return nil
+        }
+    }
+
+    private static func shell(_ path: String, _ args: [String]) -> (Int32, String) {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: path)
+        p.arguments = args
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = pipe
+        do { try p.run() } catch { return (-1, "") }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        return (p.terminationStatus, String(data: data, encoding: .utf8) ?? "")
+    }
+
+    private static func speedUpMail() -> MaintStatus {
+        if !NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.mail").isEmpty {
+            return .failed(T("Закройте «Почту» и повторите"))
+        }
+        let fm = FileManager.default
+        let base = NSHomeDirectory() + "/Library/Mail"
+        guard let versions = try? fm.contentsOfDirectory(atPath: base) else {
+            return .failed(T("Нет доступа к ~/Library/Mail — нужен «Полный доступ к диску»"))
+        }
+        var done = 0
+        for v in versions where v.hasPrefix("V") {
+            let db = "\(base)/\(v)/MailData/Envelope Index"
+            if fm.fileExists(atPath: db), shell("/usr/bin/sqlite3", [db, "VACUUM;"]).0 == 0 { done += 1 }
+        }
+        return done > 0 ? .ok(Tf("Оптимизировано баз: %@", "\(done)")) : .failed(T("База «Почты» не найдена или нет доступа"))
+    }
+
+    private static func resetPermissions() -> MaintStatus {
+        let r = shell("/usr/sbin/diskutil", ["resetUserPermissions", "/", String(getuid())])
+        return r.0 == 0 ? .ok(T("Права восстановлены")) : .failed(Tf("Не удалось (код %@)", "\(r.0)"))
+    }
+}
+
+struct MaintenanceOverlay: View {
+    @ObservedObject var model: MaintModel
+    let store: Store
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.4).contentShape(Rectangle()).onTapGesture { }
+            VStack(spacing: 0) {
+                HStack(spacing: 12) {
+                    Image(systemName: "wrench.and.screwdriver.fill").font(.system(size: 26)).foregroundColor(.accentColor)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(T("Обслуживание")).font(.headline)
+                        Text(T("Отметьте нужные задачи — каждая выполняется отдельно")).font(.caption).foregroundColor(.secondary)
+                    }
+                    Spacer()
+                }
+                .padding(14)
+                Divider()
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach($model.tasks) { $t in row($t); Divider() }
+                    }
+                    .padding(.horizontal, 14)
+                }
+                Divider()
+                HStack {
+                    Text(model.running ? model.note : Tf("Выбрано: %@", "\(model.selectedCount)"))
+                        .font(.callout).foregroundColor(.secondary)
+                    Spacer()
+                    Button(T("Закрыть")) { store.maint = nil }.disabled(model.running)
+                    Button(T("Выполнить")) { store.runMaint(model) }
+                        .disabled(model.running || model.selectedCount == 0)
+                }
+                .padding(12)
+            }
+            .frame(width: 560, height: 410)
+            .background(RoundedRectangle(cornerRadius: 12).fill(Color(NSColor.windowBackgroundColor)))
+            .shadow(radius: 20)
+        }
+    }
+
+    private func row(_ t: Binding<MaintTask>) -> some View {
+        let task = t.wrappedValue
+        return HStack(alignment: .top, spacing: 8) {
+            Toggle("", isOn: t.selected).labelsHidden().toggleStyle(.checkbox).disabled(model.running)
+            Image(systemName: task.symbol).frame(width: 24).foregroundColor(.accentColor)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(task.title).font(.system(size: 13, weight: .medium))
+                    if task.needsAdmin {
+                        Image(systemName: "lock").font(.caption).foregroundColor(.secondary)
+                            .help(T("Потребуется пароль администратора"))
+                    }
+                }
+                Text(task.info).font(.caption).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
+                switch task.status {
+                case .ok(let m): Text(m).font(.caption).foregroundColor(.green)
+                case .failed(let m): Text(m).font(.caption).foregroundColor(.orange)
+                default: EmptyView()
+                }
+            }
+            Spacer(minLength: 8)
+            switch task.status {
+            case .running: ProgressView().controlSize(.small)
+            case .ok: Image(systemName: "checkmark.circle.fill").foregroundColor(.green)
+            case .failed: Image(systemName: "exclamationmark.circle.fill").foregroundColor(.orange)
+            case .idle: EmptyView()
+            }
+        }
+        .padding(.vertical, 8).padding(.horizontal, 6)
+        .hoverHighlight(6)
+        .contentShape(Rectangle())
+        .onTapGesture { if !model.running { t.wrappedValue.selected.toggle() } }
+    }
+}
+
+// MARK: - Большие и старые файлы
+
+struct BigFile: Identifiable {
+    let id = UUID()
+    let url: URL
+    let size: Int64
+    let date: Date          // когда последний раз открывали или меняли
+    var selected = false
+}
+
+final class BigFilesModel: ObservableObject {
+    enum Stage { case scanning, review, confirm, working, done }
+    @Published var stage: Stage = .scanning
+    @Published var items: [BigFile] = []
+    @Published var scanText = ""
+    @Published var minMB = 100
+    @Published var ageDays = 0
+    @Published var sortBySize = true
+    @Published var trashedCount = 0
+    @Published var trashedSize: Int64 = 0
+    @Published var failed: [String] = []
+
+    static var sizeOptions: [(String, Int)] { [(T("100 МБ"), 100), (T("500 МБ"), 500), (T("1 ГБ"), 1024), (T("5 ГБ"), 5120)] }
+    static var ageOptions: [(String, Int)] { [(T("любое время"), 0), (T("3 месяца"), 90), (T("6 месяцев"), 180), (T("1 год"), 365)] }
+
+    var visible: [BigFile] {
+        let minBytes = Int64(minMB) * 1_048_576
+        let cutoff: Date? = ageDays > 0 ? Date().addingTimeInterval(-Double(ageDays) * 86_400) : nil
+        var r = items.filter { f in
+            f.size >= minBytes && (cutoff == nil || f.date < cutoff!)
+        }
+        if !sortBySize { r.sort { $0.date < $1.date } }
+        return r
+    }
+    var selectedVisible: [BigFile] { visible.filter { $0.selected } }
+    var selectedSize: Int64 { selectedVisible.reduce(0) { $0 + $1.size } }
+
+    func setSelected(_ id: UUID, _ on: Bool) {
+        if let i = items.firstIndex(where: { $0.id == id }) { items[i].selected = on }
+    }
+}
+
+enum BigFiles {
+    /// Ищем в домашней папке (кроме Библиотеки) файлы от 50 МБ; фильтры по размеру и возрасту применяются потом
+    static func scan(progress: @escaping (String) -> Void) -> [BigFile] {
+        let fm = FileManager.default
+        let home = URL(fileURLWithPath: NSHomeDirectory())
+        let keys: [URLResourceKey] = [.isRegularFileKey, .isPackageKey, .totalFileAllocatedSizeKey,
+                                      .fileAllocatedSizeKey, .contentAccessDateKey, .contentModificationDateKey]
+        guard let en = fm.enumerator(at: home, includingPropertiesForKeys: keys,
+                                     options: [.skipsHiddenFiles, .skipsPackageDescendants],
+                                     errorHandler: { _, _ in true }) else { return [] }
+        let minSize: Int64 = 50 * 1_048_576
+        var out: [BigFile] = []
+        var counter = 0
+        for case let u as URL in en {
+            let name = u.lastPathComponent
+            if (name == "Library" && u.deletingLastPathComponent().path == home.path) || name == "node_modules" {
+                en.skipDescendants()
+                continue
+            }
+            counter += 1
+            if counter % 1500 == 0 { progress(u.deletingLastPathComponent().path.replacingOccurrences(of: home.path, with: "~")) }
+            guard let v = try? u.resourceValues(forKeys: Set(keys)) else { continue }
+            let date = [v.contentAccessDate, v.contentModificationDate].compactMap { $0 }.max() ?? .distantPast
+            if v.isPackage == true {
+                if u.pathExtension.lowercased() == "app" { continue }
+                let size = Uninstaller.size(of: u)
+                if size >= minSize { out.append(BigFile(url: u, size: size, date: date)) }
+                continue
+            }
+            guard v.isRegularFile == true else { continue }
+            let size = Int64(v.totalFileAllocatedSize ?? v.fileAllocatedSize ?? 0)
+            if size >= minSize { out.append(BigFile(url: u, size: size, date: date)) }
+        }
+        out.sort { $0.size > $1.size }
+        return Array(out.prefix(1000))
+    }
+}
+
+struct BigFilesOverlay: View {
+    @ObservedObject var model: BigFilesModel
+    let store: Store
+
+    private func fmt(_ b: Int64) -> String { ByteCountFormatter.string(fromByteCount: b, countStyle: .file) }
+    private func shortDir(_ u: URL) -> String {
+        u.deletingLastPathComponent().path.replacingOccurrences(of: NSHomeDirectory(), with: "~")
+    }
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.4).contentShape(Rectangle()).onTapGesture { }
+            VStack(spacing: 0) {
+                HStack(spacing: 12) {
+                    Image(systemName: "archivebox").font(.system(size: 26)).foregroundColor(.accentColor)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(T("Большие и старые файлы")).font(.headline)
+                        Text(T("Домашняя папка, кроме Библиотеки")).font(.caption).foregroundColor(.secondary)
+                    }
+                    Spacer()
+                }
+                .padding(14)
+                Divider()
+                content
+            }
+            .frame(width: 560, height: 410)
+            .background(RoundedRectangle(cornerRadius: 12).fill(Color(NSColor.windowBackgroundColor)))
+            .shadow(radius: 20)
+        }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch model.stage {
+        case .scanning:
+            VStack(spacing: 12) {
+                Spacer()
+                ProgressView()
+                Text(T("Ищу большие файлы…")).foregroundColor(.secondary)
+                Text(model.scanText).font(.caption).foregroundColor(.secondary).lineLimit(1).truncationMode(.middle)
+                    .padding(.horizontal, 24)
+                Spacer()
+                HStack { Spacer(); Button(T("Отмена")) { store.big = nil } }.padding(12)
+            }
+        case .review: review
+        case .confirm: confirm
+        case .working:
+            VStack(spacing: 12) {
+                Spacer()
+                ProgressView()
+                Text(T("Перемещаю в Корзину…")).foregroundColor(.secondary)
+                Spacer()
+            }
+        case .done: done
+        }
+    }
+
+    private var filters: some View {
+        HStack(spacing: 6) {
+            Text(T("Размер от")).font(.caption).foregroundColor(.secondary)
+            Picker("", selection: $model.minMB) {
+                ForEach(BigFilesModel.sizeOptions, id: \.1) { Text($0.0).tag($0.1) }
+            }
+            .labelsHidden().pickerStyle(.menu).controlSize(.small).fixedSize()
+            Text(T("Не открывались")).font(.caption).foregroundColor(.secondary)
+            Picker("", selection: $model.ageDays) {
+                ForEach(BigFilesModel.ageOptions, id: \.1) { Text($0.0).tag($0.1) }
+            }
+            .labelsHidden().pickerStyle(.menu).controlSize(.small).fixedSize()
+            Spacer()
+            Picker("", selection: $model.sortBySize) {
+                Text(T("По размеру")).tag(true)
+                Text(T("Сначала старые")).tag(false)
+            }
+            .labelsHidden().pickerStyle(.menu).controlSize(.small).fixedSize()
+        }
+        .padding(.horizontal, 14).padding(.vertical, 8)
+    }
+
+    private var review: some View {
+        VStack(spacing: 0) {
+            filters
+            Divider()
+            let list = model.visible
+            if list.isEmpty {
+                Spacer()
+                Text(T("Ничего не найдено по этим условиям")).foregroundColor(.secondary)
+                Spacer()
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(list) { f in row(f); Divider() }
+                    }
+                    .padding(.horizontal, 14)
+                }
+            }
+            Divider()
+            HStack {
+                Text(Tf("Выбрано: %@ · %@", "\(model.selectedVisible.count)", "\(fmt(model.selectedSize))")).font(.callout)
+                Spacer()
+                Button(T("Закрыть")) { store.big = nil }
+                Button(T("В Корзину…")) { model.stage = .confirm }.disabled(model.selectedVisible.isEmpty)
+            }
+            .padding(12)
+        }
+    }
+
+    private func row(_ f: BigFile) -> some View {
+        HStack(spacing: 8) {
+            Toggle("", isOn: Binding(get: { f.selected }, set: { model.setSelected(f.id, $0) }))
+                .labelsHidden().toggleStyle(.checkbox)
+            Image(nsImage: NSWorkspace.shared.icon(forFile: f.url.path)).resizable().frame(width: 24, height: 24)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(f.url.lastPathComponent).lineLimit(1).truncationMode(.middle)
+                Text(shortDir(f.url)).font(.caption).foregroundColor(.secondary).lineLimit(1).truncationMode(.middle)
+            }
+            Spacer(minLength: 8)
+            VStack(alignment: .trailing, spacing: 1) {
+                Text(fmt(f.size)).font(.callout)
+                Text(f.date, style: .date).font(.caption).foregroundColor(.secondary)
+            }
+            Button {
+                NSWorkspace.shared.activateFileViewerSelecting([f.url])
+            } label: {
+                Image(systemName: "magnifyingglass.circle").foregroundColor(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help(T("Показать в Finder"))
+        }
+        .padding(.vertical, 6).padding(.horizontal, 6)
+        .hoverHighlight(6)
+        .contentShape(Rectangle())
+        .onTapGesture { model.setSelected(f.id, !f.selected) }
+    }
+
+    private var confirm: some View {
+        VStack(spacing: 12) {
+            Spacer()
+            Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 36)).foregroundColor(.orange)
+            Text(T("Вы уверены?")).font(.title3.bold())
+            Text(Tf("В Корзину будет перемещено файлов: %@ (%@).\nВернуть их можно из Корзины, пока вы её не очистили.", "\(model.selectedVisible.count)", "\(fmt(model.selectedSize))"))
+                .multilineTextAlignment(.center).foregroundColor(.secondary).padding(.horizontal, 24)
+            Spacer()
+            HStack {
+                Button(T("Нет, вернуться")) { model.stage = .review }
+                Button(T("Да, в Корзину")) { store.performBig(model) }.foregroundColor(.red)
+            }
+            .padding(.bottom, 16)
+        }
+    }
+
+    private var done: some View {
+        VStack(spacing: 10) {
+            Spacer()
+            Image(systemName: model.failed.isEmpty ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                .font(.system(size: 36))
+                .foregroundColor(model.failed.isEmpty ? .green : .orange)
+            Text(Tf("Перемещено в Корзину: %@ (%@)", "\(model.trashedCount)", "\(fmt(model.trashedSize))")).font(.title3.bold())
+            if !model.failed.isEmpty {
+                Text(Tf("Не удалось переместить (%@):", "\(model.failed.count)")).font(.caption).foregroundColor(.secondary)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(model.failed, id: \.self) { p in
+                            Text(p.replacingOccurrences(of: NSHomeDirectory(), with: "~"))
+                                .font(.caption).lineLimit(1).truncationMode(.middle)
+                        }
+                    }
+                    .padding(.horizontal, 24)
+                }
+                .frame(maxHeight: 80)
+            }
+            Spacer()
+            Button(T("Закрыть")) { store.big = nil }.padding(.bottom, 16)
+        }
+    }
+}
+
+// MARK: - Интерфейс
+
+struct VisualEffect: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let v = NSVisualEffectView()
+        v.material = .popover
+        v.blendingMode = .behindWindow
+        v.state = .active
+        return v
+    }
+    func updateNSView(_ v: NSVisualEffectView, context: Context) {}
+}
+
+/// Зона, за которую можно перетаскивать окно без рамки
+struct DragArea: NSViewRepresentable {
+    final class V: NSView {
+        override func mouseDown(with event: NSEvent) { window?.performDrag(with: event) }
+    }
+    func makeNSView(context: Context) -> V { V() }
+    func updateNSView(_ v: V, context: Context) {}
+}
+
+/// Полоса сверху окна с «ручкой»: за неё окно двигается
+struct DragBar: View {
+    var body: some View {
+        ZStack {
+            DragArea()
+            Capsule().fill(Color.secondary.opacity(0.45))
+                .frame(width: 44, height: 4)
+                .allowsHitTesting(false)
+        }
+        .frame(height: 22)
+        .help(T("Потяните, чтобы переместить окно"))
+    }
+}
+
+/// Подсветка строки или значка при наведении мыши (как у значков приложений)
+struct HoverHighlight: ViewModifier {
+    var radius: CGFloat
+    @State private var hover = false
+    func body(content: Content) -> some View {
+        content
+            .contentShape(Rectangle())
+            .onHover { hover = $0 }
+            .background(RoundedRectangle(cornerRadius: radius)
+                .fill(hover ? Color.primary.opacity(0.12) : Color.clear))
+    }
+}
+
+extension View {
+    func hoverHighlight(_ radius: CGFloat = 7) -> some View { modifier(HoverHighlight(radius: radius)) }
+}
+
+struct ToolRow: View {
+    let title: String
+    let symbol: String
+    let action: () -> Void
+    @State private var hover = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: symbol).frame(width: 18).foregroundColor(.accentColor)
+            Text(title)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 8).padding(.vertical, 6)
+        .background(RoundedRectangle(cornerRadius: 6).fill(hover ? Color.accentColor.opacity(0.25) : Color.clear))
+        .contentShape(Rectangle())
+        .onHover { hover = $0 }
+        .onTapGesture { action() }
+    }
+}
+
+struct AppCell: View {
+    let app: AppItem
+    let icon: NSImage
+    let onOpen: () -> Void
+    @State private var hover = false
+
+    var body: some View {
+        VStack(spacing: 6) {
+            Image(nsImage: icon).resizable().frame(width: 52, height: 52)
+            Text(app.name)
+                .font(.system(size: 12))
+                .lineLimit(2)
+                .multilineTextAlignment(.center)
+                .frame(height: 32, alignment: .top)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+        .background(RoundedRectangle(cornerRadius: 8).fill(hover ? Color.primary.opacity(0.12) : Color.clear))
+        .contentShape(Rectangle())
+        .onHover { hover = $0 }
+        .onTapGesture { onOpen() }
+    }
+}
+
+struct LinkCell: View {
+    let link: WebLink
+    let icon: NSImage?
+    let onOpen: () -> Void
+    @State private var hover = false
+
+    private static let palette: [Color] = [.blue, .purple, .pink, .orange, .teal, .indigo, .green, .red]
+    private var color: Color {
+        let n = link.title.unicodeScalars.reduce(0) { $0 + Int($1.value) }
+        return LinkCell.palette[n % LinkCell.palette.count]
+    }
+
+    var body: some View {
+        VStack(spacing: 6) {
+            ZStack {
+                if let icon = icon {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.white)
+                    Image(nsImage: icon).resizable().interpolation(.high).scaledToFit()
+                        .padding(icon.size.width >= 100 ? 4 : 11)
+                } else {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous).fill(color.softGradient())
+                    Text(String(link.title.prefix(1)).uppercased())
+                        .font(.system(size: 24, weight: .semibold)).foregroundColor(.white)
+                }
+            }
+            .frame(width: 52, height: 52)
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.primary.opacity(icon == nil ? 0 : 0.12), lineWidth: 1))
+            Text(link.title)
+                .font(.system(size: 12))
+                .lineLimit(2)
+                .multilineTextAlignment(.center)
+                .frame(height: 32, alignment: .top)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+        .background(RoundedRectangle(cornerRadius: 8).fill(hover ? Color.primary.opacity(0.12) : Color.clear))
+        .contentShape(Rectangle())
+        .onHover { hover = $0 }
+        .onTapGesture { onOpen() }
+        .help(link.url)
+    }
+}
+
+extension Color {
+    func softGradient() -> LinearGradient {
+        LinearGradient(colors: [self.opacity(0.85), self], startPoint: .top, endPoint: .bottom)
+    }
+}
+
+struct AddLinkCell: View {
+    let action: () -> Void
+    @State private var hover = false
+
+    var body: some View {
+        VStack(spacing: 6) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(Color.secondary.opacity(0.6), style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
+                Image(systemName: "plus").font(.system(size: 20)).foregroundColor(.secondary)
+            }
+            .frame(width: 52, height: 52)
+            Text(T("Добавить сайт"))
+                .font(.system(size: 12)).foregroundColor(.secondary)
+                .lineLimit(2).multilineTextAlignment(.center)
+                .frame(height: 32, alignment: .top)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+        .background(RoundedRectangle(cornerRadius: 8).fill(hover ? Color.primary.opacity(0.12) : Color.clear))
+        .contentShape(Rectangle())
+        .onHover { hover = $0 }
+        .onTapGesture { action() }
+    }
+}
+
+struct FolderCell: View {
+    let folder: WebFolder
+    let previews: [(WebLink, NSImage?)]
+    let onOpen: () -> Void
+    let onDropLink: ([NSItemProvider]) -> Bool
+    @State private var hover = false
+    @State private var targeted = false
+
+    private func mini(_ l: WebLink, _ icon: NSImage?) -> some View {
+        ZStack {
+            if let icon = icon {
+                RoundedRectangle(cornerRadius: 4).fill(Color.white)
+                Image(nsImage: icon).resizable().interpolation(.high).scaledToFit().padding(2)
+            } else {
+                RoundedRectangle(cornerRadius: 4).fill(Color.accentColor.opacity(0.7))
+                Text(String(l.title.prefix(1)).uppercased()).font(.system(size: 9, weight: .bold)).foregroundColor(.white)
+            }
+        }
+        .frame(width: 20, height: 20)
+    }
+
+    var body: some View {
+        VStack(spacing: 6) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color.primary.opacity(targeted ? 0.22 : 0.10))
+                if previews.isEmpty {
+                    Image(systemName: "folder").font(.system(size: 22)).foregroundColor(.secondary)
+                } else {
+                    VStack(spacing: 4) {
+                        HStack(spacing: 4) {
+                            if previews.indices.contains(0) { mini(previews[0].0, previews[0].1) } else { Color.clear.frame(width: 20, height: 20) }
+                            if previews.indices.contains(1) { mini(previews[1].0, previews[1].1) } else { Color.clear.frame(width: 20, height: 20) }
+                        }
+                        HStack(spacing: 4) {
+                            if previews.indices.contains(2) { mini(previews[2].0, previews[2].1) } else { Color.clear.frame(width: 20, height: 20) }
+                            if previews.indices.contains(3) { mini(previews[3].0, previews[3].1) } else { Color.clear.frame(width: 20, height: 20) }
+                        }
+                    }
+                }
+            }
+            .frame(width: 52, height: 52)
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.accentColor, lineWidth: targeted ? 2 : 0))
+            Text(folder.title)
+                .font(.system(size: 12))
+                .lineLimit(2)
+                .multilineTextAlignment(.center)
+                .frame(height: 32, alignment: .top)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+        .background(RoundedRectangle(cornerRadius: 8).fill(hover ? Color.primary.opacity(0.12) : Color.clear))
+        .contentShape(Rectangle())
+        .onHover { hover = $0 }
+        .onTapGesture { onOpen() }
+        .onDrop(of: [UTType.plainText], isTargeted: $targeted) { providers in onDropLink(providers) }
+    }
+}
+
+struct AddFolderCell: View {
+    let action: () -> Void
+    @State private var hover = false
+
+    var body: some View {
+        VStack(spacing: 6) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(Color.secondary.opacity(0.6), style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
+                Image(systemName: "folder.badge.plus").font(.system(size: 20)).foregroundColor(.secondary)
+            }
+            .frame(width: 52, height: 52)
+            Text(T("Новая папка"))
+                .font(.system(size: 12)).foregroundColor(.secondary)
+                .lineLimit(2).multilineTextAlignment(.center)
+                .frame(height: 32, alignment: .top)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+        .background(RoundedRectangle(cornerRadius: 8).fill(hover ? Color.primary.opacity(0.12) : Color.clear))
+        .contentShape(Rectangle())
+        .onHover { hover = $0 }
+        .onTapGesture { action() }
+    }
+}
+
+struct FolderEditorOverlay: View {
+    let draft: FolderDraft
+    let store: Store
+    @State private var title: String
+
+    init(draft: FolderDraft, store: Store) {
+        self.draft = draft
+        self.store = store
+        _title = State(initialValue: draft.title)
+    }
+
+    private var valid: Bool { !title.trimmingCharacters(in: .whitespaces).isEmpty }
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.4).contentShape(Rectangle()).onTapGesture { }
+            VStack(spacing: 12) {
+                Text(draft.id == nil ? T("Новая папка") : T("Переименовать папку")).font(.headline)
+                TextField(T("Название"), text: $title)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { save() }
+                HStack {
+                    Button(T("Отмена")) { store.folderDraft = nil }
+                    Button(T("Сохранить")) { save() }.disabled(!valid)
+                }
+            }
+            .padding(20)
+            .frame(width: 320)
+            .background(RoundedRectangle(cornerRadius: 12).fill(Color(NSColor.windowBackgroundColor)))
+            .shadow(radius: 20)
+        }
+    }
+
+    private func save() {
+        guard valid else { return }
+        store.saveFolder(FolderDraft(id: draft.id, title: title))
+        store.folderDraft = nil
+    }
+}
+
+/// Окно добавления и правки ссылки (внутри окна «Пуск», без системных листов)
+struct LinkEditorOverlay: View {
+    let draft: LinkDraft
+    let store: Store
+    @State private var title: String
+    @State private var url: String
+    @State private var showError = false
+
+    init(draft: LinkDraft, store: Store) {
+        self.draft = draft
+        self.store = store
+        _title = State(initialValue: draft.title)
+        _url = State(initialValue: draft.url)
+    }
+
+    private var valid: Bool { Store.normalizedURL(url) != nil }
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.4).contentShape(Rectangle()).onTapGesture { }
+            VStack(spacing: 12) {
+                Text(draft.id == nil ? T("Новый сайт") : T("Изменить сайт")).font(.headline)
+                TextField(T("Название"), text: $title).textFieldStyle(.roundedBorder)
+                TextField(T("Адрес"), text: $url)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { save() }
+                if showError && !valid {
+                    Text(T("Некорректный адрес")).font(.caption).foregroundColor(.orange)
+                }
+                HStack {
+                    Button(T("Отмена")) { store.linkDraft = nil }
+                    Button(T("Сохранить")) { save() }.disabled(url.isEmpty)
+                }
+            }
+            .padding(20)
+            .frame(width: 340)
+            .background(RoundedRectangle(cornerRadius: 12).fill(Color(NSColor.windowBackgroundColor)))
+            .shadow(radius: 20)
+        }
+    }
+
+    private func save() {
+        guard valid else { showError = true; return }
+        store.saveLink(LinkDraft(id: draft.id, title: title, url: url))
+        store.linkDraft = nil
+    }
+}
+
+/// Настройки «Пуска»: язык, горячие клавиши, жест, функции «Свернуть всё» и запуск (всё, что раньше было в меню строки меню)
+struct SettingsOverlay: View {
+    let store: Store
+    @ObservedObject var mc: MinimizeController
+    @State private var confirmPinch = false
+    @State private var confirmPin = false
+
+    private func languageTitle(_ l: AppLanguage) -> String {
+        switch l {
+        case .system: return T("Как в системе")
+        case .ru: return "Русский"
+        case .en: return "English"
+        }
+    }
+
+    private func section<C: View>(_ title: String, @ViewBuilder _ content: () -> C) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(.system(size: 12, weight: .semibold)).foregroundColor(.secondary)
+            content()
+        }
+    }
+
+    private func hotkeyRow(_ title: String, combo: String, forStart: Bool) -> some View {
+        let active = mc.recordingFor == (forStart ? 2 : 1)
+        return HStack {
+            Text(title)
+            Spacer()
+            Button {
+                if active { mc.cancelRecording() } else { mc.record(forStart: forStart) }
+            } label: {
+                Text(active ? T("Нажмите сочетание…") : combo)
+                    .frame(minWidth: 110)
+            }
+        }
+    }
+
+    private func toggleRow(_ title: String, _ on: Bool, _ set: @escaping (Bool) -> Void) -> some View {
+        Toggle(title, isOn: Binding(get: { on }, set: set))
+            .toggleStyle(.switch)
+    }
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.4).contentShape(Rectangle()).onTapGesture { }
+            VStack(spacing: 0) {
+                HStack {
+                    Text(T("Настройки Пуска")).font(.headline)
+                    Spacer()
+                }
+                .padding(16)
+                Divider()
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) {
+                        section(T("Язык")) {
+                            Picker("", selection: Binding(get: { store.language }, set: { store.setLanguage($0) })) {
+                                ForEach(AppLanguage.allCases, id: \.self) { Text(languageTitle($0)).tag($0) }
+                            }
+                            .pickerStyle(.segmented)
+                            .labelsHidden()
+                        }
+                        section(T("Горячие клавиши")) {
+                            hotkeyRow(T("Открыть или скрыть «Пуск»"), combo: mc.startComboTitle, forStart: true)
+                            hotkeyRow(T("Свернуть все окна"), combo: mc.minimizeComboTitle, forStart: false)
+                            if mc.recordingFor != nil {
+                                Text(T("Нужен хотя бы один модификатор (⌃ ⌥ ⌘ ⇧). Esc — отмена."))
+                                    .font(.caption).foregroundColor(.secondary)
+                            }
+                        }
+                        section(T("Жест")) {
+                            toggleRow(T("Открывать «Пуск» жестом: большой + три пальца"), mc.pinchOn) { on in
+                                if on { confirmPinch = true } else { mc.setPinch(false) }
+                            }
+                            if confirmPinch {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text(T("Включить жест «большой + три пальца»?")).font(.system(size: 13, weight: .semibold))
+                                    Text(T("Чтобы системный жест не открывал своё приложение одновременно с «Пуском», ")
+                                         + T("сначала отключите его: Настройки → Трекпад → Другие жесты → «Launchpad» («Приложения»)."))
+                                        .font(.caption).foregroundColor(.secondary)
+                                    HStack {
+                                        Button(T("Отмена")) { confirmPinch = false }
+                                        Button(T("Включить")) { mc.setPinch(true); confirmPinch = false }
+                                    }
+                                }
+                                .padding(10)
+                                .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.06)))
+                            }
+                        }
+                        section(T("Свернуть всё")) {
+                            toggleRow(T("Возвращать окна, если экран пуст"), mc.restoreOn) { mc.setRestore($0) }
+                            toggleRow(T("Сворачивать по клику в Dock"), mc.dockOn) { mc.setDock($0) }
+                            Button(T("Разрешения…")) { store.showSettings = false; store.showPermissions = true }
+                        }
+                        section(T("Система")) {
+                            toggleRow(T("Запускать при входе в систему"), mc.loginOn) { mc.setLogin($0) }
+                            Button(T("Закрепить в Dock первым (справа от Finder)…")) { confirmPin = true }
+                            if confirmPin {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text(T("Закрепить «Пуск» в Dock?")).font(.system(size: 13, weight: .semibold))
+                                    Text(T("Иконка встанет первой справа от Finder. Dock на секунду перезапустится. Делайте это, когда «Пуск» лежит на своём постоянном месте."))
+                                        .font(.caption).foregroundColor(.secondary)
+                                    HStack {
+                                        Button(T("Отмена")) { confirmPin = false }
+                                        Button(T("Закрепить")) { confirmPin = false; mc.pinToDock() }
+                                    }
+                                }
+                                .padding(10)
+                                .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.06)))
+                            }
+                        }
+                    }
+                    .padding(16)
+                }
+                Divider()
+                HStack {
+                    Spacer()
+                    Button(T("Готово")) { mc.cancelRecording(); store.showSettings = false }
+                        .keyboardShortcut(.defaultAction)
+                }
+                .padding(12)
+            }
+            .frame(width: 440)
+            .frame(maxHeight: 520)
+            .background(RoundedRectangle(cornerRadius: 12).fill(Color(NSColor.windowBackgroundColor)))
+            .shadow(radius: 20)
+            .padding(20)
+        }
+        .onAppear { mc.syncSettings() }
+    }
+}
+
+struct RootView: View {
+    @ObservedObject var store: Store
+    let close: () -> Void
+    let resetPlacement: () -> Void
+
+    @State private var query = ""
+    @State private var editingOriginal: String? = nil   // "" — новая категория
+    @State private var draft = ""
+    @State private var dropTarget: String? = nil
+    @State private var showTools = false
+    @FocusState private var searchFocused: Bool
+    @FocusState private var nameFocused: Bool
+
+    private var searching: Bool { !query.trimmingCharacters(in: .whitespaces).isEmpty }
+
+    private var showingLinks: Bool { store.currentSelection == webCategory && !searching }
+
+    private var linksGrid: some View {
+        let current = store.openFolder
+        let folder = store.folders.first { $0.id == current }
+        let shown = store.links.filter { $0.folder == (folder?.id) }
+        return VStack(alignment: .leading, spacing: 10) {
+            if let f = folder {
+                HStack(spacing: 6) {
+                    Button { store.openFolder = nil } label: {
+                        Label(T("Сайты"), systemImage: "chevron.left")
+                            .padding(.horizontal, 8).padding(.vertical, 4)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .hoverHighlight(6)
+                    .onDrop(of: [UTType.plainText], isTargeted: nil) { providers in
+                        dropLink(providers, to: nil)
+                    }
+                    .help(T("Перетащите сайт сюда, чтобы вынести из папки"))
+                    Text(f.title).font(.headline)
+                    Spacer()
+                }
+            }
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 96, maximum: 120), spacing: 8)], spacing: 8) {
+                if folder == nil {
+                    ForEach(store.folders) { f in
+                        FolderCell(folder: f,
+                                   previews: store.links.filter { $0.folder == f.id }.prefix(4).map { ($0, store.linkIcon($0)) },
+                                   onOpen: { store.openFolder = f.id },
+                                   onDropLink: { providers in dropLink(providers, to: f.id) })
+                            .contextMenu {
+                                Button(T("Переименовать")) { store.folderDraft = FolderDraft(id: f.id, title: f.title) }
+                                Button(T("Удалить папку")) { store.deleteFolder(f) }
+                            }
+                    }
+                }
+                ForEach(shown) { l in
+                    LinkCell(link: l, icon: store.linkIcon(l), onOpen: { openLink(l) })
+                        .onDrag { NSItemProvider(object: "link:\(l.id.uuidString)" as NSString) }
+                        .contextMenu {
+                            Button(T("Изменить…")) { store.linkDraft = LinkDraft(id: l.id, title: l.title, url: l.url) }
+                            if !store.folders.isEmpty {
+                                Menu(T("Переместить в папку")) {
+                                    ForEach(store.folders.filter { $0.id != l.folder }) { f in
+                                        Button(f.title) { store.moveLink(l.id, to: f.id) }
+                                    }
+                                }
+                            }
+                            if l.folder != nil {
+                                Button(T("Вынести из папки")) { store.moveLink(l.id, to: nil) }
+                            }
+                            Button(T("Удалить")) { store.deleteLink(l) }
+                        }
+                }
+                AddLinkCell { store.linkDraft = LinkDraft(id: nil, title: "", url: "", folder: folder?.id) }
+                if folder == nil {
+                    AddFolderCell { store.folderDraft = FolderDraft(id: nil, title: "") }
+                }
+            }
+            if store.links.isEmpty && store.folders.isEmpty {
+                Text(T("Быстрый доступ к сайтам: нажмите «Добавить сайт»."))
+                    .font(.callout).foregroundColor(.secondary).padding(.top, 8)
+            }
+        }
+        .padding(14)
+        .onAppear { store.ensureIcons() }
+    }
+
+    /// Перетаскивание сайта на папку (или на «назад», чтобы вынести из папки)
+    private func dropLink(_ providers: [NSItemProvider], to folder: UUID?) -> Bool {
+        guard let p = providers.first else { return false }
+        _ = p.loadObject(ofClass: NSString.self) { obj, _ in
+            guard let ns = obj as? NSString else { return }
+            let str = String(ns)
+            guard str.hasPrefix("link:"), let id = UUID(uuidString: String(str.dropFirst(5))) else { return }
+            DispatchQueue.main.async { store.moveLink(id, to: folder) }
+        }
+        return true
+    }
+
+    private func openLink(_ l: WebLink) {
+        if let u = Store.normalizedURL(l.url) { NSWorkspace.shared.open(u) }
+        close()
+    }
+
+    private var visibleApps: [AppItem] {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        if !q.isEmpty { return store.apps.filter { $0.name.localizedCaseInsensitiveContains(q) } }
+        let sel = store.currentSelection
+        if sel == allCategory { return store.apps }
+        return store.apps.filter { store.category(of: $0) == sel }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+        DragBar()
+        HStack(spacing: 0) {
+            sidebar.frame(width: 236)
+            Divider()
+            VStack(spacing: 0) {
+                TextField(T("Поиск приложений"), text: $query)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($searchFocused)
+                    .onSubmit { if let first = visibleApps.first { launch(first) } }
+                    .padding([.top, .horizontal], 14)
+                HStack {
+                    Text(searching ? T("Результаты поиска") : T(store.currentSelection))
+                        .font(.headline)
+                    Spacer()
+                    Button { store.showSettings = true } label: {
+                        Image(systemName: "gearshape.2")
+                            .padding(5).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .hoverHighlight(6)
+                    .foregroundColor(.secondary)
+                    .help(T("Настройки Пуска"))
+                    Button { store.showPermissions = true } label: {
+                        Image(systemName: store.permissionsOK ? "lock.shield" : "exclamationmark.shield")
+                            .padding(5).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .hoverHighlight(6)
+                    .foregroundColor(store.permissionsOK ? .secondary : .orange)
+                    .help(store.permissionsOK ? T("Разрешения") : T("Не все разрешения выданы — нажмите, чтобы настроить"))
+                    Button { resetPlacement() } label: {
+                        Image(systemName: "arrow.counterclockwise")
+                            .padding(5).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .hoverHighlight(6)
+                    .foregroundColor(.secondary)
+                    .help(T("Вернуть размер и положение по умолчанию"))
+                }
+                .padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 4)
+                ScrollView {
+                    if showingLinks {
+                        linksGrid
+                    } else {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 96, maximum: 120), spacing: 8)], spacing: 8) {
+                        ForEach(visibleApps) { app in
+                            AppCell(app: app, icon: store.icon(for: app), onOpen: { launch(app) })
+                                .onDrag { NSItemProvider(object: app.id as NSString) }
+                                .contextMenu { appMenu(app) }
+                        }
+                    }
+                    .padding(14)
+                    }
+                }
+            }
+        }
+        }
+        .frame(minWidth: minWindowSize.width, maxWidth: maxWindowSize.width,
+               minHeight: minWindowSize.height, maxHeight: maxWindowSize.height)
+        .background(VisualEffect())
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay {
+            if let m = store.uninstall { UninstallOverlay(model: m, store: store) }
+            if let c = store.clean { CleanOverlay(model: c, store: store) }
+            if let mm = store.maint { MaintenanceOverlay(model: mm, store: store) }
+            if let bf = store.big { BigFilesOverlay(model: bf, store: store) }
+            if store.showSettings, let mc = store.minimize { SettingsOverlay(store: store, mc: mc) }
+            if let d = store.folderDraft { FolderEditorOverlay(draft: d, store: store).id(d.key) }
+            if let d = store.linkDraft { LinkEditorOverlay(draft: d, store: store).id(d.key) }
+            if let pr = store.pwRequest { PasswordOverlay(request: pr, store: store) }
+            if store.showPermissions { PermissionsOverlay(store: store) }
+        }
+        .overlay(alignment: .bottom) { dropBanner }
+        .onExitCommand { close() }
+        .id(store.language)
+        .onReceive(store.$showTick) { _ in
+            query = ""
+            editingOriginal = nil
+            showTools = false
+            store.linkDraft = nil
+            store.folderDraft = nil
+            store.openFolder = nil
+            store.showSettings = false
+            store.minimize?.cancelRecording()
+            if store.uninstall?.stage != .working { store.uninstall = nil }
+            if store.clean?.stage != .working { store.clean = nil }
+            if store.maint?.running != true { store.maint = nil }
+            if store.big?.stage != .working { store.big = nil }
+            DispatchQueue.main.async { searchFocused = true }
+        }
+    }
+
+    // Боковая панель
+
+    private var sidebar: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    categoryRow(allCategory)
+                    categoryRow(webCategory)
+                    ForEach(store.categoryList, id: \.self) { categoryRow($0) }
+                    if editingOriginal == "" { nameField }
+                }
+                .padding(10)
+            }
+            Divider()
+            VStack(spacing: 10) {
+                Button {
+                    beginEdit("", text: "")
+                } label: {
+                    Label(T("Новая категория"), systemImage: "plus.circle")
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 8).padding(.vertical, 6)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .hoverHighlight(7)
+                .help(T("Создать свою категорию"))
+
+                HStack(spacing: 12) {
+                    shortcut("com.apple.Terminal", T("Терминал"), "terminal")
+                    shortcut("com.apple.ActivityMonitor", T("Мониторинг системы"), "waveform.path.ecg")
+                    shortcut("com.apple.AppStore", "App Store", "bag")
+                    Spacer(minLength: 0)
+                    // Инструменты: меню открывается выше кнопки (см. toolsMenu)
+                    Button { showTools.toggle() } label: {
+                        Image(systemName: "wrench.and.screwdriver.fill")
+                            .font(.system(size: 16))
+                            .foregroundColor(.accentColor)
+                            .frame(width: 24, height: 24)
+                            .padding(4)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .hoverHighlight(8)
+                    .help(T("Инструменты"))
+                    shortcut("com.apple.systempreferences", T("Системные настройки"), "gearshape")
+                }
+            }
+            .padding(12)
+        }
+        .background(Color.primary.opacity(0.04))
+        .overlay(alignment: .bottomTrailing) {
+            if showTools {
+                ZStack(alignment: .bottomTrailing) {
+                    Color.clear.contentShape(Rectangle()).onTapGesture { showTools = false }
+                    toolsMenu
+                        .padding(.trailing, 14)
+                        .padding(.bottom, 82)
+                }
+            }
+        }
+    }
+
+    /// Меню инструментов: появляется над кнопкой. Новые инструменты добавляем сюда.
+    private var toolsMenu: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ToolRow(title: T("Очистка мусора"), symbol: "sparkles") {
+                showTools = false
+                store.beginClean()
+            }
+            ToolRow(title: T("Большие и старые файлы"), symbol: "archivebox") {
+                showTools = false
+                store.beginBig()
+            }
+            ToolRow(title: T("Обслуживание"), symbol: "wrench.and.screwdriver") {
+                showTools = false
+                store.beginMaint()
+            }
+        }
+        .padding(6)
+        .frame(minWidth: 190, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color(NSColor.windowBackgroundColor)))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.12), lineWidth: 1))
+        .shadow(color: .black.opacity(0.25), radius: 8, y: 2)
+    }
+
+    private var nameField: some View {
+        TextField(T("Название"), text: $draft)
+            .textFieldStyle(.roundedBorder)
+            .focused($nameFocused)
+            .onSubmit { commitEdit() }
+            .onChange(of: nameFocused) { focused in if !focused { commitEdit() } }
+    }
+
+    @ViewBuilder
+    private func categoryRow(_ name: String) -> some View {
+        if editingOriginal == name {
+            nameField
+        } else {
+            let isCustom = store.customCategories.contains(name)
+            let isSelected = store.currentSelection == name && !searching
+            let isDropTarget = dropTarget == name && name != allCategory
+            HStack(spacing: 8) {
+                Image(systemName: symbol(for: name)).frame(width: 20)
+                Text(T(name)).lineLimit(1)
+                Spacer()
+                Text("\(store.count(in: name))").font(.caption).foregroundColor(.secondary)
+            }
+            .padding(.horizontal, 8).padding(.vertical, 6)
+            .background(RoundedRectangle(cornerRadius: 7)
+                .fill(isDropTarget ? Color.accentColor.opacity(0.4)
+                      : (isSelected ? Color.accentColor.opacity(0.25) : Color.clear)))
+            .overlay(RoundedRectangle(cornerRadius: 7)
+                .stroke(Color.accentColor, lineWidth: isDropTarget ? 2 : 0))
+            .hoverHighlight(7)
+            .contentShape(Rectangle())
+            .onTapGesture { store.selected = name; query = "" }
+            .contextMenu {
+                if isCustom {
+                    Button(T("Переименовать")) { beginEdit(name, text: name) }
+                    Button(T("Удалить категорию")) { store.deleteCategory(name) }
+                }
+            }
+            .onDrop(of: [UTType.plainText],
+                    isTargeted: Binding(
+                        get: { dropTarget == name },
+                        set: { on in
+                            if on { if name != webCategory { dropTarget = name } }
+                            else if dropTarget == name { dropTarget = nil }
+                        })) { providers in
+                if name == webCategory { return false }
+                return handleDrop(providers, to: name)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func appMenu(_ app: AppItem) -> some View {
+        Menu(T("Переместить в категорию")) {
+            ForEach(store.assignableCategories, id: \.self) { c in
+                Button(T(c)) { store.assign(app, to: c) }
+            }
+        }
+        if store.assignments[app.id] != nil {
+            Button(T("Вернуть в автоматическую категорию")) { store.resetAssignment(app) }
+        }
+        Button(T("Показать в Finder")) {
+            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: app.path)])
+        }
+        Divider()
+        if app.path.hasPrefix("/System/") {
+            Button(T("Удалить… (системное приложение)")) { }.disabled(true)
+        } else {
+            Button(T("Удалить…")) { store.beginUninstall(app) }
+        }
+    }
+
+    @ViewBuilder
+    private var dropBanner: some View {
+        if let t = dropTarget, t != allCategory {
+            Text(Tf("Переместить в «%@»", "\(T(t))"))
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(.white)
+                .padding(.horizontal, 14).padding(.vertical, 8)
+                .background(Capsule().fill(Color.accentColor))
+                .padding(.bottom, 14)
+                .allowsHitTesting(false)
+        }
+    }
+
+    // Действия
+
+    private func beginEdit(_ original: String, text: String) {
+        draft = text
+        editingOriginal = original
+        DispatchQueue.main.async { nameFocused = true }
+    }
+
+    private func commitEdit() {
+        guard let orig = editingOriginal else { return }
+        editingOriginal = nil
+        let name = draft
+        draft = ""
+        if orig.isEmpty { store.addCategory(name) } else { store.renameCategory(orig, to: name) }
+    }
+
+    private func handleDrop(_ providers: [NSItemProvider], to category: String) -> Bool {
+        guard category != allCategory, let p = providers.first else { return false }
+        _ = p.loadObject(ofClass: NSString.self) { obj, _ in
+            guard let ns = obj as? NSString else { return }
+            let id = String(ns)
+            if id.hasPrefix("link:") { return }   // это сайт, а не приложение
+            DispatchQueue.main.async { store.assign(id: id, to: category) }
+        }
+        return true
+    }
+
+    private func bundleIcon(_ id: String, _ symbol: String) -> NSImage {
+        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: id) {
+            return NSWorkspace.shared.icon(forFile: url.path)
+        }
+        return NSImage(systemSymbolName: symbol, accessibilityDescription: nil) ?? NSImage()
+    }
+
+    /// Быстрый запуск системного приложения иконкой внизу панели
+    private func shortcut(_ id: String, _ title: String, _ symbol: String) -> some View {
+        Button { openBundle(id) } label: {
+            Image(nsImage: bundleIcon(id, symbol)).resizable().frame(width: 24, height: 24)
+                .padding(4)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .hoverHighlight(8)
+        .help(title)
+    }
+
+    private var appStoreIcon: NSImage {
+        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.AppStore") {
+            return NSWorkspace.shared.icon(forFile: url.path)
+        }
+        return NSImage(systemSymbolName: "bag.fill", accessibilityDescription: nil) ?? NSImage()
+    }
+
+    private func openBundle(_ id: String) {
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: id) else { return }
+        NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration(),
+                                           completionHandler: nil)
+        close()
+    }
+
+    private func openSettings() { openBundle("com.apple.systempreferences") }
+    private func openAppStore() { openBundle("com.apple.AppStore") }
+
+    private func launch(_ app: AppItem) {
+        NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: app.path),
+                                           configuration: NSWorkspace.OpenConfiguration(),
+                                           completionHandler: nil)
+        close()
+    }
+}
+
+// MARK: - Окно и приложение
+
+final class PopupWindow: NSWindow {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    let store = Store()
+    let minimize = MinimizeController()
+    var window: PopupWindow!
+    private var programmatic = false
+    private let defaults = UserDefaults.standard
+
+    /// Положение и размер, которые задал пользователь (nil — ставим у Dock автоматически)
+    private var savedFrame: NSRect? {
+        guard defaults.bool(forKey: "customPlacement"),
+              let str = defaults.string(forKey: "windowFrame") else { return nil }
+        let r = NSRectFromString(str)
+        guard r.width > 0, r.height > 0 else { return nil }
+        var out = r
+        out.size.width = min(max(r.width, minWindowSize.width), maxWindowSize.width)
+        out.size.height = min(max(r.height, minWindowSize.height), maxWindowSize.height)
+        return out
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        setupMenu()
+        NotificationCenter.default.addObserver(forName: .languageChanged, object: nil, queue: .main) { [weak self] _ in
+            self?.setupMenu()
+        }
+        let host = NSHostingView(rootView: RootView(store: store, close: { [weak self] in self?.hide() },
+                                              resetPlacement: { [weak self] in self?.resetPlacement() }))
+        window = PopupWindow(contentRect: NSRect(origin: .zero, size: defaultWindowSize),
+                             styleMask: [.borderless, .resizable], backing: .buffered, defer: false)
+        window.contentView = host
+        window.minSize = minWindowSize
+        window.maxSize = maxWindowSize
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.hasShadow = true
+        window.level = .popUpMenu
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        window.isReleasedWhenClosed = false
+        NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification,
+                                               object: window, queue: .main) { [weak self] _ in self?.hide() }
+        for name in [NSWindow.didMoveNotification, NSWindow.didEndLiveResizeNotification] {
+            NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+                self?.saveFrame()
+            }
+        }
+        store.minimize = minimize
+        minimize.openStart = { [weak self] in self?.show() }
+        minimize.toggleStart = { [weak self] in
+            guard let self = self else { return }
+            if self.window.isVisible && NSApp.isActive { self.window.orderOut(nil) } else { self.show() }
+        }
+        minimize.start()
+        // Esc закрывает «Пуск» из любого места окна, даже если фокус не в SwiftUI-элементе
+        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
+            guard let self = self, e.keyCode == 53, self.window.isKeyWindow,
+                  NSApp.modalWindow == nil, self.window.attachedSheet == nil,
+                  self.store.pwRequest == nil, self.minimize.recordingFor == nil else { return e }
+            self.hide()
+            return nil
+        }
+        show()
+    }
+
+    private func saveFrame() {
+        guard !programmatic, window.isVisible else { return }
+        defaults.set(NSStringFromRect(window.frame), forKey: "windowFrame")
+        defaults.set(true, forKey: "customPlacement")
+    }
+
+    func resetPlacement() {
+        defaults.set(false, forKey: "customPlacement")
+        programmatic = true
+        window.setContentSize(defaultWindowSize)
+        positionNearDock()
+        programmatic = false
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if window.isVisible { hide() } else { show() }
+        return false
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    func applicationDidResignActive(_ notification: Notification) { hide() }
+
+    func positionNearDock() {
+        // Окно появляется у Dock и целиком выше него (в том числе при автоскрытии и увеличении иконок)
+        let mouse = NSEvent.mouseLocation
+        let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) }
+            ?? NSScreen.main ?? NSScreen.screens[0]
+        let f = screen.frame, vf = screen.visibleFrame
+        let w = window.frame.width, h = window.frame.height
+        let m: CGFloat = 10
+
+        let dock = UserDefaults(suiteName: "com.apple.dock")
+        let orient = dock?.string(forKey: "orientation") ?? "bottom"
+        var tile = CGFloat(dock?.double(forKey: "tilesize") ?? 0)
+        if tile <= 0 { tile = 48 }
+        let large = CGFloat(dock?.double(forKey: "largesize") ?? 0)
+        let magnified = dock?.bool(forKey: "magnification") ?? false
+        let est = (magnified ? max(tile, large) : tile) + 36   // запас на подложку Dock
+
+        var x: CGFloat, y: CGFloat
+        switch orient {
+        case "left":
+            let inset = max(vf.minX - f.minX, est)
+            x = f.minX + inset + m
+            y = mouse.y - h / 2
+            y = max(vf.minY + m, min(y, vf.maxY - h - m))
+        case "right":
+            let inset = max(f.maxX - vf.maxX, est)
+            x = f.maxX - inset - w - m
+            y = mouse.y - h / 2
+            y = max(vf.minY + m, min(y, vf.maxY - h - m))
+        default:
+            let inset = max(vf.minY - f.minY, est)
+            y = f.minY + inset + m
+            let onDock = mouse.y <= f.minY + inset + 20
+            x = onDock ? mouse.x - w / 2 : vf.minX + m
+            x = max(vf.minX + m, min(x, vf.maxX - w - m))
+            y = min(y, vf.maxY - h - m)
+        }
+        window.setFrameOrigin(NSPoint(x: x, y: y))
+    }
+
+    func show() {
+        programmatic = true
+        if let r = savedFrame, NSScreen.screens.contains(where: { $0.visibleFrame.intersects(r) }) {
+            window.setFrame(r, display: true)
+        } else {
+            positionNearDock()
+        }
+        programmatic = false
+        store.rescan()
+        store.refreshPermissions()
+        store.showTick += 1
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    func hide() {
+        if Store.suppressAutoHide { return }
+        window.orderOut(nil)
+    }
+
+    private func setupMenu() {
+        let main = NSMenu()
+        let appItem = NSMenuItem(); main.addItem(appItem)
+        let appMenu = NSMenu(); appItem.submenu = appMenu
+        appMenu.addItem(withTitle: T("Завершить Пуск"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+
+        let editItem = NSMenuItem(); main.addItem(editItem)
+        let edit = NSMenu(title: T("Правка")); editItem.submenu = edit
+        edit.addItem(withTitle: T("Вырезать"), action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        edit.addItem(withTitle: T("Копировать"), action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        edit.addItem(withTitle: T("Вставить"), action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        edit.addItem(withTitle: T("Выбрать всё"), action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        NSApp.mainMenu = main
+    }
+}
+
+let app = NSApplication.shared
+let delegate = AppDelegate()
+app.delegate = delegate
+app.setActivationPolicy(.regular)
+app.run()
