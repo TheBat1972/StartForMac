@@ -788,6 +788,7 @@ final class Store: ObservableObject, @unchecked Sendable {
             if result[id] != nil { return }
             var name = fm.displayName(atPath: url.path)
             if name.hasSuffix(".app") { name = String(name.dropLast(4)) }
+            if url.lastPathComponent == "AddPrinter.app" { name = "Центр печати" }   // в системе он называется AddPrinter
             var cat: String
             if let t = info?["LSApplicationCategoryType"] as? String { cat = mapCategory(t) }
             else { cat = "Прочее" }
@@ -812,6 +813,10 @@ final class Store: ObservableObject, @unchecked Sendable {
                     }
                 }
             }
+            if url.lastPathComponent == "Passwords.app" { aliases.formUnion(["Пароли", "Пароль", "Password", "Связка ключей"]) }
+            // «Связка ключей» — это и есть менеджер паролей старого образца, ищут её по слову «пароли»
+            if url.lastPathComponent == "Keychain Access.app" { aliases.formUnion(["Пароли", "Пароль", "Password", "Passwords", "Keychain"]) }
+            if url.lastPathComponent == "AddPrinter.app" { aliases.formUnion(["AddPrinter", "Print Center", "Принтеры", "Printers"]) }
             result[id] = AppItem(id: id, name: name, path: url.path, autoCategory: cat, aliases: Array(aliases))
         }
 
@@ -827,14 +832,21 @@ final class Store: ObservableObject, @unchecked Sendable {
         }
 
         for r in roots { walk(URL(fileURLWithPath: r), depth: 0) }
-        // служебные программы вроде «Центра печати» лежат в CoreServices (Launchpad их показывает) — только верхний уровень, без фоновых агентов
+        // служебные программы лежат в CoreServices (Launchpad их показывает): целиком папка Applications и
+        // выбранные программы из самой CoreServices — остальное там фоновые агенты и установщики
+        let coreWanted: Set<String> = ["Finder.app", "AddPrinter.app", "Apple Diagnostics.app", "Batteries.app",
+                                       "Certificate Assistant.app", "Erase Assistant.app", "Screen Time.app"]
         for r in ["/System/Library/CoreServices/Applications", "/System/Library/CoreServices"] {
             guard let items = try? fm.contentsOfDirectory(at: URL(fileURLWithPath: r), includingPropertiesForKeys: nil,
                                                           options: [.skipsHiddenFiles]) else { continue }
             for u in items where u.pathExtension == "app" {
+                if r.hasSuffix("CoreServices") {
+                    if coreWanted.contains(u.lastPathComponent) { add(u) }
+                    continue
+                }
                 let i = Bundle(url: u)?.infoDictionary
-                if (i?["LSUIElement"] as? Bool) == true || (i?["LSBackgroundOnly"] as? Bool) == true { continue }
-                if (i?["LSUIElement"] as? String) == "1" || (i?["LSBackgroundOnly"] as? String) == "1" { continue }
+                if let v = i?["LSUIElement"], "\(v)" == "1" || "\(v)" == "true" { continue }
+                if let v = i?["LSBackgroundOnly"], "\(v)" == "1" || "\(v)" == "true" { continue }
                 add(u)
             }
         }
