@@ -48,6 +48,7 @@ struct AppItem: Identifiable, Hashable {
     let name: String
     let path: String
     let autoCategory: String
+    var aliases: [String] = []     // другие названия (русское, английское, из локализаций) — для поиска
 }
 
 struct WebLink: Codable, Identifiable {
@@ -791,7 +792,27 @@ final class Store: ObservableObject, @unchecked Sendable {
             if let t = info?["LSApplicationCategoryType"] as? String { cat = mapCategory(t) }
             else { cat = "Прочее" }
             if cat == "Прочее" && url.path.contains("/Utilities/") { cat = "Утилиты" }
-            result[id] = AppItem(id: id, name: name, path: url.path, autoCategory: cat)
+            // у системных программ несколько названий: файл называется по-английски, а показывается русское
+            var aliases = Set<String>()
+            func addAlias(_ s: String?) {
+                guard var t = s?.trimmingCharacters(in: .whitespaces), !t.isEmpty else { return }
+                if t.hasSuffix(".app") { t = String(t.dropLast(4)) }
+                if t != name { aliases.insert(t) }
+            }
+            addAlias((try? url.resourceValues(forKeys: [.localizedNameKey]))?.localizedName)
+            addAlias(url.deletingPathExtension().lastPathComponent)
+            addAlias(info?["CFBundleDisplayName"] as? String)
+            addAlias(info?["CFBundleName"] as? String)
+            if let res = Bundle(url: url)?.resourceURL {
+                for lp in ["ru.lproj", "Russian.lproj", "en.lproj", "English.lproj"] {
+                    let f = res.appendingPathComponent(lp).appendingPathComponent("InfoPlist.strings").path
+                    if let d = NSDictionary(contentsOfFile: f) as? [String: Any] {
+                        addAlias(d["CFBundleDisplayName"] as? String)
+                        addAlias(d["CFBundleName"] as? String)
+                    }
+                }
+            }
+            result[id] = AppItem(id: id, name: name, path: url.path, autoCategory: cat, aliases: Array(aliases))
         }
 
         func walk(_ dir: URL, depth: Int) {
@@ -806,6 +827,17 @@ final class Store: ObservableObject, @unchecked Sendable {
         }
 
         for r in roots { walk(URL(fileURLWithPath: r), depth: 0) }
+        // служебные программы вроде «Центра печати» лежат в CoreServices (Launchpad их показывает) — только верхний уровень, без фоновых агентов
+        for r in ["/System/Library/CoreServices/Applications", "/System/Library/CoreServices"] {
+            guard let items = try? fm.contentsOfDirectory(at: URL(fileURLWithPath: r), includingPropertiesForKeys: nil,
+                                                          options: [.skipsHiddenFiles]) else { continue }
+            for u in items where u.pathExtension == "app" {
+                let i = Bundle(url: u)?.infoDictionary
+                if (i?["LSUIElement"] as? Bool) == true || (i?["LSBackgroundOnly"] as? Bool) == true { continue }
+                if (i?["LSUIElement"] as? String) == "1" || (i?["LSBackgroundOnly"] as? String) == "1" { continue }
+                add(u)
+            }
+        }
         return result.values.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 }
@@ -5741,7 +5773,11 @@ struct RootView: View {
 
     private var visibleApps: [AppItem] {
         let q = query.trimmingCharacters(in: .whitespaces)
-        if !q.isEmpty { return store.apps.filter { $0.name.localizedCaseInsensitiveContains(q) } }
+        if !q.isEmpty {
+            return store.apps.filter { a in
+                a.name.localizedCaseInsensitiveContains(q) || a.aliases.contains { $0.localizedCaseInsensitiveContains(q) }
+            }
+        }
         let sel = store.currentSelection
         if sel == allCategory { return store.apps }
         return store.apps.filter { store.category(of: $0) == sel }
@@ -5775,7 +5811,7 @@ struct RootView: View {
                         .onSubmit {
                             if let first = visibleApps.first { launch(first) }
                             else if let a = quick.item { copyToPasteboard(a.copy); close() }
-                            else if let f = files.hits.first { openFile(f) }
+                            // документы из результатов поиска по Enter не открываются: только мышью
                         }
                     if !query.isEmpty {
                         Button {
