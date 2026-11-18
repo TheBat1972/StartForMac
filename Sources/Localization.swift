@@ -2,9 +2,43 @@
 // Русский текст в коде служит ключом; для английского ищем перевод в словаре.
 
 import Foundation
+import AppKit
+import SwiftUI
 
 enum AppLanguage: String, CaseIterable {
     case system, ru, en
+}
+
+/// Перерисовывает содержимое окна инструмента при смене языка в настройках «Пуска»
+struct LangRefresh<Content: View>: View {
+    @State private var tick = 0
+    let content: () -> Content
+    init(@ViewBuilder _ content: @escaping () -> Content) { self.content = content }
+    var body: some View {
+        content()
+            .id(tick)
+            .onReceive(NotificationCenter.default.publisher(for: .languageChanged)) { _ in tick += 1 }
+    }
+}
+
+enum AppTheme: String, CaseIterable {
+    case system, light, dark
+
+    private static let key = "appTheme"
+
+    static var setting: AppTheme {
+        get { AppTheme(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .system }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: key) }
+    }
+
+    /// Применяет выбранную тему ко всем окнам программы
+    static func apply() {
+        switch setting {
+        case .system: NSApp.appearance = nil
+        case .light: NSApp.appearance = NSAppearance(named: .aqua)
+        case .dark: NSApp.appearance = NSAppearance(named: .darkAqua)
+        }
+    }
 }
 
 enum Loc {
@@ -54,7 +88,101 @@ private let translations: [String: String] = [
     "Лежит в iCloud, не скачан на этот Мак — откроется после загрузки": "In iCloud, not downloaded to this Mac — opens after downloading",
     "в тексте": "in text",
     "Файлы и папки": "Files and folders",
+    "Копировать файл": "Copy file",
     "Копировать путь": "Copy path",
+    "Диски и устройства": "Disks and devices",
+    "Если в маске нет [C], а имена совпадают, номер добавляется автоматически.": "If the mask has no [C] and the names clash, a number is added automatically.",
+    "Ошибка USB: %@": "USB error: %@",
+    "Ничего не найдено": "Nothing found",
+    "Перейти к папке": "Go to folder",
+    "Android: не найден (на телефоне выберите «Передача файлов»)": "Android: not found (choose “File transfer” on the phone)",
+    "Подключение к устройству…": "Connecting to the device…",
+    "С телефоном доступны только копирование, переименование и удаление": "Only copy, rename and delete are available with a phone",
+    "Копирование между двумя телефонами не поддерживается": "Copying between two phones is not supported",
+    "Откройте хранилище телефона (например, «Внутренняя память») в панели назначения": "Open a phone storage (for example “Internal storage”) in the target pane",
+    "Удалить с телефона навсегда: %@?": "Delete from the phone permanently: %@?",
+    "Файлы не попадут в Корзину.": "The files will not go to the Trash.",
+    "Телефон отключён": "Phone disconnected",
+    "Заменить файл? Старый будет удалён с телефона.": "Replace the file? The old one will be deleted from the phone.",
+    "Телефон не отдал хранилища. Разблокируйте экран и разрешите доступ к данным на телефоне.": "The phone gave no storages. Unlock the screen and allow data access on the phone.",
+    "Телефон сообщил об общей ошибке": "The phone reported a general error",
+    "Телефон не поддерживает эту операцию": "The phone does not support this operation",
+    "Объект не найден на телефоне": "Object not found on the phone",
+    "На телефоне нет места": "No space left on the phone",
+    "Объект защищён от записи": "The object is write-protected",
+    "Доступ запрещён": "Access denied",
+    "Телефон занят, повторите позже": "The phone is busy, try again later",
+    "Ответ телефона: код %@": "Phone response: code %@",
+    "Устройство не найдено": "Device not found",
+    "Не удалось открыть телефон по USB. Закройте Android File Transfer, OpenMTP и «Захват изображений», переподключите кабель.": "Could not open the phone over USB. Close Android File Transfer, OpenMTP and Image Capture, then reconnect the cable.",
+    "У телефона не найдены каналы передачи данных": "No data channels found on the phone",
+    "Устройство не подключено": "Device not connected",
+    "Телефон не ответил": "The phone did not respond",
+    "Неверный ответ телефона": "Invalid response from the phone",
+    "Передача данных прервана": "Data transfer interrupted",
+    "Не удалось создать файл": "Could not create the file",
+    "Файл больше 4 ГБ: пока не поддерживается": "File larger than 4 GB: not supported yet",
+    "Хранилище %@": "Storage %@",
+    "Открыть": "Open",
+    "Трекпад не найден или системная библиотека недоступна": "Trackpad not found or the system library is unavailable",
+    "Трекпадов: %@, максимум пальцев в касании: %@": "Trackpads: %@, max fingers in a touch: %@",
+    "Файл менеджер": "File manager",
+    "Размер": "Size",
+    "Изменён": "Modified",
+    "Просмотр": "View",
+    "Переместить": "Move",
+    "Заменить": "Replace",
+    "Пропустить": "Skip",
+    "Выбрано: %@ из %@": "Selected: %@ of %@",
+    "Свободно": "Free",
+    "Домой": "Home",
+    "Рабочий стол": "Desktop",
+    "Документы": "Documents",
+    "Загрузки": "Downloads",
+    "Программы": "Applications",
+    "Корень диска": "Disk root",
+    "Скрытые файлы": "Hidden files",
+    "Вверх": "Up",
+    "Куда:": "To:",
+    "В Корзину": "Move to Trash",
+    "<папка>": "<DIR>",
+    "Применить ко всем": "Apply to all",
+    "«%@» уже существует": "“%@” already exists",
+    "Заменить файл? Старый уйдёт в Корзину.": "Replace the file? The old one goes to the Trash.",
+    "Копировать: %@": "Copy: %@",
+    "Переместить: %@": "Move: %@",
+    "Объектов: %@": "Items: %@",
+    "Удалить в Корзину: %@?": "Move to Trash: %@?",
+    "Пакетное переименование": "Batch rename",
+    "Маска имени": "Name mask",
+    "Маска расширения": "Extension mask",
+    "Найти": "Find",
+    "Заменить на": "Replace with",
+    "Регистр": "Case",
+    "Как есть": "As is",
+    "строчные": "lowercase",
+    "ПРОПИСНЫЕ": "UPPERCASE",
+    "С заглавной": "Capitalized",
+    "Счётчик: начало": "Counter: start",
+    "шаг": "step",
+    "цифр": "digits",
+    "Было": "Before",
+    "Стало": "After",
+    "Имя не может быть пустым": "Name cannot be empty",
+    "Повторяющееся имя": "Duplicate name",
+    "Уже существует": "Already exists",
+    "Недопустимое имя": "Invalid name",
+    "Метки: [N] имя, [E] расширение, [C] счётчик, [Y][M][D] дата": "Tags: [N] name, [E] extension, [C] counter, [Y][M][D] date",
+    "Новое имя:": "New name:",
+    "Имя папки:": "Folder name:",
+    "Создать": "Create",
+    "Не папка": "Not a folder",
+    "нельзя поместить папку в саму себя": "cannot put a folder into itself",
+    "Скопировано: %@": "Copied: %@",
+    "Перемещено: %@": "Moved: %@",
+    "Удалено: %@": "Deleted: %@",
+    "Переименовано: %@": "Renamed: %@",
+    "Обработано %@ из %@": "Processed %@ of %@",
     "Компьютеру не дают уснуть. Клик — свернуть все окна, правый клик — меню": "The Mac is kept awake. Click — minimize all windows, right click — menu",
     "Не давать компьютеру уснуть": "Keep the Mac awake",
     "Компьютер не уснёт — нажмите, чтобы отключить": "The Mac will stay awake — click to turn off",
@@ -165,6 +293,30 @@ private let translations: [String: String] = [
     "Не удалось переместить в Корзину: %@": "Could not move to the Trash: %@",
     "Вернуть можно из Корзины, пока вы её не очистили.": "You can restore it from the Trash until you empty it.",
     "Закрыть все программы": "Quit all apps",
+    "Загрузка и конвертация": "Download and Convert",
+    "Передохни": "Take a Break",
+    "Калькулятор": "Calculator",
+    "Ошибка": "Error",
+    "Конвертер": "Converter",
+    "Длина": "Length",
+    "Масса": "Mass",
+    "Объём": "Volume",
+    "Температура": "Temperature",
+    "Время": "Time",
+    "Данные": "Data",
+    "Площадь": "Area",
+    "Валюты": "Currencies",
+    "15% от 8400, 5 миль в км, 100 usd в руб": "15% of 8400, 5 miles to km, 100 usd to rub",
+    "Любое выражение или конвертация, как в строке поиска": "Any expression or conversion, as in the search field",
+    "Сменить иконку…": "Change Icon…",
+    "Выберите готовую иконку или картинку с диска": "Pick a ready-made icon or an image from disk",
+    "Цвет:": "Color:",
+    "Выбрать файл…": "Choose File…",
+    "Вернуть исходную иконку": "Restore Original Icon",
+    "Иконка для «%@»": "Icon for “%@”",
+    "Выберите картинку (PNG, JPEG, ICNS…)": "Choose an image (PNG, JPEG, ICNS…)",
+    "P — пауза, Esc — заново": "P — pause, Esc — restart",
+    "Запишем результат?": "Save your score?",
     "Если в программе есть несохранённые данные, она сама спросит, что делать": "If an app has unsaved data, it will ask what to do",
     "Других запущенных программ нет": "No other apps are running",
     "Будет закрыто: %@": "To be closed: %@",
@@ -197,6 +349,9 @@ private let translations: [String: String] = [
     "Быстрый доступ к сайтам: нажмите «Добавить сайт».": "Quick access to websites: click “Add website”.",
     "Некорректный адрес": "Invalid address",
     "Язык": "Language",
+    "Тема": "Theme",
+    "Светлая": "Light",
+    "Тёмная": "Dark",
     "Как в системе": "Same as system",
     "1 ГБ": "1 GB",
     "1 год": "1 year",

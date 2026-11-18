@@ -556,7 +556,8 @@ final class MinimizeController: NSObject, ObservableObject {
 
     // MARK: Настройки (вызываются из окна «Настройки» в «Пуске»)
 
-    func setPinch(_ on: Bool) { pinch.enabled = on; pinchOn = pinch.enabled }
+    func setPinch(_ on: Bool) { pinch.enabled = on; pinchOn = pinch.enabled; if on { pinch.restart() } }
+    func pinchDiagnostic() -> String { pinch.diagnostic() }
     func setRestore(_ on: Bool) { Minimizer.restoreEnabled = on; restoreOn = on }
     func setDock(_ on: Bool) { dockWatcher.enabled = on; dockOn = dockWatcher.enabled }
     func setLogin(_ on: Bool) {

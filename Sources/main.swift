@@ -102,6 +102,7 @@ final class Store: ObservableObject, @unchecked Sendable {
     @Published var pwRequest: PasswordRequest? = nil
     @Published var pwTool: ToolKind? = nil
     @Published var language: AppLanguage = Loc.setting
+    @Published var theme: AppTheme = AppTheme.setting
     @Published var links: [WebLink] = []
     @Published var linkDraft: LinkDraft? = nil
     @Published var folders: [WebFolder] = []
@@ -213,6 +214,10 @@ final class Store: ObservableObject, @unchecked Sendable {
 
     func linkIcon(_ l: WebLink) -> NSImage? {
         if let i = iconMemory[l.id] { return i }
+        if let i = NSImage(contentsOf: linkCustomURL(l.id)) {
+            iconMemory[l.id] = i
+            return i
+        }
         if let i = NSImage(contentsOf: iconDir.appendingPathComponent("\(l.id.uuidString).png")) {
             iconMemory[l.id] = i
             return i
@@ -226,6 +231,43 @@ final class Store: ObservableObject, @unchecked Sendable {
             iconAttempted.insert(l.id)
             fetchIcon(l)
         }
+    }
+
+    // Свои иконки сайтов (только в «Пуске»): лежат отдельно от значков, взятых у самих сайтов
+
+    private var linkCustomDir: URL { configURL.deletingLastPathComponent().appendingPathComponent("LinkIcons", isDirectory: true) }
+
+    private func linkCustomURL(_ id: UUID) -> URL { linkCustomDir.appendingPathComponent(id.uuidString + ".png") }
+
+    func hasCustomLinkIcon(_ l: WebLink) -> Bool {
+        FileManager.default.fileExists(atPath: linkCustomURL(l.id).path)
+    }
+
+    func chooseIcon(for link: WebLink) {
+        IconPickerController.shared.show(
+            name: link.title,
+            icon: { [weak self] in self?.linkIcon(link) ?? NSImage(systemSymbolName: "globe", accessibilityDescription: nil) ?? NSImage() },
+            hasCustom: { [weak self] in self?.hasCustomLinkIcon(link) ?? false },
+            apply: { [weak self] img in self?.setCustomIcon(for: link, image: img) },
+            reset: { [weak self] in self?.resetIcon(link) },
+            store: self)
+    }
+
+    func setCustomIcon(for link: WebLink, image src: NSImage) {
+        guard let png = Store.squarePNG(src) else { return }
+        try? FileManager.default.createDirectory(at: linkCustomDir, withIntermediateDirectories: true)
+        try? png.write(to: linkCustomURL(link.id), options: .atomic)
+        iconMemory[link.id] = nil
+        iconTick += 1
+    }
+
+    /// Возвращает значок, взятый у самого сайта (если его не было — докачивает)
+    func resetIcon(_ link: WebLink) {
+        try? FileManager.default.removeItem(at: linkCustomURL(link.id))
+        iconMemory[link.id] = nil
+        iconAttempted.remove(link.id)
+        iconTick += 1
+        ensureIcons()
     }
 
     private func forgetIcon(_ id: UUID) {
@@ -334,6 +376,7 @@ final class Store: ObservableObject, @unchecked Sendable {
     func deleteLink(_ l: WebLink) {
         links.removeAll { $0.id == l.id }
         forgetIcon(l.id)
+        try? FileManager.default.removeItem(at: linkCustomURL(l.id))
         save()
     }
 
@@ -341,6 +384,12 @@ final class Store: ObservableObject, @unchecked Sendable {
         Loc.setting = l
         language = l
         NotificationCenter.default.post(name: .languageChanged, object: nil)
+    }
+
+    func setTheme(_ t: AppTheme) {
+        AppTheme.setting = t
+        theme = t
+        AppTheme.apply()
     }
 
     var categoryList: [String] {
@@ -633,9 +682,68 @@ final class Store: ObservableObject, @unchecked Sendable {
 
     func icon(for app: AppItem) -> NSImage {
         if let i = iconCache[app.id] { return i }
-        let i = NSWorkspace.shared.icon(forFile: app.path)
+        let custom = customIconURL(app.id)
+        let i = FileManager.default.fileExists(atPath: custom.path) ? (NSImage(contentsOf: custom) ?? NSWorkspace.shared.icon(forFile: app.path))
+                                                                   : NSWorkspace.shared.icon(forFile: app.path)
         iconCache[app.id] = i
         return i
+    }
+
+    // Свои иконки приложений (только в «Пуске»; сами программы не меняются)
+
+    private var iconsDir: URL { configURL.deletingLastPathComponent().appendingPathComponent("Icons", isDirectory: true) }
+
+    private func customIconURL(_ id: String) -> URL {
+        iconsDir.appendingPathComponent(id.replacingOccurrences(of: "/", with: "_") + ".png")
+    }
+
+    func hasCustomIcon(_ app: AppItem) -> Bool {
+        FileManager.default.fileExists(atPath: customIconURL(app.id).path)
+    }
+
+    /// Открывает окно выбора иконки: готовые иконки или картинка с диска
+    func chooseIcon(for app: AppItem) {
+        IconPickerController.shared.show(
+            name: app.name,
+            icon: { [weak self] in self?.icon(for: app) ?? NSImage() },
+            hasCustom: { [weak self] in self?.hasCustomIcon(app) ?? false },
+            apply: { [weak self] img in self?.setCustomIcon(for: app, image: img) },
+            reset: { [weak self] in self?.resetIcon(app) },
+            store: self)
+    }
+
+    func setCustomIcon(for app: AppItem, from url: URL) {
+        guard let src = NSImage(contentsOf: url) else { return }
+        setCustomIcon(for: app, image: src)
+    }
+
+    /// Приводит картинку к квадрату 512×512 (пропорции сохраняются) и возвращает PNG
+    static func squarePNG(_ src: NSImage) -> Data? {
+        guard src.size.width > 0, src.size.height > 0 else { return nil }
+        let side: CGFloat = 512
+        let img = NSImage(size: NSSize(width: side, height: side))
+        img.lockFocus()
+        let k = min(side / src.size.width, side / src.size.height)
+        let w = src.size.width * k, h = src.size.height * k
+        src.draw(in: NSRect(x: (side - w) / 2, y: (side - h) / 2, width: w, height: h),
+                 from: .zero, operation: .sourceOver, fraction: 1)
+        img.unlockFocus()
+        guard let tiff = img.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff) else { return nil }
+        return rep.representation(using: .png, properties: [:])
+    }
+
+    func setCustomIcon(for app: AppItem, image src: NSImage) {
+        guard let png = Store.squarePNG(src) else { return }
+        try? FileManager.default.createDirectory(at: iconsDir, withIntermediateDirectories: true)
+        try? png.write(to: customIconURL(app.id), options: .atomic)
+        iconCache[app.id] = nil
+        iconTick += 1
+    }
+
+    func resetIcon(_ app: AppItem) {
+        try? FileManager.default.removeItem(at: customIconURL(app.id))
+        iconCache[app.id] = nil
+        iconTick += 1
     }
 
     // Сканирование
@@ -5049,15 +5157,31 @@ struct FileRow: View {
                 Text(T("в тексте")).font(.caption).foregroundColor(.accentColor).lineLimit(1)
             }
             Text(hit.kind).font(.caption).foregroundColor(.secondary).lineLimit(1)
+            // справа: показать файл в Finder (появляется при наведении)
+            Button {
+                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: hit.id)])
+            } label: {
+                Image(systemName: "magnifyingglass").font(.system(size: 12, weight: .medium))
+            }
+            .buttonStyle(.borderless)
+            .help(T("Показать в Finder"))
+            .opacity(hover ? 1 : 0)
         }
         .padding(.horizontal, 8).padding(.vertical, 5)
         .background(RoundedRectangle(cornerRadius: 8).fill(hover ? Color.primary.opacity(0.12) : Color.clear))
         .contentShape(Rectangle())
         .onHover { hover = $0 }
         .onTapGesture { onOpen() }
+        // перетаскивание файла из результатов поиска в любое приложение или в Finder: уходит копия, оригинал остаётся на месте
+        .onDrag { makeFileDragProvider(URL(fileURLWithPath: hit.id)) }
         .contextMenu {
             Button(T("Показать в Finder")) {
                 NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: hit.id)])
+            }
+            Button(T("Копировать файл")) {
+                // как ⌘C в Finder: потом ⌘V вставит копию файла куда угодно
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.writeObjects([URL(fileURLWithPath: hit.id) as NSURL])
             }
             Button(T("Копировать путь")) {
                 NSPasteboard.general.clearContents()
@@ -5094,6 +5218,7 @@ struct AppCell: View {
 struct LinkCell: View {
     let link: WebLink
     let icon: NSImage?
+    var custom = false
     let onOpen: () -> Void
     @State private var hover = false
 
@@ -5106,7 +5231,10 @@ struct LinkCell: View {
     var body: some View {
         VStack(spacing: 6) {
             ZStack {
-                if let icon = icon {
+                if custom, let icon = icon {
+                    // своя иконка из банка или с диска — на всю плитку, без белой подложки
+                    Image(nsImage: icon).resizable().interpolation(.high).scaledToFill()
+                } else if let icon = icon {
                     RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.white)
                     Image(nsImage: icon).resizable().interpolation(.high).scaledToFit()
                         .padding(icon.size.width >= 100 ? 4 : 11)
@@ -5366,6 +5494,14 @@ struct SettingsOverlay: View {
         }
     }
 
+    private func themeTitle(_ t: AppTheme) -> String {
+        switch t {
+        case .system: return T("Как в системе")
+        case .light: return T("Светлая")
+        case .dark: return T("Тёмная")
+        }
+    }
+
     private func section<C: View>(_ title: String, @ViewBuilder _ content: () -> C) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title).font(.system(size: 12, weight: .semibold)).foregroundColor(.secondary)
@@ -5411,6 +5547,13 @@ struct SettingsOverlay: View {
                             .pickerStyle(.segmented)
                             .labelsHidden()
                         }
+                        section(T("Тема")) {
+                            Picker("", selection: Binding(get: { store.theme }, set: { store.setTheme($0) })) {
+                                ForEach(AppTheme.allCases, id: \.self) { Text(themeTitle($0)).tag($0) }
+                            }
+                            .pickerStyle(.segmented)
+                            .labelsHidden()
+                        }
                         section(T("Горячие клавиши")) {
                             hotkeyRow(T("Открыть или скрыть «Пуск»"), combo: mc.startComboTitle, forStart: true)
                             hotkeyRow(T("Свернуть все окна"), combo: mc.minimizeComboTitle, forStart: false)
@@ -5422,6 +5565,11 @@ struct SettingsOverlay: View {
                         section(T("Жест")) {
                             toggleRow(T("Открывать «Пуск» жестом: большой + три пальца"), mc.pinchOn) { on in
                                 if on { confirmPinch = true } else { mc.setPinch(false) }
+                            }
+                            if mc.pinchOn {
+                                TimelineView(.periodic(from: Date(), by: 1)) { _ in
+                                    Text(mc.pinchDiagnostic()).font(.caption).foregroundColor(.secondary)
+                                }
                             }
                             if confirmPinch {
                                 VStack(alignment: .leading, spacing: 8) {
@@ -5442,17 +5590,6 @@ struct SettingsOverlay: View {
                             toggleRow(T("Возвращать окна, если экран пуст"), mc.restoreOn) { mc.setRestore($0) }
                             toggleRow(T("Сворачивать по клику в Dock"), mc.dockOn) { mc.setDock($0) }
                             Button(T("Разрешения…")) { store.showSettings = false; store.showPermissions = true }
-                        }
-                        section(T("О программе")) {
-                            HStack(spacing: 12) {
-                                Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 48, height: 48)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(T("Пуск")).font(.system(size: 14, weight: .semibold))
-                                    Text(Tf("Версия %@", AppInfo.version)).font(.caption).foregroundColor(.secondary)
-                                    Text(AppInfo.copyright).font(.caption).foregroundColor(.secondary)
-                                }
-                                Spacer()
-                            }
                         }
                         section(T("Система")) {
                             toggleRow(T("Запускать при входе в систему"), mc.loginOn) { mc.setLogin($0) }
@@ -5550,10 +5687,14 @@ struct RootView: View {
                     }
                 }
                 ForEach(shown) { l in
-                    LinkCell(link: l, icon: store.linkIcon(l), onOpen: { openLink(l) })
+                    LinkCell(link: l, icon: store.linkIcon(l), custom: store.hasCustomLinkIcon(l), onOpen: { openLink(l) })
                         .onDrag { NSItemProvider(object: "link:\(l.id.uuidString)" as NSString) }
                         .contextMenu {
                             Button(T("Изменить…")) { store.linkDraft = LinkDraft(id: l.id, title: l.title, url: l.url) }
+                            Button(T("Сменить иконку…")) { store.chooseIcon(for: l) }
+                            if store.hasCustomLinkIcon(l) {
+                                Button(T("Вернуть исходную иконку")) { store.resetIcon(l) }
+                            }
                             if !store.folders.isEmpty {
                                 Menu(T("Переместить в папку")) {
                                     ForEach(store.folders.filter { $0.id != l.folder }) { f in
@@ -5842,6 +5983,18 @@ struct RootView: View {
     /// Меню инструментов: появляется над кнопкой. Новые инструменты добавляем сюда.
     private var toolsMenu: some View {
         VStack(alignment: .leading, spacing: 2) {
+            ToolRow(title: T("Передохни"), symbol: "gamecontroller") {
+                showTools = false
+                RestWindowController.shared.show()
+            }
+            ToolRow(title: T("Калькулятор"), symbol: "plusminus.circle") {
+                showTools = false
+                CalcWindowController.shared.show()
+            }
+            ToolRow(title: T("Файл менеджер"), symbol: "rectangle.split.2x1") {
+                showTools = false
+                TPWindowController.shared.show()
+            }
             ToolRow(title: T("Очистка мусора"), symbol: "sparkles") {
                 showTools = false
                 store.beginClean()
@@ -5861,6 +6014,10 @@ struct RootView: View {
             ToolRow(title: T("Внешние диски"), symbol: "externaldrive") {
                 showTools = false
                 store.beginFormat()
+            }
+            ToolRow(title: T("Загрузка и конвертация"), symbol: "arrow.down.circle") {
+                showTools = false
+                DCWindowController.shared.show(store: store)
             }
             ToolRow(title: T("Закрыть все программы"), symbol: "xmark.circle") {
                 showTools = false
@@ -5933,6 +6090,10 @@ struct RootView: View {
         }
         if store.assignments[app.id] != nil {
             Button(T("Вернуть в автоматическую категорию")) { store.resetAssignment(app) }
+        }
+        Button(T("Сменить иконку…")) { store.chooseIcon(for: app) }
+        if store.hasCustomIcon(app) {
+            Button(T("Вернуть исходную иконку")) { store.resetIcon(app) }
         }
         Button(T("Показать в Finder")) {
             NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: app.path)])
@@ -6067,6 +6228,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        AppTheme.apply()
+        DispatchQueue.global(qos: .utility).async { cleanDropTemp() }
         setupMenu()
         NotificationCenter.default.addObserver(forName: .languageChanged, object: nil, queue: .main) { [weak self] _ in
             self?.setupMenu()
@@ -6131,6 +6294,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    /// Если идёт загрузка или конвертация, перед выходом спрашиваем
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        DCWindowController.shared.confirmQuit() ? .terminateNow : .terminateCancel
+    }
 
     func applicationDidResignActive(_ notification: Notification) { hide() }
 
