@@ -80,6 +80,10 @@ func Tf(_ s: String, _ args: String...) -> String {
 }
 
 private let translations: [String: String] = [
+    "Конвертер валют в поиске": "Currency converter in search",
+    "Если в поиске указана одна валюта без «в …», например «100 долларов», она переводится в основную, а основная — во вторую.": "If the search has a single currency without “to …”, e.g. “100 dollars”, it is converted to the main currency, and the main one to the second.",
+    "Основная валюта": "Main currency",
+    "Вторая валюта": "Second currency",
     "Скопировано": "Copied",
     "Нажмите, чтобы скопировать результат": "Click to copy the result",
     "Курс на %@": "Rate as of %@",

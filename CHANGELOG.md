@@ -4,6 +4,16 @@
 
 ## Русский
 
+### Версия 4.1 — 2026-11-18
+
+**Новое**
+- **Опорная пара валют для конвертера в поиске.** В настройках Пуска появился раздел «Конвертер валют в поиске»: выбираются основная и вторая валюта (по умолчанию рубль и доллар). Если в поиске набрана одна валюта без «в …», например `100 долларов`, она переводится в основную, а основная — во вторую. Раньше рубль и доллар были заданы жёстко.
+
+**Улучшения**
+- Версия 4.1.
+
+---
+
 ### Версия 4.0 — 2026-11-18
 
 **Новое**
@@ -71,6 +81,16 @@
 ---
 
 ## English
+
+### Version 4.1 — 2026-11-18
+
+**New**
+- **Reference currency pair for the search converter.** Start's Settings now has a “Currency converter in search” section: choose a main and a second currency (ruble and dollar by default). If the search has a single currency without “to …”, e.g. `100 dollars`, it is converted to the main currency, and the main one to the second. Before, the ruble and the dollar were hard-coded.
+
+**Improvements**
+- Version 4.1.
+
+---
 
 ### Version 4.0 — 2026-11-18
 

@@ -4825,6 +4825,29 @@ struct CurrencyRequest {
     let to: String
 }
 
+/// Опорная пара валют для конвертера в поиске (выбирается в настройках)
+enum QuickCurrency {
+    static let baseKey = "quick.base"
+    static let altKey = "quick.alt"
+    static var base: String { UserDefaults.standard.string(forKey: baseKey) ?? "RUB" }
+    static var alt: String { UserDefaults.standard.string(forKey: altKey) ?? "USD" }
+    static let choices = ["RUB", "USD", "EUR", "GBP", "CNY", "JPY", "TRY", "KZT", "UAH", "BYN", "CHF",
+                          "AED", "THB", "INR", "KRW", "GEL", "AMD", "AZN", "UZS", "KGS", "PLN"]
+
+    static func title(_ code: String) -> String {
+        let n = Locale.current.localizedString(forCurrencyCode: code) ?? ""
+        return n.isEmpty ? code : code + " — " + n
+    }
+
+    /// Во что переводить, если в запросе одна валюта без «в …»: в основную, а основную — во вторую
+    static func target(for code: String) -> String {
+        let b = base
+        var a = alt
+        if a == b { a = (b == "USD") ? "EUR" : "USD" }
+        return code == b ? a : b
+    }
+}
+
 enum QuickCalc {
     // MARK: форматирование
 
@@ -4962,8 +4985,8 @@ enum QuickCalc {
             guard let ct = currencyCode(toTok) else { return nil }
             return CurrencyRequest(value: conv.0, from: cf, to: ct)
         }
-        // «100 долларов» без «в …»: показываем в рублях (а рубли — в долларах)
-        return CurrencyRequest(value: conv.0, from: cf, to: cf == "RUB" ? "USD" : "RUB")
+        // «100 долларов» без «в …»: переводим в основную валюту из настроек (а основную — во вторую)
+        return CurrencyRequest(value: conv.0, from: cf, to: QuickCurrency.target(for: cf))
     }
 
     static func currencyAnswer(_ r: CurrencyRequest, fresh: Bool) -> QuickItem? {
@@ -5529,6 +5552,17 @@ struct SettingsOverlay: View {
     @ObservedObject var mc: MinimizeController
     @State private var confirmPinch = false
     @State private var confirmPin = false
+    @AppStorage(QuickCurrency.baseKey) private var quickBase = "RUB"
+    @AppStorage(QuickCurrency.altKey) private var quickAlt = "USD"
+
+    private func currencyPicker(_ sel: Binding<String>) -> some View {
+        Picker("", selection: sel) {
+            ForEach(QuickCurrency.choices, id: \.self) { Text(QuickCurrency.title($0)).tag($0) }
+        }
+        .pickerStyle(.menu)
+        .labelsHidden()
+        .frame(width: 240)
+    }
 
     private func languageTitle(_ l: AppLanguage) -> String {
         switch l {
@@ -5634,6 +5668,22 @@ struct SettingsOverlay: View {
                             toggleRow(T("Возвращать окна, если экран пуст"), mc.restoreOn) { mc.setRestore($0) }
                             toggleRow(T("Сворачивать по клику в Dock"), mc.dockOn) { mc.setDock($0) }
                             Button(T("Разрешения…")) { store.showSettings = false; store.showPermissions = true }
+                        }
+                        section(T("Конвертер валют в поиске")) {
+                            Text(T("Если в поиске указана одна валюта без «в …», например «100 долларов», она переводится в основную, а основная — во вторую."))
+                                .font(.caption).foregroundColor(.secondary)
+                            HStack {
+                                Text(T("Основная валюта"))
+                                Spacer()
+                                currencyPicker(Binding(get: { quickBase },
+                                                       set: { v in if v == quickAlt { quickAlt = quickBase }; quickBase = v }))
+                            }
+                            HStack {
+                                Text(T("Вторая валюта"))
+                                Spacer()
+                                currencyPicker(Binding(get: { quickAlt },
+                                                       set: { v in if v == quickBase { quickBase = quickAlt }; quickAlt = v }))
+                            }
                         }
                         section(T("Система")) {
                             toggleRow(T("Запускать при входе в систему"), mc.loginOn) { mc.setLogin($0) }
