@@ -5736,6 +5736,7 @@ struct RootView: View {
     @State private var draft = ""
     @State private var dropTarget: String? = nil
     @State private var showTools = false
+    @State private var restOpen = false      // «Передохни» раскрыто: Тетрис / Косынка
     @StateObject private var files = FileSearch()
     @StateObject private var quick = QuickAnswer()
     @FocusState private var searchFocused: Bool
@@ -6081,9 +6082,20 @@ struct RootView: View {
     /// Меню инструментов: появляется над кнопкой. Новые инструменты добавляем сюда.
     private var toolsMenu: some View {
         VStack(alignment: .leading, spacing: 2) {
-            ToolRow(title: T("Передохни"), symbol: "gamecontroller") {
-                showTools = false
-                RestWindowController.shared.show()
+            ToolRow(title: T("Передохни"), symbol: restOpen ? "chevron.down" : "gamecontroller") {
+                restOpen.toggle()
+            }
+            if restOpen {
+                ToolRow(title: T("Тетрис"), symbol: "square.grid.3x3.fill") {
+                    showTools = false; restOpen = false
+                    RestWindowController.shared.show()
+                }
+                .padding(.leading, 22)
+                ToolRow(title: T("Косынка"), symbol: "suit.spade.fill") {
+                    showTools = false; restOpen = false
+                    SolitaireWindowController.shared.show()
+                }
+                .padding(.leading, 22)
             }
             ToolRow(title: T("Калькулятор"), symbol: "plusminus.circle") {
                 showTools = false

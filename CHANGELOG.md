@@ -4,6 +4,18 @@
 
 ## Русский
 
+### Версия 5.0 — 2026-11-19
+
+**Новое**
+- **«Передохни» теперь с выбором: Тетрис и Косынка.** Новая игра «Косынка» (Klondike): карты перетаскиваются мышью, двойной щелчок отправляет карту в «дом», отмена хода (кнопка или `Z`), набор из колоды по 1 или по 3 карты, счётчик ходов и время, экран победы, авторская колода картинок и звук хода (если папки `Cards` нет, карты рисуются кодом). Когда все карты открыты, а колода пуста, остаток раскладывается в «дома» сам; после победы карты каскадом вылетают из «домов» и оставляют след, как в классической косынке; таблица 10 лучших результатов (время и ходы) отдельно для набора по 1 и по 3 карты, кнопка «Рекорды», выбор рубашки из четырёх и цвета стола из пяти приглушённых тонов (кнопка «Вид», выбор запоминается).
+- **Поиск Пуска:** Enter больше не открывает документы из результатов (только приложения и копирование результата калькулятора); приложения находятся по любому из названий: русскому, английскому и из локализаций (например, «Печа» и «Prin» находят один и тот же «Центр печати»/Print Center).
+- **«Передохни»:** тетрис падает плавно, а не рывками на целую клетку; шаг считается по реальному времени.
+
+**Улучшения**
+- Версия 5.0.
+
+---
+
 ### Версия 4.1 — 2026-11-18
 
 **Новое**
@@ -17,7 +29,6 @@
 ### Версия 4.0 — 2026-11-18
 
 **Новое**
-- **Поиск Пуска:** Enter больше не открывает документы из результатов (только приложения и копирование результата калькулятора); приложения находятся по любому из названий: русскому, английскому и из локализаций (например, «Печа» и «Prin» находят один и тот же «Центр печати»/Print Center).
 - **Инструмент «Файл менеджер»** (ключ → «Файл менеджер»): две панели в духе Total Commander. Клавиатура: ↑↓, PgUp/PgDn, Home/End двигают курсор; Shift+стрелки выделяют диапазон, а если начать с уже выделенной строки — снимают выделение; Пробел/Insert отмечают и переходят вниз; ⌘A, Num + / − / * ; Esc снимает выделение; Enter открывает папку или запускает файл; Backspace — вверх; Tab и ←/→ — между панелями. Мышь: Shift+клик — диапазон (по выделенному — снятие), ⌘+клик — отметить одну строку. F2/Shift+F6 переименование (для нескольких файлов — пакетное: маски [N] [E] [C] [Y][M][D], поиск и замена, регистр, счётчик, предпросмотр с проверкой конфликтов), F3 просмотр, F4 правка, F5 копирование, F6 перенос, F7 новая папка, F8 или Delete — удаление в Корзину (пакетно для отмеченных). Копирование и перенос спрашивают папку назначения, при совпадении имён — заменить (старый уходит в Корзину) / пропустить / применить ко всем. Файлы можно перетаскивать на панель из результатов поиска «Пуска», Finder и других программ (копия), а из панели — в любые приложения. Внешние диски и подключённые тома — в меню слева от пути; «Показать в Finder» открывает текущую папку. Тема и язык применяются. Контекстное меню строки содержит все функции F-клавиш (работает и на всём выделении). Если флешку или диск отключили, пока панель на нём, панель переходит в «Загрузки».
 
 - **Файл менеджер: телефоны Android (MTP) и поиск.** В меню слева от пути (там же, где диски) появляется подключённый Android в режиме «Передача файлов»; открывается в панели как обычная папка (сначала хранилища: «Внутренняя память», карта). Работает напрямую по USB без сторонних программ, как OpenMTP: на время подключения «Пуск» завершает системную службу ptpcamera, которая держит телефон. С телефоном доступны только копирование (F5, перетаскивание на панель из поиска и Finder), переименование (в том числе пакетное) и удаление (насовсем, с подтверждением); просмотр, правка, перенос и новая папка на такой панели отключены везде: внизу, по F-клавишам и в контекстном меню. Файлы больше 4 ГБ пока не поддерживаются. Если телефон отключили, панель переходит в «Загрузки». В каждой панели есть строка поиска, как в «Пуске» (по имени и тексту внутри файлов, без калькулятора и конверторов): двойной клик по результату открывает его папку в панели, результаты можно перетаскивать.
@@ -82,6 +93,18 @@
 
 ## English
 
+### Version 5.0 — 2026-11-19
+
+**New**
+- **“Take a Break” now offers Tetris and Solitaire.** New Klondike Solitaire game: drag cards with the mouse, double-click sends a card to the foundation, undo (button or `Z`), draw 1 or 3 cards, move counter and timer, win screen, the author's own card images and a move sound (if the `Cards` folder is missing, cards are drawn in code). When every card is face up and the stock is empty, the rest is moved to the foundations automatically; after a win the cards fly out of the foundations and leave trails, like in classic Solitaire; a top-10 table (time and moves) separately for draw-1 and draw-3, “Records” button, a choice of four card backs and five muted table colours (“View” button, remembered).
+- **Start search:** Enter no longer opens documents from the results (only apps and copying a calculator result); apps are found by any of their names: Russian, English and the localized ones (for example “Печа” and “Prin” both find Print Center).
+- **“Rest” (Tetris):** the piece now falls smoothly instead of jumping a whole cell; the step is driven by real elapsed time.
+
+**Improvements**
+- Version 5.0.
+
+---
+
 ### Version 4.1 — 2026-11-18
 
 **New**
@@ -95,7 +118,6 @@
 ### Version 4.0 — 2026-11-18
 
 **New**
-- **Start search:** Enter no longer opens documents from the results (only apps and copying a calculator result); apps are found by any of their names: Russian, English and the localized ones (for example “Печа” and “Prin” both find Print Center).
 - **“File manager” tool** (wrench → “File manager”): two panes in the spirit of Total Commander. Keyboard: ↑↓, PgUp/PgDn, Home/End move the cursor; Shift+arrows select a range, and starting from an already selected row deselects; Space/Insert mark and step down; ⌘A, Num + / − / *; Esc clears the selection; Enter opens a folder or launches a file; Backspace goes up; Tab and ←/→ switch panes. Mouse: Shift+click selects a range (on a selected row it deselects), ⌘+click toggles one row. F2/Shift+F6 rename (several files → batch rename: [N] [E] [C] [Y][M][D] masks, find & replace, case, counter, live preview with conflict checks), F3 view, F4 edit, F5 copy, F6 move, F7 new folder, F8 or Delete move to Trash (batch for marked files). Copy and move ask for the destination; on name clashes: replace (the old one goes to the Trash) / skip / apply to all. Files can be dragged onto a pane from Start search results, Finder and other apps (copy), and out of a pane into any app. External drives and mounted volumes are in the menu left of the path; “Show in Finder” opens the current folder. Theme and language apply. The row context menu has every F-key function (it works on the whole selection too). If a flash drive or disk is ejected while a pane is on it, the pane switches to Downloads.
 
 - **File manager: Android phones (MTP) and search.** A connected Android in “File transfer” mode appears in the menu left of the path (next to the disks) and opens in a pane like a normal folder (storages first: “Internal storage”, SD card). It works directly over USB without third-party apps, like OpenMTP: while connected, Start stops the system ptpcamera service that holds the phone. With a phone only copy (F5, dropping onto the pane from search and Finder), rename (batch too) and delete (permanent, with confirmation) are available; view, edit, move and new folder are disabled on such a pane everywhere: the bottom bar, F-keys and the context menu. Files over 4 GB are not supported yet. If the phone is unplugged, the pane returns to Downloads. Every pane has a search field like Start’s (by name and by text inside files, without the calculator and converters): double-click a result to open its folder in the pane; results can be dragged.

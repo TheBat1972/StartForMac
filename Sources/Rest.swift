@@ -97,6 +97,8 @@ final class RestGameView: NSView, NSTextFieldDelegate {
     // подряд два «тетриса» — ×1,5, серия линий (комбо) — 50 × номер × уровень.
     private let tickSeconds = 0.02
     private var gravityAcc = 0.0
+    private var lastTick = Date.timeIntervalSinceReferenceDate
+    private var fallInterval = 1.0           // текущая длительность шага вниз — для плавной отрисовки
     private var score = 0, level = 1, totalLines = 0
     private var comboCount = -1, backToBack = false
     private var timer: Timer?
@@ -124,7 +126,7 @@ final class RestGameView: NSView, NSTextFieldDelegate {
         fig = RestPiece()
         next = RestPiece()
         playing = true; paused = false; over = false; figureKey = false
-        gravityAcc = 0; score = 0; level = 1; totalLines = 0; comboCount = -1; backToBack = false
+        gravityAcc = 0; lastTick = Date.timeIntervalSinceReferenceDate; score = 0; level = 1; totalLines = 0; comboCount = -1; backToBack = false
         nameField.isHidden = true
         nameField.stringValue = ""
         records = RestRecords.load()
@@ -140,7 +142,7 @@ final class RestGameView: NSView, NSTextFieldDelegate {
 
     private func setPaused(_ on: Bool) {
         paused = on
-        if on { timer?.invalidate() } else { schedule() }
+        if on { timer?.invalidate() } else { lastTick = Date.timeIntervalSinceReferenceDate; schedule() }
         needsDisplay = true
     }
 
@@ -167,8 +169,13 @@ final class RestGameView: NSView, NSTextFieldDelegate {
         if paused { return }
 
         // самотёк фигуры вниз по таблице Guideline (на больших уровнях — несколько клеток за такт)
-        gravityAcc += tickSeconds
+        // реальное время между тактами, а не фиксированные 20 мс: таймер может запаздывать, и фигура дёргалась
+        let now = Date.timeIntervalSinceReferenceDate
+        let dt = min(0.1, max(0.001, now - lastTick))
+        lastTick = now
+        gravityAcc += dt
         let interval = max(0.0005, pow(0.8 - Double(level - 1) * 0.007, Double(level - 1)))
+        fallInterval = interval
         var steps = 0
         while gravityAcc >= interval && steps < 21 {
             gravityAcc -= interval
@@ -192,6 +199,12 @@ final class RestGameView: NSView, NSTextFieldDelegate {
                 return false
             }
         }
+        return true
+    }
+
+    /// Может ли фигура опуститься ещё на клетку (без побочных эффектов)
+    private func canFall() -> Bool {
+        for i in 0..<4 where fig.ys[i] >= 20 || grid[fig.ys[i] + 1][fig.xs[i]] { return false }
         return true
     }
 
@@ -371,7 +384,12 @@ final class RestGameView: NSView, NSTextFieldDelegate {
         for y in 0..<21 { for x in 1...10 where grid[y][x] { drawTile(cellRect(x, y), purple: false) } }
 
         if !over {
-            for i in 0..<4 { drawTile(cellRect(fig.xs[i], fig.ys[i]), purple: false) }
+            // плавное падение: пока под фигурой свободно, рисуем её сдвинутой на долю клетки
+            var dy: CGFloat = 0
+            if playing && !paused && !figureKey && canFall() && fallInterval > 0.05 {
+                dy = CGFloat(min(0.999, gravityAcc / fallInterval)) * cell
+            }
+            for i in 0..<4 { drawTile(cellRect(fig.xs[i], fig.ys[i]).offsetBy(dx: 0, dy: dy), purple: false) }
             // следующая фигура справа
             for i in 0..<4 { drawTile(cellRect(next.xs[i] + 10, next.ys[i] + 4), purple: false) }
         }

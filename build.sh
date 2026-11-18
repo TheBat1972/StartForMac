@@ -26,6 +26,7 @@ swiftc -O -target x86_64-apple-macos12.0 Sources/*.swift -o "$TMP/x86_64"
 lipo -create "$TMP/arm64" "$TMP/x86_64" -output "$STAGE/Contents/MacOS/StartMenu"
 
 cp Info.plist "$STAGE/Contents/Info.plist"
+[ -d Cards ] && cp -R Cards "$STAGE/Contents/Resources/Cards"     # картинки и звуки карт для «Косынки»
 
 swiftc -O Tools/make_icon.swift -o "$TMP/make_icon"
 "$TMP/make_icon" "$TMP"
