@@ -6393,12 +6393,11 @@ struct RootView: View {
             if showTools {
                 ZStack(alignment: .bottomLeading) {
                     Color.clear.contentShape(Rectangle()).onTapGesture { showTools = false; restOpen = false }
-                    // меню над кнопкой «Инструменты»: правый край у правого края боковой панели (ширина 236)
+                    // меню над кнопкой «Инструменты»: по центру колонки категорий (ширина 236)
                     toolsMenu
                         .fixedSize()
                         .background(FrameReader(box: toolsBox))
-                        .padding(.trailing, 14)
-                        .frame(width: 236, alignment: .trailing)
+                        .frame(width: 236, alignment: .center)
                         .padding(.bottom, 82)
                 }
             }
