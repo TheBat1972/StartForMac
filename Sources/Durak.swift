@@ -438,6 +438,7 @@ final class DurakView: NSView {
     private var tDef: [Int] = []
     private var gone = Set<Int>()               // карты стола, которые уже улетели
     private var flyingIn = Set<Int>()             // свои карты, которые ещё летят в руку
+    private var waitingIn = Set<Int>()            // свои карты, чей полёт ещё не начался: рука раздвигается под них только в момент раздачи
     private var pendingIn: [Int: Int] = [:]     // сколько карт ещё летит к сопернику
     private var deckHold = 0                    // карты, которые ещё числятся в колоде на экране
     private var discardShown = 0
@@ -470,7 +471,7 @@ final class DurakView: NSView {
     private let slotStep: CGFloat = 88
 
     private var stockRect: NSRect { return NSRect(x: 24, y: tableY, width: cw, height: ch) }
-    private var discardRect: NSRect { return NSRect(x: W - 124, y: 432, width: cw, height: ch) }
+    private var discardRect: NSRect { return NSRect(x: W - 106, y: 432, width: cw, height: ch) }
 
     /// Карты на столе стоят от центра к краям, поэтому игровая зона всегда по центру
     private func tableRect(_ k: Int) -> NSRect {
@@ -486,8 +487,9 @@ final class DurakView: NSView {
         return NSRect(x: cx - 28, y: 94, width: 56, height: 78)
     }
 
-    private func handLayout() -> [(Int, NSRect)] {
-        let hand = g.hands[0]
+    /// full: true — итоговая раскладка со всеми картами (куда карты прилетят); иначе — как рука выглядит сейчас
+    private func handLayout(full: Bool = false) -> [(Int, NSRect)] {
+        let hand = full ? g.hands[0] : g.hands[0].filter { !waitingIn.contains($0) }
         let n = hand.count
         if n == 0 { return [] }
         let avail = W - 100
@@ -503,7 +505,7 @@ final class DurakView: NSView {
     }
 
     private func handRect(for c: Int) -> NSRect? {
-        for (cc, r) in handLayout() where cc == c { return r }
+        for (cc, r) in handLayout(full: true) where cc == c { return r }
         return nil
     }
 
@@ -569,6 +571,7 @@ final class DurakView: NSView {
         tDef = []
         gone = []
         flyingIn = []
+        waitingIn = []
         pendingIn = [:]
         deckHold = 0
         discardShown = 0
@@ -580,12 +583,13 @@ final class DurakView: NSView {
         var to = oppRect(q)
         if q == 0 {
             flyingIn.insert(c)
+            waitingIn.insert(c)
             if let r = handRect(for: c) { to = r }
         } else {
             pendingIn[q, default: 0] += 1
         }
         addFlight(c, from: stockRect, to: to, at: t, dur: 0.38, upFrom: false, upTo: q == 0,
-                  onStart: { [weak self] in self?.deckHold -= 1 },
+                  onStart: { [weak self] in self?.deckHold -= 1; self?.waitingIn.remove(c) },
                   onLand: { [weak self] in
                       guard let self = self else { return }
                       if q == 0 { self.flyingIn.remove(c) } else { self.pendingIn[q, default: 1] -= 1 }
@@ -803,13 +807,14 @@ final class DurakView: NSView {
                     var to = oppRect(defBefore)
                     if defBefore == 0 {
                         flyingIn.insert(c)
+                        waitingIn.insert(c)
                         if let hr = handRect(for: c) { to = hr }
                     } else {
                         pendingIn[defBefore, default: 0] += 1
                     }
                     let d = defBefore
                     addFlight(c, from: r, to: to, at: t, dur: 0.45, upFrom: true, upTo: d == 0,
-                              onStart: { [weak self] in self?.gone.insert(c) },
+                              onStart: { [weak self] in self?.gone.insert(c); self?.waitingIn.remove(c) },
                               onLand: { [weak self] in
                                   guard let self = self else { return }
                                   if d == 0 { self.flyingIn.remove(c) } else { self.pendingIn[d, default: 1] -= 1 }
@@ -857,14 +862,6 @@ final class DurakView: NSView {
         if finished { needsDisplay = true; return }
         finished = true
         lastLoser = g.loser
-        var st = (UserDefaults.standard.array(forKey: "durak.stats") as? [Int]) ?? [0, 0, 0]
-        while st.count < 3 { st.append(0) }
-        if let l = g.loser {
-            if l == 0 { st[1] += 1 } else { st[0] += 1 }
-        } else {
-            st[2] += 1
-        }
-        UserDefaults.standard.set(st, forKey: "durak.stats")
         needsDisplay = true
     }
 
@@ -1176,11 +1173,6 @@ final class DurakView: NSView {
         drawButton(modeBtn, transferMode ? T("Переводной") : T("Подкидной"))
         drawButton(viewBtn, T("Вид"))
         drawButton(nameBtn, T("Имя"))
-        let st = (UserDefaults.standard.array(forKey: "durak.stats") as? [Int]) ?? [0, 0, 0]
-        let wins = st.count > 0 ? st[0] : 0
-        let fool = st.count > 1 ? st[1] : 0
-        drawString(T("Побед") + ": \(wins)   " + T("Дураком") + ": \(fool)",
-                   NSRect(x: 596, y: 24, width: W - 616, height: 22), size: 12, color: .white, align: .right)
 
         // соперники сверху
         for j in 1..<g.n {
@@ -1248,7 +1240,7 @@ final class DurakView: NSView {
                 NSColor(white: 0, alpha: 0.45).setFill()
                 NSBezierPath(roundedRect: r, xRadius: 8, yRadius: 8).fill()
             }
-            drawString(T("Бито") + ": \(discardShown)", NSRect(x: d.minX - 20, y: d.maxY + 10, width: 120, height: 18),
+            drawString(T("Бито") + ": \(discardShown)", NSRect(x: d.minX - 20, y: d.maxY + 3, width: 120, height: 18),
                        size: 12, color: NSColor(white: 1, alpha: 0.7), align: .center)
         }
 

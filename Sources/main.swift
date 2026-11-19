@@ -4634,6 +4634,14 @@ struct VisualEffect: NSViewRepresentable {
 /// Зона, за которую можно перетаскивать окно без рамки
 /// Запоминает рамку вью в координатах окна (для проверки, куда кликнули)
 final class FrameBox { var r = CGRect.zero }
+
+/// Перетаскивание внутри «Пуска»: данные видны только самому «Пуску». Если отпустить значок в Finder, на рабочем столе
+/// или в другой программе, ничего не создаётся (раньше там появлялся файл-вырезка с текстом).
+func internalDragProvider(_ text: String) -> NSItemProvider {
+    let p = NSItemProvider()
+    p.registerObject(text as NSString, visibility: .ownProcess)
+    return p
+}
 struct FrameReader: View {
     let box: FrameBox
     var body: some View {
@@ -6115,6 +6123,11 @@ struct RootView: View {
     @AppStorage("recent.limit") private var recentLimit = 100
     @AppStorage("ui.coloredIcons") private var coloredIcons = true
     @AppStorage("ui.quickApps") private var quickJSON = ""
+    @State private var quickBox = FrameBox()
+    @State private var quickDragIdx: Int? = nil
+    @State private var quickDragOff = CGSize.zero
+    @State private var quickDragOutside = false
+    @State private var quickDragCancelled = false
     @StateObject private var quick = QuickAnswer()
     @FocusState private var searchFocused: Bool
     @FocusState private var nameFocused: Bool
@@ -6165,7 +6178,7 @@ struct RootView: View {
                 }
                 ForEach(shown) { l in
                     LinkCell(link: l, icon: store.linkIcon(l), custom: store.hasCustomLinkIcon(l), onOpen: { openLink(l) })
-                        .onDrag { NSItemProvider(object: "link:\(l.id.uuidString)" as NSString) }
+                        .onDrag { internalDragProvider("link:\(l.id.uuidString)") }
                         .onDrop(of: [UTType.plainText], isTargeted: nil) { providers in
                             dropReorder(providers, before: l.id)
                         }
@@ -6389,7 +6402,7 @@ struct RootView: View {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 96, maximum: 120), spacing: 8)], spacing: 8) {
                         ForEach(visibleApps) { app in
                             AppCell(app: app, icon: store.icon(for: app), onOpen: { launch(app) })
-                                .onDrag { NSItemProvider(object: app.id as NSString) }
+                                .onDrag { internalDragProvider(app.id) }
                                 .contextMenu { appMenu(app) }
                         }
                     }
@@ -6597,14 +6610,36 @@ struct RootView: View {
         let list = quickList
         return HStack(spacing: 4) {
             ForEach(Array(list.enumerated()), id: \.offset) { i, e in
-                Button { openQuick(e) } label: {
-                    Image(nsImage: quickIcon(e)).resizable().frame(width: 24, height: 24)
-                        .padding(4)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .hoverHighlight(8)
-                .help(quickTitle(e))
+                Image(nsImage: quickIcon(e)).resizable().frame(width: 24, height: 24)
+                    .padding(4)
+                    .contentShape(Rectangle())
+                    .hoverHighlight(8)
+                    .opacity(quickDragIdx == i && quickDragOutside ? 0.35 : 1)
+                    .offset(quickDragIdx == i ? quickDragOff : .zero)
+                    .zIndex(quickDragIdx == i ? 1 : 0)
+                    .onTapGesture { openQuick(e) }
+                    // потянули за рамку и отпустили — значок убирается
+                    .gesture(DragGesture(minimumDistance: 6, coordinateSpace: .global)
+                        .onChanged { v in
+                            // вышли за пределы окна «Пуск» — значок «отпускается» и возвращается на место, ничего не меняется
+                            if quickOutsideWindow(v.location) || quickDragCancelled {
+                                quickDragCancelled = true
+                                quickDragIdx = nil; quickDragOff = .zero; quickDragOutside = false
+                                return
+                            }
+                            quickDragIdx = i
+                            quickDragOff = v.translation
+                            quickDragOutside = !quickBox.r.insetBy(dx: -6, dy: -6).contains(v.location)
+                        }
+                        .onEnded { v in
+                            let cancelled = quickDragCancelled
+                            let out = !quickBox.r.insetBy(dx: -6, dy: -6).contains(v.location)
+                            quickDragIdx = nil; quickDragOff = .zero; quickDragOutside = false; quickDragCancelled = false
+                            if out && !cancelled && !quickOutsideWindow(v.location) {
+                                var a = list; if i < a.count { a.remove(at: i); setQuick(a) }
+                            }
+                        })
+                    .help(quickTitle(e))
                 .contextMenu {
                     Button(T("Заменить на другую программу…")) {
                         if let p = pickQuickApp() { var a = list; a[i] = p; setQuick(a) }
@@ -6630,8 +6665,44 @@ struct RootView: View {
             }
         }
         .padding(.horizontal, 5).padding(.vertical, 1)
+        .background(FrameReader(box: quickBox))
         .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous)
             .stroke(Color.primary.opacity(0.18), lineWidth: 1))
+        // программу из списка «Пуска» (или .app из Finder) можно бросить на рамку или на «+»
+        .onDrop(of: [UTType.plainText, UTType.fileURL], isTargeted: nil) { providers in dropQuick(providers) }
+    }
+
+    /// Точка (в координатах окна, начало слева сверху) лежит за пределами окна «Пуск»
+    private func quickOutsideWindow(_ p: CGPoint) -> Bool {
+        guard let b = NSApp.windows.compactMap({ $0 as? PopupWindow }).first?.contentView?.bounds else { return false }
+        return p.x < 0 || p.y < 0 || p.x > b.width || p.y > b.height
+    }
+
+    private func addQuick(path: String) {
+        var a = quickList
+        if a.contains(path) || a.count >= RootView.quickMax { if a.count >= RootView.quickMax { NSSound.beep() }; return }
+        a.append(path)
+        setQuick(a)
+    }
+
+    private func dropQuick(_ providers: [NSItemProvider]) -> Bool {
+        guard let p = providers.first else { return false }
+        if p.canLoadObject(ofClass: NSString.self) {
+            _ = p.loadObject(ofClass: NSString.self) { obj, _ in
+                guard let ns = obj as? NSString else { return }
+                let id = String(ns)
+                if id.hasPrefix("link:") { return }
+                DispatchQueue.main.async {
+                    if let app = store.apps.first(where: { $0.id == id }) { addQuick(path: app.path) }
+                }
+            }
+            return true
+        }
+        _ = p.loadObject(ofClass: URL.self) { url, _ in
+            guard let url = url, url.pathExtension == "app" else { return }
+            DispatchQueue.main.async { addQuick(path: url.path) }
+        }
+        return true
     }
 
     /// Кнопка «Инструменты» — всегда справа у края, не заменяется
