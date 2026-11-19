@@ -527,6 +527,12 @@ final class MinimizeController: NSObject, ObservableObject {
         minimizer.toggle()
     }
 
+    /// Только свернуть все окна (без «вернуть» при повторном нажатии) — кнопка в «Пуске»
+    func minimizeOnly() {
+        guard requestAccessibility(prompt: true) else { return }
+        minimizer.minimizeAll()
+    }
+
     @objc func statusClicked() {
         let e = NSApp.currentEvent
         if e?.type == .rightMouseUp || e?.modifierFlags.contains(.control) == true {

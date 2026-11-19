@@ -13,6 +13,8 @@ import UniformTypeIdentifiers
 let allCategory = "Все приложения"
 /// Вкладка быстрого доступа к сайтам (служебное имя, как у категорий)
 let webCategory = "Сайты"
+/// Вкладка «Недавние»: 100 последних документов, с которыми работали на этом Маке (по данным Spotlight)
+let recentCategory = "Недавние"
 
 // Допустимые размеры окна — чтобы вёрстка не ломалась
 let minWindowSize = NSSize(width: 640, height: 440)
@@ -26,6 +28,7 @@ func symbol(for category: String) -> String {
     switch category {
     case allCategory: return "square.grid.2x2.fill"
     case webCategory: return "globe"
+    case recentCategory: return "clock"
     case "Работа": return "briefcase"
     case "Разработка": return "hammer"
     case "Графика и фото": return "paintbrush"
@@ -38,6 +41,90 @@ func symbol(for category: String) -> String {
     case "Образ жизни": return "leaf"
     case "Прочее": return "square.grid.2x2"
     default: return "folder"
+    }
+}
+
+/// Цвет значка категории (для режима «Цветные», как в «Сейфе»)
+func iconColor(for category: String) -> Color {
+    switch category {
+    case recentCategory: return Color(red: 0.96, green: 0.55, blue: 0.10)
+    case allCategory: return Color(red: 0.04, green: 0.40, blue: 0.95)
+    case webCategory: return Color(red: 0.20, green: 0.65, blue: 0.85)
+    case "Работа": return Color(red: 0.55, green: 0.40, blue: 0.30)
+    case "Разработка": return Color(red: 0.45, green: 0.35, blue: 0.85)
+    case "Графика и фото": return Color(red: 0.92, green: 0.35, blue: 0.55)
+    case "Медиа": return Color(red: 0.90, green: 0.25, blue: 0.25)
+    case "Игры": return Color(red: 0.25, green: 0.70, blue: 0.40)
+    case "Общение": return Color(red: 0.20, green: 0.72, blue: 0.55)
+    case "Утилиты": return Color(red: 0.50, green: 0.55, blue: 0.62)
+    case "Образование": return Color(red: 0.95, green: 0.65, blue: 0.10)
+    case "Финансы": return Color(red: 0.15, green: 0.60, blue: 0.35)
+    case "Образ жизни": return Color(red: 0.55, green: 0.75, blue: 0.20)
+    case "Прочее": return Color(red: 0.60, green: 0.60, blue: 0.65)
+    default:
+        // свои категории: цвет по названию, чтобы он не менялся между запусками
+        let palette: [Color] = [Color(red: 0.35, green: 0.45, blue: 0.90), Color(red: 0.85, green: 0.40, blue: 0.70),
+                                Color(red: 0.20, green: 0.65, blue: 0.70), Color(red: 0.90, green: 0.50, blue: 0.25),
+                                Color(red: 0.60, green: 0.40, blue: 0.80), Color(red: 0.30, green: 0.70, blue: 0.35)]
+        let h = category.unicodeScalars.reduce(0) { ($0 &* 31 &+ Int($1.value)) & 0xFFFF }
+        return palette[h % palette.count]
+    }
+}
+
+/// Палитра для своих категорий; индекс 0 — голубой цвет папок Finder
+let categoryPalette: [Color] = [
+    Color(red: 0.36, green: 0.72, blue: 0.96), Color(red: 0.04, green: 0.40, blue: 0.95),
+    Color(red: 0.45, green: 0.35, blue: 0.85), Color(red: 0.92, green: 0.35, blue: 0.55),
+    Color(red: 0.90, green: 0.25, blue: 0.25), Color(red: 0.96, green: 0.55, blue: 0.10),
+    Color(red: 0.95, green: 0.75, blue: 0.10), Color(red: 0.25, green: 0.70, blue: 0.40),
+    Color(red: 0.20, green: 0.72, blue: 0.70), Color(red: 0.55, green: 0.40, blue: 0.30),
+    Color(red: 0.50, green: 0.55, blue: 0.62), Color(red: 0.20, green: 0.20, blue: 0.24)]
+let categorySymbols = ["folder.fill", "star.fill", "heart.fill", "house.fill", "briefcase.fill", "hammer.fill",
+                       "gamecontroller.fill", "music.note", "film", "photo", "book.fill", "graduationcap.fill",
+                       "globe", "cart.fill", "creditcard.fill", "airplane", "car.fill", "leaf.fill",
+                       "flame.fill", "bolt.fill", "lock.fill", "key.fill", "gearshape.fill", "tray.full.fill",
+                       "person.fill", "pawprint.fill", "camera.fill", "paintbrush.fill"]
+
+/// Значок и цвет своей категории (меняются правым кликом)
+struct CatStyle: Codable, Equatable {
+    var symbol: String
+    var color: Int
+}
+
+/// Значок категории: обычный символ или цветной скруглённый квадрат с белым знаком
+struct CategoryIconView: View {
+    let name: String
+    var colored: Bool
+    var style: CatStyle? = nil
+    /// свои категории (не встроенные и не служебные) рисуем как папки macOS
+    private var isCustom: Bool {
+        ![allCategory, webCategory, recentCategory].contains(name) && !builtInNames.contains(name)
+    }
+    var body: some View {
+        let st = style ?? CatStyle(symbol: "folder.fill", color: 0)
+        let col = categoryPalette[min(max(st.color, 0), categoryPalette.count - 1)]
+        if colored && isCustom && st.symbol == "folder.fill" {
+            Image(systemName: "folder.fill")
+                .font(.system(size: 17))
+                .foregroundColor(col)   // по умолчанию — голубой цвет папок Finder
+                .frame(width: 22, height: 20)
+        } else if colored && isCustom {
+            Image(systemName: st.symbol)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(.white)
+                .frame(width: 20, height: 20)
+                .background(RoundedRectangle(cornerRadius: 5.5, style: .continuous).fill(col))
+                .frame(width: 22)
+        } else if colored {
+            Image(systemName: symbol(for: name))
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(.white)
+                .frame(width: 20, height: 20)
+                .background(RoundedRectangle(cornerRadius: 5.5, style: .continuous).fill(iconColor(for: name)))
+                .frame(width: 22)
+        } else {
+            Image(systemName: symbol(for: name)).frame(width: 20)
+        }
     }
 }
 
@@ -56,6 +143,7 @@ struct WebLink: Codable, Identifiable {
     var title: String
     var url: String
     var folder: UUID? = nil
+    var opens: Int? = nil          // сколько раз сайт открывали — для сортировки «Частые»
 }
 
 struct WebFolder: Codable, Identifiable {
@@ -84,6 +172,7 @@ struct Config: Codable {
     var assignments: [String: String] = [:]
     var links: [WebLink]? = nil
     var folders: [WebFolder]? = nil
+    var linkSort: String? = nil      // manual | alpha | usage
 }
 
 extension Notification.Name {
@@ -105,10 +194,25 @@ final class Store: ObservableObject, @unchecked Sendable {
     @Published var language: AppLanguage = Loc.setting
     @Published var theme: AppTheme = AppTheme.setting
     @Published var links: [WebLink] = []
+    @Published var linkSort: String = "manual"      // порядок значков во вкладке «Сайты»: manual | alpha | usage
     @Published var linkDraft: LinkDraft? = nil
     @Published var folders: [WebFolder] = []
     @Published var openFolder: UUID? = nil
     @Published var folderDraft: FolderDraft? = nil
+    /// категория, у которой сейчас меняют значок и цвет
+    @Published var styleEditing: String? = nil
+    @Published var catStyles: [String: CatStyle] = {
+        guard let d = UserDefaults.standard.data(forKey: "category.styles"),
+              let v = try? JSONDecoder().decode([String: CatStyle].self, from: d) else { return [:] }
+        return v
+    }()
+    func setCatStyle(_ name: String, _ st: CatStyle) {
+        catStyles[name] = st
+        saveCatStyles()
+    }
+    private func saveCatStyles() {
+        if let d = try? JSONEncoder().encode(catStyles) { UserDefaults.standard.set(d, forKey: "category.styles") }
+    }
     @Published var showSettings = false
 
     // «Не давать уснуть»: пока включено, Мак и экран не засыпают от бездействия (как Amphetamine).
@@ -154,6 +258,7 @@ final class Store: ObservableObject, @unchecked Sendable {
             customCategories = cfg.customCategories
             assignments = cfg.assignments
             links = cfg.links ?? []
+            linkSort = cfg.linkSort ?? "manual"
             folders = cfg.folders ?? []
         }
         Store.current = self
@@ -174,7 +279,7 @@ final class Store: ObservableObject, @unchecked Sendable {
     var permissionsOK: Bool { fullDiskAccess && accessibility }
 
     private func save() {
-        let cfg = Config(customCategories: customCategories, assignments: assignments, links: links, folders: folders)
+        let cfg = Config(customCategories: customCategories, assignments: assignments, links: links, folders: folders, linkSort: linkSort)
         if let data = try? JSONEncoder().encode(cfg) {
             try? data.write(to: configURL, options: .atomic)
         }
@@ -343,7 +448,7 @@ final class Store: ObservableObject, @unchecked Sendable {
         let typed = d.url.trimmingCharacters(in: .whitespacesAndNewlines)
         let existing = d.id.flatMap { id in links.first(where: { $0.id == id }) }
         let link = WebLink(id: d.id ?? UUID(), title: title.isEmpty ? (u.host ?? typed) : title, url: typed,
-                           folder: existing?.folder ?? d.folder)
+                           folder: existing?.folder ?? d.folder, opens: existing?.opens)
         if let id = d.id, let i = links.firstIndex(where: { $0.id == id }) {
             if links[i].url != link.url { forgetIcon(id) }
             links[i] = link
@@ -365,6 +470,66 @@ final class Store: ObservableObject, @unchecked Sendable {
         for i in links.indices where links[i].folder == f.id { links[i].folder = nil }
         folders.removeAll { $0.id == f.id }
         if openFolder == f.id { openFolder = nil }
+        save()
+    }
+
+    // Порядок значков: вручную (порядок в массиве), по алфавиту или по частоте открытия
+
+    func sortedLinks(_ list: [WebLink]) -> [WebLink] {
+        switch linkSort {
+        case "alpha":
+            return list.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        case "usage":
+            return list.enumerated().sorted { a, b in
+                let x = a.element.opens ?? 0, y = b.element.opens ?? 0
+                return x != y ? x > y : a.offset < b.offset
+            }.map { $0.element }
+        default:
+            return list
+        }
+    }
+
+    func setLinkSort(_ mode: String) {
+        guard linkSort != mode else { return }
+        linkSort = mode
+        save()
+    }
+
+    /// Если сейчас не ручной порядок, фиксируем показанный порядок и переходим на ручной: значки не «прыгают»
+    private func switchToManual() {
+        guard linkSort != "manual" else { return }
+        links = sortedLinks(links)
+        linkSort = "manual"
+    }
+
+    /// Ставит сайт перед другим сайтом (в ту же папку)
+    func reorder(_ id: UUID, before target: UUID) {
+        guard id != target, links.contains(where: { $0.id == id }),
+              let t0 = links.first(where: { $0.id == target }) else { return }
+        switchToManual()
+        guard let from = links.firstIndex(where: { $0.id == id }) else { return }
+        var item = links.remove(at: from)
+        item.folder = t0.folder
+        let to = links.firstIndex(where: { $0.id == target }) ?? links.count
+        links.insert(item, at: to)
+        save()
+    }
+
+    /// Ставит сайт в конец списка папки (или корня)
+    func moveLinkToEnd(_ id: UUID, folder: UUID?) {
+        guard let from = links.firstIndex(where: { $0.id == id }) else { return }
+        switchToManual()
+        guard let i = links.firstIndex(where: { $0.id == id }) else { return }
+        _ = from
+        var item = links.remove(at: i)
+        item.folder = folder
+        links.append(item)
+        save()
+    }
+
+    func registerOpen(_ id: UUID) {
+        guard let i = links.firstIndex(where: { $0.id == id }) else { return }
+        links[i].opens = (links[i].opens ?? 0) + 1
         save()
     }
 
@@ -405,15 +570,15 @@ final class Store: ObservableObject, @unchecked Sendable {
     }
 
     var currentSelection: String {
-        (selected == allCategory || selected == webCategory || categoryList.contains(selected)) ? selected : allCategory
+        (selected == allCategory || selected == webCategory || selected == recentCategory || categoryList.contains(selected)) ? selected : allCategory
     }
 
     func count(in category: String) -> Int {
-        category == webCategory ? links.count : category == allCategory ? apps.count : apps.filter { self.category(of: $0) == category }.count
+        category == recentCategory ? 0 : category == webCategory ? links.count : category == allCategory ? apps.count : apps.filter { self.category(of: $0) == category }.count
     }
 
     func isValidNewName(_ name: String) -> Bool {
-        !name.isEmpty && name != allCategory && name != webCategory && !builtInNames.contains(name) && !customCategories.contains(name)
+        !name.isEmpty && name != allCategory && name != webCategory && name != recentCategory && !builtInNames.contains(name) && !customCategories.contains(name)
     }
 
     func addCategory(_ raw: String) {
@@ -428,6 +593,7 @@ final class Store: ObservableObject, @unchecked Sendable {
         let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard name != old, isValidNewName(name), let i = customCategories.firstIndex(of: old) else { return }
         customCategories[i] = name
+        if let st = catStyles.removeValue(forKey: old) { catStyles[name] = st; saveCatStyles() }
         for (k, v) in assignments where v == old { assignments[k] = name }
         if selected == old { selected = name }
         save()
@@ -435,6 +601,7 @@ final class Store: ObservableObject, @unchecked Sendable {
 
     func deleteCategory(_ name: String) {
         customCategories.removeAll { $0 == name }
+        if catStyles.removeValue(forKey: name) != nil { saveCatStyles() }
         assignments = assignments.filter { $0.value != name }
         if selected == name { selected = allCategory }
         save()
@@ -4465,6 +4632,18 @@ struct VisualEffect: NSViewRepresentable {
 }
 
 /// Зона, за которую можно перетаскивать окно без рамки
+/// Запоминает рамку вью в координатах окна (для проверки, куда кликнули)
+final class FrameBox { var r = CGRect.zero }
+struct FrameReader: View {
+    let box: FrameBox
+    var body: some View {
+        GeometryReader { g -> Color in
+            box.r = g.frame(in: .global)
+            return Color.clear
+        }
+    }
+}
+
 struct DragArea: NSViewRepresentable {
     final class V: NSView {
         override func mouseDown(with event: NSEvent) { window?.performDrag(with: event) }
@@ -5074,6 +5253,7 @@ struct FileHit: Identifiable {
     let byContent: Bool   // найден по тексту внутри файла, а не по имени
     let inCloud: Bool     // лежит в облаке и не скачан на этот Мак
     let icon: NSImage
+    var used: Date? = nil // когда открывали последний раз (для вкладки «Недавние»)
 }
 
 final class FileSearch: ObservableObject {
@@ -5101,7 +5281,7 @@ final class FileSearch: ObservableObject {
     }
 
     /// Домашняя папка и подключённые внешние тома (системные папки и загрузочный том не ищем)
-    private static func scopes() -> [Any] {
+    static func scopes() -> [Any] {
         var r: [Any] = [NSMetadataQueryUserHomeScope]
         let keys: [URLResourceKey] = [.volumeIsInternalKey, .volumeIsLocalKey]
         for u in FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: keys, options: [.skipHiddenVolumes]) ?? [] {
@@ -5134,9 +5314,9 @@ final class FileSearch: ObservableObject {
         q.start()
     }
 
-    private static let skipPrefixes = ["/System/", "/Library/", "/private/", "/usr/", "/opt/", "/bin/", "/sbin/", "/cores/", "/Applications/"]
+    static let skipPrefixes = ["/System/", "/Library/", "/private/", "/usr/", "/opt/", "/bin/", "/sbin/", "/cores/", "/Applications/"]
 
-    private static func skip(_ path: String, home: String) -> Bool {
+    static func skip(_ path: String, home: String) -> Bool {
         if path.hasSuffix(".app") || path.contains(".app/") { return true }    // приложения ищутся отдельно
         if skipPrefixes.contains(where: { path.hasPrefix($0) }) { return true }
         if path.hasPrefix(home + "/Library/") {
@@ -5150,7 +5330,7 @@ final class FileSearch: ObservableObject {
     }
 
     /// Файл числится в iCloud, но его содержимое ещё не скачано на этот Мак
-    private static func notDownloaded(_ path: String) -> Bool {
+    static func notDownloaded(_ path: String) -> Bool {
         let v = try? URL(fileURLWithPath: path).resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey])
         guard let st = v?.ubiquitousItemDownloadingStatus else { return false }
         return st != .current
@@ -5203,6 +5383,99 @@ final class FileSearch: ObservableObject {
     }
 }
 
+/// Вкладка «Недавние»: 100 последних документов, открытых на этом Маке любой программой.
+/// Берётся из Spotlight (дата последнего открытия), как в «Недавних» Finder; для Рабочего стола, Документов и Загрузок нужен полный доступ к диску.
+final class RecentDocs: ObservableObject {
+    /// сколько документов показывать (выбирается на самой вкладке)
+    static var limit: Int {
+        let v = UserDefaults.standard.integer(forKey: "recent.limit")
+        return v > 0 ? v : 100
+    }
+
+    /// Раздел списка по дате: Сегодня / Вчера / На этой неделе / Раньше
+    static func section(_ d: Date?) -> Int {
+        guard let d = d else { return 3 }
+        let cal = Calendar.current
+        if cal.isDateInToday(d) { return 0 }
+        if cal.isDateInYesterday(d) { return 1 }
+        if d > Date().addingTimeInterval(-7 * 86400) { return 2 }
+        return 3
+    }
+    static func sectionTitle(_ i: Int) -> String {
+        [T("Сегодня"), T("Вчера"), T("На этой неделе"), T("Раньше")][i]
+    }
+    @Published var hits: [FileHit] = []
+    @Published var loaded = false
+    private var mdq: NSMetadataQuery?
+    private var token: NSObjectProtocol?
+
+    func refresh() {
+        stop()
+        let q = NSMetadataQuery()
+        let since = Date().addingTimeInterval(-180 * 86400)
+        q.predicate = NSPredicate(format: "%K > %@", NSMetadataItemLastUsedDateKey, since as NSDate)
+        q.sortDescriptors = [NSSortDescriptor(key: NSMetadataItemLastUsedDateKey, ascending: false)]
+        q.searchScopes = FileSearch.scopes()
+        token = NotificationCenter.default.addObserver(forName: .NSMetadataQueryDidFinishGathering, object: q, queue: .main) { [weak self, weak q] _ in
+            guard let self = self, let q = q else { return }
+            self.collect(q)
+            self.stop()
+        }
+        mdq = q
+        q.start()
+    }
+
+    private func stop() {
+        mdq?.stop()
+        mdq = nil
+        if let t = token { NotificationCenter.default.removeObserver(t); token = nil }
+    }
+
+    private func collect(_ q: NSMetadataQuery) {
+        q.disableUpdates()
+        defer { q.enableUpdates() }
+        let home = NSHomeDirectory()
+        var seen = Set<String>()
+        var out: [FileHit] = []
+        for i in 0..<min(q.resultCount, 8000) {
+            if out.count >= RecentDocs.limit { break }
+            guard let it = q.result(at: i) as? NSMetadataItem,
+                  var path = it.value(forAttribute: NSMetadataItemPathKey) as? String else { continue }
+            if path.hasPrefix("/var/") || path.hasPrefix("/tmp/") { continue }
+            if FileSearch.skip(path, home: home) { continue }
+            var placeholder = false
+            let last = (path as NSString).lastPathComponent
+            if last.hasPrefix(".") && last.hasSuffix(".icloud") && last.count > 8 {
+                path = (path as NSString).deletingLastPathComponent + "/" + String(last.dropFirst().dropLast(7))
+                placeholder = true
+            }
+            if !seen.insert(path).inserted { continue }
+            if !placeholder && !FileManager.default.fileExists(atPath: path) { continue }   // файл уже удалён
+            let type = (it.value(forAttribute: NSMetadataItemContentTypeKey) as? String) ?? ""
+            if let ut = UTType(type), ut.conforms(to: .folder) || ut.conforms(to: .application) { continue }
+            let name = placeholder ? (path as NSString).lastPathComponent
+                : ((it.value(forAttribute: NSMetadataItemDisplayNameKey) as? String) ?? (path as NSString).lastPathComponent)
+            out.append(FileHit(id: path, name: name,
+                               dir: ((path as NSString).deletingLastPathComponent as NSString).abbreviatingWithTildeInPath,
+                               kind: UTType(type)?.localizedDescription ?? "",
+                               byContent: false,
+                               inCloud: placeholder || FileSearch.notDownloaded(path),
+                               icon: NSWorkspace.shared.icon(forFile: path),
+                               used: it.value(forAttribute: NSMetadataItemLastUsedDateKey) as? Date))
+        }
+        hits = out
+        loaded = true
+    }
+
+    /// «2 ч. назад», «вчера»… на языке интерфейса Пуска
+    static func relative(_ d: Date) -> String {
+        let f = RelativeDateTimeFormatter()
+        f.locale = Locale(identifier: Loc.english ? "en" : "ru")
+        f.unitsStyle = .short
+        return f.localizedString(for: d, relativeTo: Date())
+    }
+}
+
 struct FileRow: View {
     let hit: FileHit
     let onOpen: () -> Void
@@ -5222,6 +5495,10 @@ struct FileRow: View {
             }
             if hit.byContent {
                 Text(T("в тексте")).font(.caption).foregroundColor(.accentColor).lineLimit(1)
+            }
+            if let d = hit.used {
+                Text(RecentDocs.relative(d)).font(.caption).foregroundColor(.secondary).lineLimit(1)
+                    .help(DateFormatter.localizedString(from: d, dateStyle: .medium, timeStyle: .short))
             }
             Text(hit.kind).font(.caption).foregroundColor(.secondary).lineLimit(1)
             // справа: показать файл в Finder (появляется при наведении)
@@ -5489,6 +5766,59 @@ struct FolderEditorOverlay: View {
     }
 }
 
+/// Окно выбора значка и цвета своей категории
+struct CategoryStyleOverlay: View {
+    let name: String
+    let store: Store
+    @State private var st: CatStyle
+
+    init(name: String, store: Store) {
+        self.name = name
+        self.store = store
+        _st = State(initialValue: store.catStyles[name] ?? CatStyle(symbol: "folder.fill", color: 0))
+    }
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.4).contentShape(Rectangle()).onTapGesture { }
+            VStack(spacing: 12) {
+                Text(T("Значок и цвет")).font(.headline)
+                HStack(spacing: 8) {
+                    CategoryIconView(name: name, colored: true, style: st)
+                    Text(name).lineLimit(1)
+                }
+                Text(T("Значок")).font(.caption).foregroundColor(.secondary).frame(maxWidth: .infinity, alignment: .leading)
+                LazyVGrid(columns: Array(repeating: GridItem(.fixed(34), spacing: 6), count: 7), spacing: 6) {
+                    ForEach(categorySymbols, id: \.self) { sym in
+                        Image(systemName: sym).font(.system(size: 14))
+                            .frame(width: 34, height: 30)
+                            .background(RoundedRectangle(cornerRadius: 7).fill(st.symbol == sym ? Color.accentColor.opacity(0.3) : Color.primary.opacity(0.06)))
+                            .contentShape(Rectangle())
+                            .onTapGesture { st.symbol = sym }
+                    }
+                }
+                Text(T("Цвет")).font(.caption).foregroundColor(.secondary).frame(maxWidth: .infinity, alignment: .leading)
+                LazyVGrid(columns: Array(repeating: GridItem(.fixed(26), spacing: 8), count: 6), spacing: 8) {
+                    ForEach(0..<categoryPalette.count, id: \.self) { i in
+                        Circle().fill(categoryPalette[i]).frame(width: 22, height: 22)
+                            .overlay(Circle().stroke(Color.primary, lineWidth: st.color == i ? 2 : 0).padding(-3))
+                            .contentShape(Circle())
+                            .onTapGesture { st.color = i }
+                    }
+                }
+                HStack {
+                    Button(T("Отмена")) { store.styleEditing = nil }
+                    Button(T("Сохранить")) { store.setCatStyle(name, st); store.styleEditing = nil }
+                }
+            }
+            .padding(20)
+            .frame(width: 320)
+            .background(RoundedRectangle(cornerRadius: 12).fill(Color(NSColor.windowBackgroundColor)))
+            .shadow(radius: 20)
+        }
+    }
+}
+
 /// Окно добавления и правки ссылки (внутри окна «Пуск», без системных листов)
 struct LinkEditorOverlay: View {
     let draft: LinkDraft
@@ -5550,6 +5880,7 @@ enum AppInfo {
 struct SettingsOverlay: View {
     let store: Store
     @ObservedObject var mc: MinimizeController
+    @AppStorage("ui.coloredIcons") private var coloredIcons = true
     @State private var confirmPinch = false
     @State private var confirmPin = false
     @AppStorage(QuickCurrency.baseKey) private var quickBase = "RUB"
@@ -5628,6 +5959,14 @@ struct SettingsOverlay: View {
                         section(T("Тема")) {
                             Picker("", selection: Binding(get: { store.theme }, set: { store.setTheme($0) })) {
                                 ForEach(AppTheme.allCases, id: \.self) { Text(themeTitle($0)).tag($0) }
+                            }
+                            .pickerStyle(.segmented)
+                            .labelsHidden()
+                        }
+                        section(T("Значки")) {
+                            Picker("", selection: $coloredIcons) {
+                                Text(T("Обычные")).tag(false)
+                                Text(T("Цветные")).tag(true)
                             }
                             .pickerStyle(.segmented)
                             .labelsHidden()
@@ -5736,8 +6075,14 @@ struct RootView: View {
     @State private var draft = ""
     @State private var dropTarget: String? = nil
     @State private var showTools = false
+    @State private var toolsMon: Any?
+    @State private var toolsBox = FrameBox()
+    @State private var toolsBtnBox = FrameBox()
     @State private var restOpen = false      // «Передохни» раскрыто: Тетрис / Косынка
     @StateObject private var files = FileSearch()
+    @StateObject private var recents = RecentDocs()
+    @AppStorage("recent.limit") private var recentLimit = 100
+    @AppStorage("ui.coloredIcons") private var coloredIcons = true
     @StateObject private var quick = QuickAnswer()
     @FocusState private var searchFocused: Bool
     @FocusState private var nameFocused: Bool
@@ -5745,12 +6090,16 @@ struct RootView: View {
     private var searching: Bool { !query.trimmingCharacters(in: .whitespaces).isEmpty }
 
     private var showingLinks: Bool { store.currentSelection == webCategory && !searching }
+    private var showingRecent: Bool { store.currentSelection == recentCategory && !searching }
 
     private var linksGrid: some View {
         let current = store.openFolder
         let folder = store.folders.first { $0.id == current }
-        let shown = store.links.filter { $0.folder == (folder?.id) }
+        let shown = store.sortedLinks(store.links).filter { $0.folder == (folder?.id) }
         return VStack(alignment: .leading, spacing: 10) {
+            if folder == nil {
+                HStack { Spacer(); sortPicker }
+            }
             if let f = folder {
                 HStack(spacing: 6) {
                     Button { store.openFolder = nil } label: {
@@ -5766,6 +6115,7 @@ struct RootView: View {
                     .help(T("Перетащите сайт сюда, чтобы вынести из папки"))
                     Text(f.title).font(.headline)
                     Spacer()
+                    sortPicker
                 }
             }
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 96, maximum: 120), spacing: 8)], spacing: 8) {
@@ -5784,6 +6134,9 @@ struct RootView: View {
                 ForEach(shown) { l in
                     LinkCell(link: l, icon: store.linkIcon(l), custom: store.hasCustomLinkIcon(l), onOpen: { openLink(l) })
                         .onDrag { NSItemProvider(object: "link:\(l.id.uuidString)" as NSString) }
+                        .onDrop(of: [UTType.plainText], isTargeted: nil) { providers in
+                            dropReorder(providers, before: l.id)
+                        }
                         .contextMenu {
                             Button(T("Изменить…")) { store.linkDraft = LinkDraft(id: l.id, title: l.title, url: l.url) }
                             Button(T("Сменить иконку…")) { store.chooseIcon(for: l) }
@@ -5804,6 +6157,9 @@ struct RootView: View {
                         }
                 }
                 AddLinkCell { store.linkDraft = LinkDraft(id: nil, title: "", url: "", folder: folder?.id) }
+                    .onDrop(of: [UTType.plainText], isTargeted: nil) { providers in
+                        dropReorder(providers, before: nil, folder: folder?.id)
+                    }
                 if folder == nil {
                     AddFolderCell { store.folderDraft = FolderDraft(id: nil, title: "") }
                 }
@@ -5815,6 +6171,64 @@ struct RootView: View {
         }
         .padding(14)
         .onAppear { store.ensureIcons() }
+    }
+
+    /// Вкладка «Недавние»: 100 последних документов
+    private var recentList: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Spacer()
+                Text(T("Показывать")).font(.caption).foregroundColor(.secondary)
+                Picker("", selection: Binding(get: { recentLimit }, set: { recentLimit = $0; recents.refresh() })) {
+                    ForEach([25, 50, 100, 200], id: \.self) { Text("\($0)").tag($0) }
+                }
+                .pickerStyle(.segmented).labelsHidden().frame(width: 190)
+            }
+            .padding(.horizontal, 6).padding(.bottom, 4)
+            if recents.hits.isEmpty {
+                if recents.loaded {
+                    Text(T("Недавних документов пока нет")).font(.callout).foregroundColor(.secondary).padding(16)
+                }
+            } else {
+                ForEach(0..<4, id: \.self) { sec in
+                    let items = recents.hits.filter { RecentDocs.section($0.used) == sec }
+                    if !items.isEmpty {
+                        Text(RecentDocs.sectionTitle(sec)).font(.caption.weight(.semibold)).foregroundColor(.secondary)
+                            .padding(.horizontal, 8).padding(.top, 8).padding(.bottom, 2)
+                        ForEach(items) { h in FileRow(hit: h, onOpen: { openFile(h) }) }
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 8).padding(.vertical, 6)
+        .onAppear { recents.refresh() }
+    }
+
+    /// Переключатель порядка значков
+    private var sortPicker: some View {
+        Picker("", selection: Binding(get: { store.linkSort }, set: { store.setLinkSort($0) })) {
+            Text(T("Вручную")).tag("manual")
+            Text(T("А–Я")).tag("alpha")
+            Text(T("Частые")).tag("usage")
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .frame(width: 250)
+        .help(T("Порядок значков. Чтобы расставить вручную, перетащите значок на другой: он встанет перед ним"))
+    }
+
+    /// Перетаскивание сайта на другой сайт (встанет перед ним) или на плитку «Добавить сайт» (встанет в конец)
+    private func dropReorder(_ providers: [NSItemProvider], before target: UUID?, folder: UUID? = nil) -> Bool {
+        guard let p = providers.first else { return false }
+        _ = p.loadObject(ofClass: NSString.self) { obj, _ in
+            guard let ns = obj as? NSString else { return }
+            let str = String(ns)
+            guard str.hasPrefix("link:"), let id = UUID(uuidString: String(str.dropFirst(5))) else { return }
+            DispatchQueue.main.async {
+                if let t = target { store.reorder(id, before: t) } else { store.moveLinkToEnd(id, folder: folder) }
+            }
+        }
+        return true
     }
 
     /// Перетаскивание сайта на папку (или на «назад», чтобы вынести из папки)
@@ -5831,6 +6245,7 @@ struct RootView: View {
 
     private func openLink(_ l: WebLink) {
         if let u = Store.normalizedURL(l.url) { NSWorkspace.shared.open(u) }
+        store.registerOpen(l.id)
         close()
     }
 
@@ -5944,6 +6359,8 @@ struct RootView: View {
                     }
                     if showingLinks {
                         linksGrid
+                    } else if showingRecent {
+                        recentList
                     } else {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 96, maximum: 120), spacing: 8)], spacing: 8) {
                         ForEach(visibleApps) { app in
@@ -5971,17 +6388,46 @@ struct RootView: View {
                minHeight: minWindowSize.height, maxHeight: maxWindowSize.height)
         .background(VisualEffect())
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(alignment: .bottomLeading) {
+            // меню инструментов: клик в любом месте окна мимо меню закрывает его
+            if showTools {
+                ZStack(alignment: .bottomLeading) {
+                    Color.clear.contentShape(Rectangle()).onTapGesture { showTools = false; restOpen = false }
+                    // меню над кнопкой «Инструменты»: правый край у правого края боковой панели (ширина 236)
+                    toolsMenu
+                        .fixedSize()
+                        .background(FrameReader(box: toolsBox))
+                        .padding(.trailing, 14)
+                        .frame(width: 236, alignment: .trailing)
+                        .padding(.bottom, 82)
+                }
+            }
+        }
         .overlay {
             if let m = store.uninstall { UninstallOverlay(model: m, store: store) }
             if let q = store.quitAll { QuitAllOverlay(model: q, store: store) }
             if store.showSettings, let mc = store.minimize { SettingsOverlay(store: store, mc: mc) }
             if let d = store.folderDraft { FolderEditorOverlay(draft: d, store: store).id(d.key) }
+            if let n = store.styleEditing { CategoryStyleOverlay(name: n, store: store).id(n) }
             if let d = store.linkDraft { LinkEditorOverlay(draft: d, store: store).id(d.key) }
             if let pr = store.pwRequest, store.pwTool == nil { PasswordOverlay(request: pr, store: store) }
             if store.showPermissions { PermissionsOverlay(store: store) }
         }
         .overlay(alignment: .bottom) { dropBanner }
         .onExitCommand { close() }
+        .onChange(of: showTools) { on in
+            if let m = toolsMon { NSEvent.removeMonitor(m); toolsMon = nil }
+            guard on else { return }
+            // клик где угодно мимо меню (в том числе по свободному месту сетки) закрывает «Инструменты»
+            toolsMon = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { e in
+                let h = e.window?.contentView?.bounds.height ?? 0
+                let pt = CGPoint(x: e.locationInWindow.x, y: h - e.locationInWindow.y)
+                if !toolsBox.r.contains(pt) && !toolsBtnBox.r.contains(pt) {
+                    DispatchQueue.main.async { showTools = false; restOpen = false }
+                }
+                return e
+            }
+        }
         .id(store.language)
         .onReceive(store.$showTick) { _ in
             // строка поиска не сбрасывается при сворачивании и повторном открытии «Пуска» — только кнопкой очистки
@@ -5989,8 +6435,10 @@ struct RootView: View {
             showTools = false
             store.linkDraft = nil
             store.folderDraft = nil
+            store.styleEditing = nil
             store.openFolder = nil
             store.showSettings = false
+            if store.currentSelection == recentCategory { recents.refresh() }
             if store.quitAll?.stage != .working { store.quitAll = nil }
             store.minimize?.cancelRecording()
             if store.uninstall?.stage != .working { store.uninstall = nil }
@@ -5999,7 +6447,7 @@ struct RootView: View {
     }
 
     private var overlayOpen: Bool {
-        store.quitAll != nil || store.showSettings || store.linkDraft != nil || store.folderDraft != nil
+        store.quitAll != nil || store.showSettings || store.linkDraft != nil || store.folderDraft != nil || store.styleEditing != nil
             || store.uninstall != nil
     }
 
@@ -6009,6 +6457,7 @@ struct RootView: View {
         VStack(alignment: .leading, spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 2) {
+                    categoryRow(recentCategory)
                     categoryRow(allCategory)
                     categoryRow(webCategory)
                     ForEach(store.categoryList, id: \.self) { categoryRow($0) }
@@ -6030,6 +6479,19 @@ struct RootView: View {
                 .buttonStyle(.plain)
                 .hoverHighlight(7)
                 .help(T("Создать свою категорию"))
+
+                Button {
+                    store.minimize?.minimizeOnly()
+                } label: {
+                    Label(T("Свернуть все окна"), systemImage: "rectangle.bottomhalf.inset.filled")
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 8).padding(.vertical, 6)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .hoverHighlight(7)
+                .help(T("Свернуть окна всех программ. Повторное нажатие их не разворачивает"))
 
                 HStack(spacing: 0) {
                     HStack(spacing: 7) {
@@ -6058,6 +6520,7 @@ struct RootView: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .background(FrameReader(box: toolsBtnBox))
                     .hoverHighlight(8)
                     .help(T("Инструменты"))
                     shortcut("com.apple.systempreferences", T("Системные настройки"), "gearshape")
@@ -6067,16 +6530,6 @@ struct RootView: View {
             .padding(12)
         }
         .background(Color.primary.opacity(0.04))
-        .overlay(alignment: .bottomTrailing) {
-            if showTools {
-                ZStack(alignment: .bottomTrailing) {
-                    Color.clear.contentShape(Rectangle()).onTapGesture { showTools = false }
-                    toolsMenu
-                        .padding(.trailing, 14)
-                        .padding(.bottom, 82)
-                }
-            }
-        }
     }
 
     /// Меню инструментов: появляется над кнопкой. Новые инструменты добавляем сюда.
@@ -6158,10 +6611,10 @@ struct RootView: View {
             let isSelected = store.currentSelection == name && !searching
             let isDropTarget = dropTarget == name && name != allCategory
             HStack(spacing: 8) {
-                Image(systemName: symbol(for: name)).frame(width: 20)
+                CategoryIconView(name: name, colored: coloredIcons, style: store.catStyles[name])
                 Text(T(name)).lineLimit(1)
                 Spacer()
-                Text("\(store.count(in: name))").font(.caption).foregroundColor(.secondary)
+                if name != recentCategory { Text("\(store.count(in: name))").font(.caption).foregroundColor(.secondary) }
             }
             .padding(.horizontal, 8).padding(.vertical, 6)
             .background(RoundedRectangle(cornerRadius: 7)
@@ -6175,6 +6628,7 @@ struct RootView: View {
             .contextMenu {
                 if isCustom {
                     Button(T("Переименовать")) { beginEdit(name, text: name) }
+                    Button(T("Значок и цвет")) { store.styleEditing = name }
                     Button(T("Удалить категорию")) { store.deleteCategory(name) }
                 }
             }
@@ -6182,10 +6636,10 @@ struct RootView: View {
                     isTargeted: Binding(
                         get: { dropTarget == name },
                         set: { on in
-                            if on { if name != webCategory { dropTarget = name } }
+                            if on { if name != webCategory && name != recentCategory { dropTarget = name } }
                             else if dropTarget == name { dropTarget = nil }
                         })) { providers in
-                if name == webCategory { return false }
+                if name == webCategory || name == recentCategory { return false }
                 return handleDrop(providers, to: name)
             }
         }
