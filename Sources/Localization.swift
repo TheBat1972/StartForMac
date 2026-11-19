@@ -618,6 +618,7 @@ private let translations: [String: String] = [
     "Закрепить «Пуск» в Dock?": "Pin “Start” in the Dock?",
     "Закрепить в Dock первым (справа от Finder)…": "Pin in the Dock first (right of Finder)…",
     "Запускать при входе в систему": "Launch at login",
+    "Значок в верхней панели": "Menu bar icon",
     "Иконка встанет первой справа от Finder. Dock на секунду перезапустится. Делайте это, когда «Пуск» лежит на своём постоянном месте.": "The icon will be placed first, right of Finder. The Dock will restart for a second. Do this when “Start” is in its permanent location.",
     "Клик — свернуть все окна (если экран пуст — вернуть), правый клик — меню": "Click — minimize all windows (restore if the screen is empty), right click — menu",
     "Нажмите новое сочетание клавиш": "Press the new key combination",

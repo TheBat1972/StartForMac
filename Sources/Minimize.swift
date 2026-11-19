@@ -452,6 +452,8 @@ final class MinimizeController: NSObject, ObservableObject {
     @Published var restoreOn = true
     @Published var dockOn = false
     @Published var loginOn = false
+    /// Значок в верхней панели (строке меню); по умолчанию есть
+    @Published var trayOn = (UserDefaults.standard.object(forKey: "ui.trayIcon") as? Bool) ?? true
     /// Идёт запись сочетания: 1 — «Свернуть всё», 2 — «Пуск»
     @Published var recordingFor: Int? = nil
     private var recordMonitor: Any?
@@ -461,7 +463,7 @@ final class MinimizeController: NSObject, ObservableObject {
     var toggleStart: (() -> Void)?
     /// «Не давать уснуть»: переключить (задаёт AppDelegate) и текущее состояние для значка и меню
     var toggleAwake: (() -> Void)?
-    private var awakeOn = false
+    private(set) var awakeOn = false
 
     /// Пока компьютеру не дают уснуть, значок в строке меню голубой (цвет акцента)
     func setAwake(_ on: Bool) {
@@ -489,7 +491,14 @@ final class MinimizeController: NSObject, ObservableObject {
         b.contentTintColor = nil
     }
 
+    func setTray(_ on: Bool) {
+        UserDefaults.standard.set(on, forKey: "ui.trayIcon")
+        trayOn = on
+        statusItem.isVisible = on
+    }
+
     func start() {
+        statusItem.isVisible = trayOn
         if let b = statusItem.button {
             b.image = NSImage(systemSymbolName: "rectangle.bottomhalf.inset.filled",
                               accessibilityDescription: T("Свернуть все окна"))

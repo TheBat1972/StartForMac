@@ -6035,6 +6035,7 @@ struct SettingsOverlay: View {
                         }
                         section(T("Система")) {
                             toggleRow(T("Запускать при входе в систему"), mc.loginOn) { mc.setLogin($0) }
+                            toggleRow(T("Значок в верхней панели"), mc.trayOn) { mc.setTray($0) }
                             Button(T("Вернуть размер и положение окна по умолчанию…")) { confirmReset = true }
                             if confirmReset {
                                 VStack(alignment: .leading, spacing: 8) {
@@ -6804,6 +6805,19 @@ final class PopupWindow: NSWindow {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let store = Store()
     let minimize = MinimizeController()
+
+    /// Меню значка в Dock (правый клик): то же, что в меню значка в верхней панели, — работает и при скрытом значке
+    func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+        let m = NSMenu()
+        let a = m.addItem(withTitle: T("Свернуть все окна"), action: #selector(dockMinimizeAll), keyEquivalent: "")
+        a.target = self
+        let b = m.addItem(withTitle: T("Не давать компьютеру уснуть"), action: #selector(dockToggleAwake), keyEquivalent: "")
+        b.target = self
+        b.state = minimize.awakeOn ? .on : .off
+        return m
+    }
+    @objc private func dockMinimizeAll() { minimize.minimizeOnly() }
+    @objc private func dockToggleAwake() { minimize.toggleAwake?() }
     var window: PopupWindow!
     private var programmatic = false
     private let defaults = UserDefaults.standard
