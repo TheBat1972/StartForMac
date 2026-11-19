@@ -2,7 +2,7 @@
 // Перетаскивание карт мышью, двойной щелчок — отправить в «дом», отмена хода, набор по 1 или по 3 карты.
 import AppKit
 
-private struct SolCard {
+struct SolCard {
     var suit: Int          // 0 ♠, 1 ♥, 2 ♦, 3 ♣
     var rank: Int          // 1…13
     var up = false
@@ -17,7 +17,7 @@ private struct SolState {
 }
 
 /// Картинки карт из Resources/Cards (файлы вида 10c.png, tp.png, back.png) и звуки; если их нет — карты рисуются кодом
-private enum SolAssets {
+enum SolAssets {
     private static var images: [String: NSImage] = [:]
     private static var sounds: [String: NSSound] = [:]
     private static var dir: URL? { Bundle.main.resourceURL?.appendingPathComponent("Cards") }
@@ -38,10 +38,11 @@ private enum SolAssets {
 
     /// Рубашки: файлы back.png, back2.png … (название — для меню выбора)
     static let backs: [(file: String, title: String)] = [
-        ("back", "Синяя клетка"), ("back2", "Красная с орнаментом"), ("back3", "Масти"), ("back4", "Шотландка"),
+        ("back", "Синяя клетка"), ("back2", "Красная с орнаментом"), ("back3", "Масти"), ("back4", "Шотландка"), ("back5", "Чёрная с узором"),
     ]
     static var backIndex: Int {
-        get { min(max(UserDefaults.standard.integer(forKey: "solitaire.back"), 0), backs.count - 1) }
+        // по умолчанию — «Шотландка» (back4)
+        get { min(max((UserDefaults.standard.object(forKey: "solitaire.back") as? Int) ?? 3, 0), backs.count - 1) }
         set { UserDefaults.standard.set(newValue, forKey: "solitaire.back") }
     }
     static var backImage: NSImage? { image(backs[backIndex].file) }
@@ -55,7 +56,8 @@ private enum SolAssets {
         ("Коричневый", NSColor(calibratedRed: 0.35, green: 0.27, blue: 0.20, alpha: 1)),
     ]
     static var tableIndex: Int {
-        get { min(max(UserDefaults.standard.integer(forKey: "solitaire.table"), 0), tables.count - 1) }
+        // по умолчанию — «Графит»
+        get { min(max((UserDefaults.standard.object(forKey: "solitaire.table") as? Int) ?? 2, 0), tables.count - 1) }
         set { UserDefaults.standard.set(newValue, forKey: "solitaire.table") }
     }
 

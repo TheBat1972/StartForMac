@@ -6573,6 +6573,11 @@ struct RootView: View {
                     SolitaireWindowController.shared.show()
                 }
                 .padding(.leading, 22)
+                ToolRow(title: T("Дурак"), symbol: "suit.club.fill") {
+                    showTools = false; restOpen = false
+                    DurakWindowController.shared.show()
+                }
+                .padding(.leading, 22)
             }
             ToolRow(title: T("Калькулятор"), symbol: "plusminus.circle") {
                 showTools = false
