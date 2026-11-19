@@ -5880,6 +5880,13 @@ enum AppInfo {
 struct SettingsOverlay: View {
     let store: Store
     @ObservedObject var mc: MinimizeController
+    let resetPlacement: () -> Void
+    @State private var confirmReset = false
+    private func scrollTo(_ proxy: ScrollViewProxy, _ id: String) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            withAnimation { proxy.scrollTo(id, anchor: .bottom) }
+        }
+    }
     @AppStorage("ui.coloredIcons") private var coloredIcons = true
     @State private var confirmPinch = false
     @State private var confirmPin = false
@@ -5947,6 +5954,7 @@ struct SettingsOverlay: View {
                 }
                 .padding(16)
                 Divider()
+                ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {
                         section(T("Язык")) {
@@ -6001,6 +6009,7 @@ struct SettingsOverlay: View {
                                 }
                                 .padding(10)
                                 .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.06)))
+                                .id("confirmPinch")
                             }
                         }
                         section(T("Свернуть всё")) {
@@ -6026,6 +6035,21 @@ struct SettingsOverlay: View {
                         }
                         section(T("Система")) {
                             toggleRow(T("Запускать при входе в систему"), mc.loginOn) { mc.setLogin($0) }
+                            Button(T("Вернуть размер и положение окна по умолчанию…")) { confirmReset = true }
+                            if confirmReset {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text(T("Вернуть размер и положение окна?")).font(.system(size: 13, weight: .semibold))
+                                    Text(T("Окно «Пуск» станет стандартного размера и встанет у Dock."))
+                                        .font(.caption).foregroundColor(.secondary)
+                                    HStack {
+                                        Button(T("Отмена")) { confirmReset = false }
+                                        Button(T("Вернуть")) { confirmReset = false; resetPlacement() }
+                                    }
+                                }
+                                .padding(10)
+                                .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.06)))
+                                .id("confirmReset")
+                            }
                             Button(T("Закрепить в Dock первым (справа от Finder)…")) { confirmPin = true }
                             if confirmPin {
                                 VStack(alignment: .leading, spacing: 8) {
@@ -6039,10 +6063,16 @@ struct SettingsOverlay: View {
                                 }
                                 .padding(10)
                                 .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.06)))
+                                .id("confirmPin")
                             }
                         }
                     }
                     .padding(16)
+                }
+                // плашка подтверждения появляется внизу списка — прокручиваем к ней, чтобы она была сразу видна
+                .onChange(of: confirmReset) { on in if on { scrollTo(proxy, "confirmReset") } }
+                .onChange(of: confirmPin) { on in if on { scrollTo(proxy, "confirmPin") } }
+                .onChange(of: confirmPinch) { on in if on { scrollTo(proxy, "confirmPinch") } }
                 }
                 Divider()
                 HStack {
@@ -6342,14 +6372,6 @@ struct RootView: View {
                     .hoverHighlight(6)
                     .foregroundColor(store.permissionsOK ? .secondary : .orange)
                     .help(store.permissionsOK ? T("Разрешения") : T("Не все разрешения выданы — нажмите, чтобы настроить"))
-                    Button { resetPlacement() } label: {
-                        Image(systemName: "arrow.counterclockwise")
-                            .padding(5).contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .hoverHighlight(6)
-                    .foregroundColor(.secondary)
-                    .help(T("Вернуть размер и положение по умолчанию"))
                 }
                 .padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 4)
                 ScrollView {
@@ -6405,7 +6427,7 @@ struct RootView: View {
         .overlay {
             if let m = store.uninstall { UninstallOverlay(model: m, store: store) }
             if let q = store.quitAll { QuitAllOverlay(model: q, store: store) }
-            if store.showSettings, let mc = store.minimize { SettingsOverlay(store: store, mc: mc) }
+            if store.showSettings, let mc = store.minimize { SettingsOverlay(store: store, mc: mc, resetPlacement: resetPlacement) }
             if let d = store.folderDraft { FolderEditorOverlay(draft: d, store: store).id(d.key) }
             if let n = store.styleEditing { CategoryStyleOverlay(name: n, store: store).id(n) }
             if let d = store.linkDraft { LinkEditorOverlay(draft: d, store: store).id(d.key) }
@@ -6457,8 +6479,11 @@ struct RootView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 2) {
                     categoryRow(recentCategory)
-                    categoryRow(allCategory)
                     categoryRow(webCategory)
+                    // тонкая полупрозрачная черта, не доходящая до краёв
+                    Rectangle().fill(Color.primary.opacity(0.15)).frame(height: 1)
+                        .padding(.horizontal, 14).padding(.vertical, 3)
+                    categoryRow(allCategory)
                     ForEach(store.categoryList, id: \.self) { categoryRow($0) }
                     if editingOriginal == "" { nameField }
                 }

@@ -8,6 +8,7 @@
 
 **Новое**
 - Меню «Инструменты» закрывается кликом в любом месте окна мимо меню, а не только повторным нажатием на кнопку.
+- Сброс размера и положения окна убран с главного экрана и перенесён в настройки («Система») с подтверждением.
 - Кнопка «Свернуть все окна» под «Новой категорией»: только сворачивает, повторный клик не разворачивает.
 - Свои категории: правый клик → «Значок и цвет» (28 значков, 12 цветов); по умолчанию — голубая папка, как в Finder.
 - Цветные значки категорий в боковом списке (настройки → «Значки»: «Обычные» / «Цветные»), по умолчанию цветные.
@@ -104,6 +105,7 @@
 
 **New**
 - The Tools menu now closes with a click anywhere in the window outside the menu, not only by pressing the Tools button again.
+- Resetting the window size and position moved from the main screen to Settings (“System”), with a confirmation.
 - “Minimize all windows” button under “New category”: it only minimizes, a second click does not restore.
 - Your own categories: right-click → “Icon and color” (28 icons, 12 colors); default is a blue Finder-style folder.
 - Colored category icons in the sidebar (Settings → “Icons”: Plain / Colored), colored by default.
