@@ -10,6 +10,7 @@
 - Меню «Инструменты» закрывается кликом в любом месте окна мимо меню, а не только повторным нажатием на кнопку.
 - Сброс размера и положения окна убран с главного экрана и перенесён в настройки («Система») с подтверждением.
 - **«Дурак»:** анимация перелёта карт, колода стопкой с козырем под ней, отбой в углу под вуалью, рука на подсвеченной панели, имя игрока и правильные формы глаголов («Вы ходите», «Алексей ходит»); имена игроков крупнее и у каждого свой цвет везде, где встречаются.
+- **Нижняя панель:** «Инструменты» — справа у края; быстрые вызовы программ (Терминал, Мониторинг системы, App Store, Системные настройки) стоят слева в тонкой полупрозрачной рамке. Правый клик по значку — заменить программу, убрать или вернуть набор по умолчанию; кнопка «+» добавляет программу (до четырёх).
 - **Настройки → «Система» → «Значок в верхней панели»:** значок в строке меню можно убрать или вернуть (по умолчанию он есть).
 - **Новая игра «Дурак»** в меню «Передохни»: подкидной и переводной, 2–4 игрока с компьютером, карты, рубашка и цвет стола как у «Косынки». Компьютер учитывает вышедшие карты и играет по эвристике; в конце партии просчитывает ходы случайными раздачами неизвестных карт (PIMC).
 - Кнопка «Свернуть все окна» под «Новой категорией»: только сворачивает, повторный клик не разворачивает.
@@ -110,6 +111,7 @@
 - The Tools menu now closes with a click anywhere in the window outside the menu, not only by pressing the Tools button again.
 - Resetting the window size and position moved from the main screen to Settings (“System”), with a confirmation.
 - **Durak:** animated card moves, the deck shown as a stack with the trump under it, the discard pile in a corner under a veil, your hand on a highlighted panel, player name and correct verb forms; player names are larger and each has its own colour wherever it appears.
+- **Bottom bar:** “Tools” is at the right edge; the quick-launch apps (Terminal, Activity Monitor, App Store, System Settings) sit on the left in a thin translucent frame. Right-click an icon to replace it, remove it or restore the default set; “+” adds an app (up to four).
 - **Settings → System → “Menu bar icon”:** the menu bar icon can be hidden or shown again (shown by default).
 - **New game “Durak”** in the “Take a Break” menu: throw-in and transfer variants, 2–4 players with the computer, same cards, card back and table colour as Solitaire. The computer tracks the cards that are out and plays by a heuristic; near the end of the game it evaluates moves with random deals of the unknown cards (PIMC).
 - “Minimize all windows” button under “New category”: it only minimizes, a second click does not restore.

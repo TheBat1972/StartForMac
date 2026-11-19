@@ -6114,6 +6114,7 @@ struct RootView: View {
     @StateObject private var recents = RecentDocs()
     @AppStorage("recent.limit") private var recentLimit = 100
     @AppStorage("ui.coloredIcons") private var coloredIcons = true
+    @AppStorage("ui.quickApps") private var quickJSON = ""
     @StateObject private var quick = QuickAnswer()
     @FocusState private var searchFocused: Bool
     @FocusState private var nameFocused: Bool
@@ -6518,43 +6519,145 @@ struct RootView: View {
                 .hoverHighlight(7)
                 .help(T("Свернуть окна всех программ. Повторное нажатие их не разворачивает"))
 
+                // быстрые вызовы программ слева (в рамке, их можно заменить), «Инструменты» — справа у края
                 HStack(spacing: 0) {
-                    HStack(spacing: 7) {
-                        shortcut("com.apple.Terminal", T("Терминал"), "terminal")
-                        shortcut("com.apple.ActivityMonitor", T("Мониторинг системы"), "waveform.path.ecg")
-                        shortcut("com.apple.AppStore", "App Store", "bag")
-                    }
+                    quickBlock
                     Spacer(minLength: 0)
-                    HStack(spacing: 7) {
-                    // Инструменты: меню открывается выше кнопки (см. toolsMenu)
-                    Button { showTools.toggle() } label: {
-                        // значок в том же стиле, что у «Системных настроек»: скруглённый квадрат с градиентом и белым знаком
-                        ZStack {
-                            RoundedRectangle(cornerRadius: 5.5, style: .continuous)
-                                .fill(LinearGradient(colors: [Color(red: 0.38, green: 0.68, blue: 1.0),
-                                                              Color(red: 0.04, green: 0.40, blue: 0.95)],
-                                                     startPoint: .top, endPoint: .bottom))
-                            Image(systemName: "wrench.and.screwdriver.fill")
-                                .font(.system(size: 11, weight: .semibold))
-                                .foregroundColor(.white)
-                        }
-                        // у настоящих значков macOS есть прозрачные поля, поэтому наш квадрат чуть меньше рамки 24×24
-                        .frame(width: 21, height: 21)
-                        .frame(width: 24, height: 24)
-                        .padding(4)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .background(FrameReader(box: toolsBtnBox))
-                    .hoverHighlight(8)
-                    .help(T("Инструменты"))
-                    shortcut("com.apple.systempreferences", T("Системные настройки"), "gearshape")
-                    }
+                    toolsButton
                 }
             }
             .padding(12)
         }
         .background(Color.primary.opacity(0.04))
+    }
+
+    // MARK: Быстрые вызовы программ внизу панели
+
+    private static let quickDefaults = ["com.apple.Terminal", "com.apple.ActivityMonitor",
+                                        "com.apple.AppStore", "com.apple.systempreferences"]
+    private static let quickInfo: [String: (String, String)] = [
+        "com.apple.Terminal": ("Терминал", "terminal"),
+        "com.apple.ActivityMonitor": ("Мониторинг системы", "waveform.path.ecg"),
+        "com.apple.AppStore": ("App Store", "bag"),
+        "com.apple.systempreferences": ("Системные настройки", "gearshape")]
+    private static let quickMax = 4
+
+    private var quickList: [String] {
+        if let d = quickJSON.data(using: .utf8), let a = try? JSONDecoder().decode([String].self, from: d) { return a }
+        return RootView.quickDefaults
+    }
+
+    private func setQuick(_ a: [String]) {
+        if let d = try? JSONEncoder().encode(a), let s = String(data: d, encoding: .utf8) { quickJSON = s }
+    }
+
+    /// Выбор программы для быстрого вызова (окно «Пуск» на время выбора не прячется)
+    private func pickQuickApp() -> String? {
+        Store.suppressAutoHide = true
+        let panel = NSOpenPanel()
+        panel.title = T("Выберите программу")
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        panel.allowedContentTypes = [UTType.application]
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        // окно «Пуск» стоит выше обычных окон (уровень popUpMenu) и закрыло бы панель выбора, поэтому на время выбора опускаем его
+        let popups = NSApp.windows.compactMap { $0 as? PopupWindow }
+        let saved = popups.map { $0.level }
+        popups.forEach { $0.level = .normal }
+        panel.level = .modalPanel
+        NSApp.activate(ignoringOtherApps: true)
+        let ok = panel.runModal() == .OK
+        for (w, l) in zip(popups, saved) { w.level = l }
+        Store.suppressAutoHide = false
+        popups.first?.makeKeyAndOrderFront(nil)
+        return ok ? panel.url?.path : nil
+    }
+
+    private func quickIcon(_ e: String) -> NSImage {
+        if e.hasPrefix("/") { return NSWorkspace.shared.icon(forFile: e) }
+        return bundleIcon(e, RootView.quickInfo[e]?.1 ?? "app")
+    }
+
+    private func quickTitle(_ e: String) -> String {
+        if e.hasPrefix("/") {
+            return FileManager.default.displayName(atPath: e).replacingOccurrences(of: ".app", with: "")
+        }
+        return T(RootView.quickInfo[e]?.0 ?? e)
+    }
+
+    private func openQuick(_ e: String) {
+        if e.hasPrefix("/") {
+            NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: e),
+                                               configuration: NSWorkspace.OpenConfiguration(), completionHandler: nil)
+            close()
+        } else { openBundle(e) }
+    }
+
+    private var quickBlock: some View {
+        let list = quickList
+        return HStack(spacing: 4) {
+            ForEach(Array(list.enumerated()), id: \.offset) { i, e in
+                Button { openQuick(e) } label: {
+                    Image(nsImage: quickIcon(e)).resizable().frame(width: 24, height: 24)
+                        .padding(4)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .hoverHighlight(8)
+                .help(quickTitle(e))
+                .contextMenu {
+                    Button(T("Заменить на другую программу…")) {
+                        if let p = pickQuickApp() { var a = list; a[i] = p; setQuick(a) }
+                    }
+                    Button(T("Убрать")) { var a = list; a.remove(at: i); setQuick(a) }
+                    Button(T("Вернуть набор по умолчанию")) { quickJSON = "" }
+                }
+            }
+            if list.count < RootView.quickMax {
+                Button {
+                    if let p = pickQuickApp() { setQuick(list + [p]) }
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.secondary)
+                        .frame(width: 24, height: 24)
+                        .padding(4)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .hoverHighlight(8)
+                .help(T("Добавить программу в быстрые вызовы"))
+            }
+        }
+        .padding(.horizontal, 5).padding(.vertical, 1)
+        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous)
+            .stroke(Color.primary.opacity(0.18), lineWidth: 1))
+    }
+
+    /// Кнопка «Инструменты» — всегда справа у края, не заменяется
+    private var toolsButton: some View {
+        // Инструменты: меню открывается выше кнопки (см. toolsMenu)
+        Button { showTools.toggle() } label: {
+            // значок в том же стиле, что у «Системных настроек»: скруглённый квадрат с градиентом и белым знаком
+            ZStack {
+                RoundedRectangle(cornerRadius: 5.5, style: .continuous)
+                    .fill(LinearGradient(colors: [Color(red: 0.38, green: 0.68, blue: 1.0),
+                                                  Color(red: 0.04, green: 0.40, blue: 0.95)],
+                                         startPoint: .top, endPoint: .bottom))
+                Image(systemName: "wrench.and.screwdriver.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.white)
+            }
+            // у настоящих значков macOS есть прозрачные поля, поэтому наш квадрат чуть меньше рамки 24×24
+            .frame(width: 21, height: 21)
+            .frame(width: 24, height: 24)
+            .padding(4)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(FrameReader(box: toolsBtnBox))
+        .hoverHighlight(8)
+        .help(T("Инструменты"))
     }
 
     /// Меню инструментов: появляется над кнопкой. Новые инструменты добавляем сюда.
