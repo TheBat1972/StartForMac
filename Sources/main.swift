@@ -6248,6 +6248,10 @@ struct SettingsOverlay: View {
         }
     }
 
+    private func sep() -> some View {
+        Divider().opacity(0.35)
+    }
+
     private func section<C: View>(_ title: String, @ViewBuilder _ content: () -> C) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title).font(.system(size: 12, weight: .semibold)).foregroundColor(.secondary)
@@ -6269,14 +6273,49 @@ struct SettingsOverlay: View {
         }
     }
 
-    private func toggleRow(_ title: String, _ on: Bool, _ set: @escaping (Bool) -> Void) -> some View {
+    private func layoutHotkeyRow() -> some View {
+        let active = mc.recordingFor == 3
+        return HStack {
+            Text(T("Исправить слово или выделенный текст"))
+            Spacer()
+            Button {
+                if active { mc.cancelRecording() } else { mc.record(slot: 3) }
+            } label: {
+                Text(active ? T("Нажмите сочетание…") : mc.layoutComboTitle).frame(minWidth: 110)
+            }
+        }
+    }
+
+    private func layoutSwitchKeyRow() -> some View {
+        HStack {
+            Text(T("Клавиша переключения раскладки"))
+            Spacer()
+            Picker("", selection: Binding(get: { mc.switchKind == "fn" ? "fn" : "off" }, set: { mc.setSwitchKind($0) })) {
+                Text(T("Системная")).tag("off")
+                Text(T("Globe (fn)")).tag("fn")
+            }
+            .labelsHidden()
+            .frame(width: 150)
+        }
+    }
+
+    private func toggleRow(_ title: String, _ on: Bool, disabled: Bool = false, _ set: @escaping (Bool) -> Void) -> some View {
         HStack(alignment: .center, spacing: 12) {
             Text(title).fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 12)
-            Toggle("", isOn: Binding(get: { on }, set: set))
-                .labelsHidden()
-                .toggleStyle(.switch)
+            if disabled {
+                // заблокированный выключатель — отдельный вид, чтобы блокировка не «залипала» после разблокировки
+                Toggle("", isOn: .constant(on))
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .disabled(true)
+            } else {
+                Toggle("", isOn: Binding(get: { on }, set: set))
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+            }
         }
+        .opacity(disabled ? 0.55 : 1)
     }
 
     var body: some View {
@@ -6299,6 +6338,7 @@ struct SettingsOverlay: View {
                             .pickerStyle(.segmented)
                             .labelsHidden()
                         }
+                        sep()
                         section(T("Тема")) {
                             Picker("", selection: Binding(get: { store.theme }, set: { store.setTheme($0) })) {
                                 ForEach(AppTheme.allCases, id: \.self) { Text(themeTitle($0)).tag($0) }
@@ -6306,6 +6346,7 @@ struct SettingsOverlay: View {
                             .pickerStyle(.segmented)
                             .labelsHidden()
                         }
+                        sep()
                         section(T("Значки")) {
                             Picker("", selection: $coloredIcons) {
                                 Text(T("Обычные")).tag(false)
@@ -6314,6 +6355,7 @@ struct SettingsOverlay: View {
                             .pickerStyle(.segmented)
                             .labelsHidden()
                         }
+                        sep()
                         section(T("Горячие клавиши")) {
                             hotkeyRow(T("Открыть или скрыть «StartForMac»"), combo: mc.startComboTitle, forStart: true)
                             hotkeyRow(T("Свернуть все окна"), combo: mc.minimizeComboTitle, forStart: false)
@@ -6322,6 +6364,7 @@ struct SettingsOverlay: View {
                                     .font(.caption).foregroundColor(.secondary)
                             }
                         }
+                        sep()
                         section(T("Жест")) {
                             toggleRow(T("Открывать «StartForMac» жестом: большой + три пальца"), mc.pinchOn) { on in
                                 if on { confirmPinch = true } else { mc.setPinch(false) }
@@ -6347,11 +6390,13 @@ struct SettingsOverlay: View {
                                 .id("confirmPinch")
                             }
                         }
+                        sep()
                         section(T("Свернуть всё")) {
                             toggleRow(T("Возвращать окна, если экран пуст"), mc.restoreOn) { mc.setRestore($0) }
                             toggleRow(T("Сворачивать по клику в Dock"), mc.dockOn) { mc.setDock($0) }
                             Button(T("Разрешения…")) { store.showSettings = false; store.showPermissions = true }
                         }
+                        sep()
                         section(T("Конвертер валют в поиске")) {
                             Text(T("Если в поиске указана одна валюта без «в …», например «100 долларов», она переводится в основную, а основная — во вторую."))
                                 .font(.caption).foregroundColor(.secondary)
@@ -6368,29 +6413,77 @@ struct SettingsOverlay: View {
                                                        set: { v in if v == quickBase { quickBase = quickAlt }; quickAlt = v }))
                             }
                         }
+                        sep()
                         section(T("Система")) {
                             toggleRow(T("Запускать при входе в систему"), mc.loginOn) { mc.setLogin($0) }
                             toggleRow(T("Значок в верхней панели"), mc.trayOn) { mc.setTray($0) }
+                            sep()
                             toggleRow(T("Окна по ⌃⌥ + стрелки"), mc.snapOn) { mc.setSnap($0) }
                             Text(T("Активное окно любого приложения: ⌃⌥← и ⌃⌥→ — в левую или правую половину экрана (если размер окна не меняется, окно просто сдвигается до края), ⌃⌥↑ — на весь экран, ⌃⌥↓ — свернуть в Dock. Нужен доступ «Управление устройством и доступ к данным» (в ранних версиях macOS: «Универсальный доступ»)."))
                                 .font(.caption).foregroundColor(.secondary)
+                            sep()
                             toggleRow(T("Кнопка «+» — новый чистый рабочий стол"), mc.cleanDeskOn) { mc.setCleanDesk($0) }
                             Text(T("Справа от замка на верхней панели появляется «+»: он создаёт новый рабочий стол macOS и переходит на него. Новый стол совершенно чистый: на нём своё окно со своими значками (файлы лежат в папке «Рабочие столы» в домашней папке, не в iCloud), файлы основного стола не затрагиваются и ничего не перекачивается. Файлы можно перетащить на новый стол из Finder и обратно, работают ⌘C, ⌘V и (если включено) ⌘X, двойной щелчок открывает файл. Если новый стол удалить (в Mission Control), программа спросит, что сделать с его файлами: в Корзину, на основной стол или оставить папку; то же при запуске, если стола уже нет."))
                                 .font(.caption).foregroundColor(.secondary)
                             Text(T("Нужно разрешение «Управление устройством и доступ к данным» (в ранних версиях macOS: «Универсальный доступ»; программа сама нажимает «+» в Mission Control). Запись экрана и системного звука нужна только для точной копии обоев нового стола (разовый снимок экрана; звук не записывается); без неё берётся файл обоев."))
                                 .font(.caption).foregroundColor(.red)
+                            sep()
                             toggleRow(T("⌘X в Finder — вырезать"), mc.finderCutOn) { mc.setFinderCut($0) }
                             Text(T("⌘X в Finder копирует выделенные файлы и помечает их вырезанными: следующая вставка ⌘V в Finder переместит их, а не скопирует. ⌘C отменяет вырезание. В полях ввода ⌘X работает как обычно. Нужен доступ «Управление устройством и доступ к данным» (в ранних версиях macOS: «Универсальный доступ»)."))
                                 .font(.caption).foregroundColor(.secondary)
+                            sep()
                             toggleRow(T("Переключение окон по ⌥Tab"), mc.switcherOn) { mc.setSwitcher($0) }
                             Text(T("Option + Tab показывает окна (а не приложения целиком) с миниатюрами. Пока Option зажат: Tab или ⇧Tab, стрелки — выбор окна; можно печатать название окна или программы — список сужается (⌫ стирает); Enter или отпустить Option — выбранное окно выходит вперёд, Esc — отмена; на плитке под курсором есть кнопки «закрыть», «свернуть» и «на весь экран». Нужен доступ «Управление устройством и доступ к данным» (в ранних версиях macOS: «Универсальный доступ»)."))
                                 .font(.caption).foregroundColor(.secondary)
+                            sep()
                             toggleRow(T("Миниатюры окон"), mc.thumbsOn) { mc.setThumbs($0) }
                             Text(T("Запись экрана и системного звука запрашивается только для того, чтобы сделать снимок каждого окна и показать его миниатюрой в ⌥Tab и при наведении на значок в Dock. Звук не записывается, снимки нигде не сохраняются и никуда не передаются. Разрешение можно не давать: тогда вместо миниатюр показываются значки приложений."))
                                 .font(.caption).foregroundColor(.red)
+                            sep()
                             toggleRow(T("Окна при наведении на значок в Dock"), mc.dockPreviewOn) { mc.setDockPreview($0) }
                             Text(T("Если задержать курсор на значке запущенного приложения в Dock (около 0,3 с), над значком появятся его окна (в том числе свёрнутые). Клик по окну выводит его вперёд, на плитке есть кнопки «закрыть», «свернуть» и «на весь экран». Нужен доступ «Управление устройством и доступ к данным» (в ранних версиях macOS: «Универсальный доступ»). Миниатюры включаются выключателем выше."))
                                 .font(.caption).foregroundColor(.secondary)
+                            sep()
+                            toggleRow(T("Автоматический переключатель раскладки"), mc.layoutOn) { mc.setLayout($0) }
+                            Text(T("Слово, набранное не в той раскладке («ghbdtn»), после пробела, Tab или Enter заменяется на правильное («привет»), и раскладка переключается. Решает системная проверка орфографии (нужны русский и английский словари в macOS); всё считается на этом Mac, набранный текст нигде не сохраняется и никуда не передаётся. Сочетание ниже исправляет слово, которое набираете сейчас, выделенный текст или последнее слово. Нужен доступ «Управление устройством и доступ к данным» (в ранних версиях macOS: «Универсальный доступ»): программа запросит его при включении."))
+                                .font(.caption).foregroundColor(.secondary)
+                            if mc.layoutOn {
+                                toggleRow(T("Исправлять автоматически"), mc.layoutAutoOn) { mc.setLayoutAuto($0) }
+                                layoutHotkeyRow()
+                                if mc.recordingFor == 3 {
+                                    Text(T("Нужен хотя бы один модификатор (⌃ ⌥ ⌘ ⇧). Esc — отмена."))
+                                        .font(.caption).foregroundColor(.secondary)
+                                }
+                                Text(T("Программы, в которых переключатель не работает:"))
+                                    .font(.caption).foregroundColor(.secondary)
+                                ForEach(mc.layoutExcluded, id: \.self) { id in
+                                    HStack {
+                                        Text(mc.layoutAppTitle(id))
+                                        Spacer()
+                                        Button(T("Убрать")) { mc.removeLayoutExcluded(id) }
+                                    }
+                                }
+                                Button(T("Добавить программу…")) { mc.addLayoutExcluded() }
+                            }
+                            sep()
+                            layoutSwitchKeyRow()
+                            if mc.switchKind == "fn" {
+                                Text(T("Для Globe (fn) отключите системное действие: Системные настройки → Клавиатура → «Нажатие 🌐 для» → «Ничего не делать»."))
+                                    .font(.caption).foregroundColor(.secondary)
+                            }
+                            sep()
+                            toggleRow(T("Скрыть системную плашку раскладки у курсора"), mc.hideIndicatorOn) { mc.setHideIndicator($0) }
+                            Text(T("Маленькая плашка с буквой («A», «Р») под текстовым курсором, которую macOS показывает при смене раскладки (Sonoma и новее). Она часто глючит: запаздывает, показывает не ту раскладку, а иногда переключение в поле ввода вообще «теряется» и нужно нажимать дважды. Флаги «Пуска» берут раскладку напрямую из системы и проверяют переключение, поэтому плашка не нужна. Если она не исчезла сразу, перезапустите программу, в которой печатаете, или выйдите из системы и войдите снова."))
+                                .font(.caption).foregroundColor(.secondary)
+                            sep()
+                            toggleRow(T("Флажок раскладки в строке меню"), mc.layoutStatusFlagOn) { mc.setLayoutStatusFlag($0) }
+                            Text(T("Маленький флажок текущей раскладки в строке меню macOS, рядом с часами. Клик — следующая раскладка, правая кнопка — убрать флажок. Разрешений не требует."))
+                                .font(.caption).foregroundColor(.secondary)
+                            sep()
+                            toggleRow(T("Флаг раскладки на экране"), mc.layoutFlagOn) { mc.setLayoutFlag($0) }
+                            Text(T("Маленький флаг поверх окон показывает текущую раскладку. Клик по флагу — следующая раскладка, перетаскивание — двигает флаг, правая кнопка — размер и возврат в угол экрана. Разрешений не требует."))
+                                .font(.caption).foregroundColor(.secondary)
+                            sep()
                             toggleRow(T("Умный буфер обмена — ⇧⌘V"), mc.clipOn) { mc.setClip($0) }
                             Text(T("История последних копирований (текст, картинки, файлы). ⇧⌘V открывает список у курсора: выбор стрелками или цифрами, Enter вставляет, P закрепляет запись, ⌫ убирает. Значок буфера на верхней панели «Пуска» открывает тот же список — клик копирует запись. Закреплённые записи не вытесняются и не считаются в лимите. Пароли не сохраняются (скрытые копии и менеджеры паролей пропускаются), история хранится только в памяти и исчезает при выходе из программы. Для автоматической вставки нужен доступ «Управление устройством и доступ к данным» (в ранних версиях macOS: «Универсальный доступ»)."))
                                 .font(.caption).foregroundColor(.secondary)
@@ -6917,6 +7010,7 @@ struct RootView: View {
             }
             Divider()
             VStack(spacing: 10) {
+                VStack(spacing: 0) {              // «Новая категория» и «Свернуть все окна» вплотную, освободившееся место отдано списку категорий
                 Button {
                     beginEdit("", text: "")
                 } label: {
@@ -6942,6 +7036,7 @@ struct RootView: View {
                 .buttonStyle(.plain)
                 .hoverHighlight(7)
                 .help(T("Свернуть окна всех программ. Повторное нажатие их не разворачивает"))
+                }
 
                 // быстрые вызовы программ слева (в рамке, их можно заменить), «Инструменты» — справа у края
                 HStack(spacing: 0) {
@@ -6964,7 +7059,7 @@ struct RootView: View {
         "com.apple.ActivityMonitor": ("Мониторинг системы", "waveform.path.ecg"),
         "com.apple.AppStore": ("App Store", "bag"),
         "com.apple.systempreferences": ("Системные настройки", "gearshape")]
-    private static let quickMax = 4
+    private static let quickMax = 5
 
     private var quickList: [String] {
         if let d = quickJSON.data(using: .utf8), let a = try? JSONDecoder().decode([String].self, from: d) { return a }
@@ -7019,7 +7114,7 @@ struct RootView: View {
 
     private var quickBlock: some View {
         let list = quickList
-        return HStack(spacing: 4) {
+        return HStack(spacing: 2) {
             ForEach(Array(list.enumerated()), id: \.offset) { i, e in
                 Image(nsImage: quickIcon(e)).resizable().frame(width: 24, height: 24)
                     .padding(4)
@@ -7075,7 +7170,7 @@ struct RootView: View {
                 .help(T("Добавить программу в быстрые вызовы"))
             }
         }
-        .padding(.horizontal, 5).padding(.vertical, 1)
+        .padding(.horizontal, 3).padding(.vertical, 1)
         .background(FrameReader(box: quickBox))
         .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous)
             .stroke(Color.primary.opacity(0.18), lineWidth: 1))

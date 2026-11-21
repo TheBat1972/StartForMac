@@ -87,6 +87,9 @@ NOTARY_PROFILE= ./build.sh
 | `Sources/FinderCut.swift` | ⌘X в Finder как «вырезать» (перехват клавиш) |
 | `Sources/WindowSwitcher.swift` | переключатель окон по ⌥Tab с миниатюрами, поиском и кнопками окон |
 | `Sources/DockPreview.swift` | окна при наведении на значок в Dock |
+| `Sources/LayoutSwitcher.swift` | автоматический переключатель раскладки |
+| `Sources/LayoutKey.swift` | своя клавиша переключения раскладки (Globe/fn или сочетание) |
+| `Sources/LayoutFlag.swift` | флаг раскладки на экране (встроенный LangFlag) |
 | `Sources/Duplicates.swift` | дубликаты и похожие фото (SHA-256, перцептивный хеш) |
 | `Sources/Minimize.swift` | «Свернуть всё», горячие клавиши, автозапуск, закрепление в Dock |
 | `Sources/Gesture.swift` | жест-щипок (системная библиотека MultitouchSupport, загружается динамически) |

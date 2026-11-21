@@ -84,6 +84,9 @@ See [CHANGELOG.md](CHANGELOG.md) for the list of changes.
 | `Sources/FinderCut.swift` | ⌘X in Finder as “cut” (event tap) |
 | `Sources/WindowSwitcher.swift` | ⌥Tab window switcher with thumbnails, search and window buttons |
 | `Sources/DockPreview.swift` | window previews when hovering a Dock icon |
+| `Sources/LayoutSwitcher.swift` | automatic keyboard layout switcher |
+| `Sources/LayoutKey.swift` | own layout switch key (Globe/fn or shortcut) |
+| `Sources/LayoutFlag.swift` | floating layout flag (built-in LangFlag) |
 | `Sources/Clipboard.swift` | smart clipboard history (⇧⌘V, pinning, in-memory, skips passwords) |
 | `Sources/UnRar.swift` | archive extraction (RAR/RAR5, 7z, ZIP, TAR…; passwords, multi-volume) via 7-Zip |
 | `Sources/Duplicates.swift` | duplicates and similar photos (SHA-256, perceptual hash) |

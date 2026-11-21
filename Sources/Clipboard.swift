@@ -51,6 +51,9 @@ final class ClipboardHistory: ObservableObject {
 
     private var timer: Timer?
     private var lastCount = NSPasteboard.general.changeCount
+    private var suppressUntil = Date.distantPast
+    /// Ближайшие `seconds` секунд изменения буфера в историю не попадают
+    func suppress(for seconds: TimeInterval) { suppressUntil = Date().addingTimeInterval(seconds) }
 
     /// Закреплённые сверху, затем свежие
     var ordered: [ClipItem] { items.filter { $0.pinned } + items.filter { !$0.pinned } }
@@ -108,6 +111,7 @@ final class ClipboardHistory: ObservableObject {
         let pb = NSPasteboard.general
         guard pb.changeCount != lastCount else { return }
         lastCount = pb.changeCount
+        if Date() < suppressUntil { return }                // свои временные копирования (переключатель раскладки) в историю не идут
         let types = (pb.types ?? []).map { $0.rawValue }
         guard !types.isEmpty else { return }
         if types.contains(where: { ClipboardHistory.secretTypes.contains($0) }) { return }

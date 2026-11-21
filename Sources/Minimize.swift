@@ -1,6 +1,7 @@
 // «Свернуть всё» — функции бывшего приложения MinimizeAll, встроенные в «Пуск»:
 // кнопка в строке меню, горячая клавиша, клик по иконке активного приложения в Dock.
 import Cocoa
+import UniformTypeIdentifiers
 import Carbon.HIToolbox
 import ServiceManagement
 import Combine
@@ -469,6 +470,15 @@ final class MinimizeController: NSObject, ObservableObject {
     @Published var thumbsOn = WindowSwitcher.thumbsEnabled
     /// Умный буфер обмена (⇧⌘V) и сколько записей хранить (по умолчанию выключен)
     @Published var dockPreviewOn = DockPreview.enabled
+    /// Автоматический переключатель раскладки, его сочетание, исключения и флаг раскладки (по умолчанию всё выключено)
+    @Published var layoutOn = LayoutSwitcher.enabled
+    @Published var layoutAutoOn = LayoutSwitcher.autoFix
+    @Published var layoutExcluded = LayoutSwitcher.excluded
+    @Published var layoutComboTitle = LayoutSwitcher.loadCombo().title
+    @Published var switchKind = LayoutKey.kind
+    @Published var hideIndicatorOn = MinimizeController.systemIndicatorHidden()
+    @Published var layoutFlagOn = LayoutFlag.enabled
+    @Published var layoutStatusFlagOn = LayoutFlag.statusEnabled
     @Published var clipOn = ClipboardHistory.enabled
     @Published var clipLimit = ClipboardHistory.limit
     @Published var trayOn = (UserDefaults.standard.object(forKey: "ui.trayIcon") as? Bool) ?? true
@@ -535,6 +545,77 @@ final class MinimizeController: NSObject, ObservableObject {
         if on && (switcherOn || dockPreviewOn) && !CGPreflightScreenCaptureAccess() { CGRequestScreenCaptureAccess() }
     }
 
+    func setLayout(_ on: Bool) {
+        LayoutSwitcher.enabled = on
+        layoutOn = on
+        LayoutSwitcher.shared.setEnabled(on)             // сам просит доступ «Управление устройством и доступ к данным»
+    }
+
+    /// Системная плашка с буквой раскладки у текстового курсора (macOS Sonoma и новее)
+    static func systemIndicatorHidden() -> Bool {
+        let v = CFPreferencesCopyValue("TSMLanguageIndicatorEnabled" as CFString, kCFPreferencesAnyApplication,
+                                       kCFPreferencesCurrentUser, kCFPreferencesAnyHost)
+        return (v as? NSNumber)?.boolValue == false
+    }
+
+    func setHideIndicator(_ on: Bool) {
+        // выключено системой = false; вернуть по умолчанию = убрать ключ
+        let value: CFPropertyList? = on ? (NSNumber(value: false) as CFPropertyList) : nil
+        CFPreferencesSetValue("TSMLanguageIndicatorEnabled" as CFString, value,
+                              kCFPreferencesAnyApplication, kCFPreferencesCurrentUser, kCFPreferencesAnyHost)
+        CFPreferencesSynchronize(kCFPreferencesAnyApplication, kCFPreferencesCurrentUser, kCFPreferencesAnyHost)
+        hideIndicatorOn = MinimizeController.systemIndicatorHidden()
+    }
+
+    func setSwitchKind(_ k: String) {
+        LayoutKey.kind = k
+        switchKind = k
+        LayoutKey.shared.apply()
+    }
+
+    func setLayoutAuto(_ on: Bool) {
+        LayoutSwitcher.autoFix = on
+        layoutAutoOn = on
+    }
+
+    func setLayoutFlag(_ on: Bool) {
+        LayoutFlag.enabled = on
+        layoutFlagOn = on
+        LayoutFlag.shared.setEnabled(on)
+    }
+
+    func setLayoutStatusFlag(_ on: Bool) {
+        LayoutFlag.statusEnabled = on
+        layoutStatusFlagOn = on
+        LayoutFlag.shared.setStatusEnabled(on)
+    }
+
+    func layoutAppTitle(_ id: String) -> String {
+        if let u = NSWorkspace.shared.urlForApplication(withBundleIdentifier: id) {
+            return FileManager.default.displayName(atPath: u.path).replacingOccurrences(of: ".app", with: "")
+        }
+        return id
+    }
+
+    func addLayoutExcluded() {
+        let p = NSOpenPanel()
+        p.title = T("Программа, в которой переключатель раскладки не должен работать")
+        p.allowedContentTypes = [.applicationBundle]
+        p.allowsMultipleSelection = false
+        p.directoryURL = URL(fileURLWithPath: "/Applications")
+        guard p.runModal() == .OK, let u = p.url, let id = Bundle(url: u)?.bundleIdentifier else { return }
+        var list = LayoutSwitcher.excluded
+        if !list.contains(id) { list.append(id) }
+        LayoutSwitcher.excluded = list
+        layoutExcluded = list
+    }
+
+    func removeLayoutExcluded(_ id: String) {
+        let list = LayoutSwitcher.excluded.filter { $0 != id }
+        LayoutSwitcher.excluded = list
+        layoutExcluded = list
+    }
+
     func setDockPreview(_ on: Bool) {
         DockPreview.enabled = on
         dockPreviewOn = on
@@ -586,6 +667,14 @@ final class MinimizeController: NSObject, ObservableObject {
         if ClipboardHistory.enabled { ClipboardHistory.shared.start() }
         if WindowSwitcher.enabled { WindowSwitcher.shared.start() }
         if DockPreview.enabled { DockPreview.shared.start() }
+        if LayoutSwitcher.enabled { LayoutSwitcher.shared.start() }
+        LayoutKey.shared.apply()
+        if LayoutFlag.enabled { LayoutFlag.shared.setEnabled(true) }
+        if LayoutFlag.statusEnabled { LayoutFlag.shared.setStatusEnabled(true) }
+        NotificationCenter.default.addObserver(forName: .layoutFlagChanged, object: nil, queue: .main) { [weak self] _ in
+            self?.layoutFlagOn = LayoutFlag.enabled              // флаг скрыли из его собственного меню
+            self?.layoutStatusFlagOn = LayoutFlag.statusEnabled
+        }
         pinch.onPinch = { [weak self] in self?.toggleStart?() }
         pinch.start()
         dockWatcher.onMinimize = { [weak self] pid in self?.minimizer.minimize(pids: [pid], remember: false) }
@@ -674,9 +763,13 @@ final class MinimizeController: NSObject, ObservableObject {
     }
 
     /// Записывает новое сочетание прямо в окне «Пуск» (без системных окон). Esc — отмена.
-    func record(forStart: Bool) {
+    func record(forStart: Bool) { record(slot: forStart ? 2 : 1) }
+
+    /// slot: 1 — «Свернуть всё», 2 — «Пуск», 3 — исправление раскладки
+    func record(slot: Int) {
+        let forStart = slot == 2
         cancelRecording()
-        recordingFor = forStart ? 2 : 1
+        recordingFor = slot
         recordMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
             guard let self = self else { return e }
             if e.keyCode == 53 { self.cancelRecording(); return nil }
@@ -687,7 +780,11 @@ final class MinimizeController: NSObject, ObservableObject {
                 t = e.keyCode == 49 ? "Space" : "#\(e.keyCode)"
             }
             let newCombo = Combo(keyCode: UInt32(e.keyCode), mods: mods, keyTitle: t)
-            if forStart {
+            if slot == 3 {
+                newCombo.save(prefix: "layout.hk")
+                self.layoutComboTitle = newCombo.title
+                LayoutSwitcher.shared.reregisterHotkey()
+            } else if forStart {
                 self.startCombo = newCombo
                 newCombo.save(prefix: "start.hk")
                 HotKeyCenter.shared.register(newCombo, id: 2) { [weak self] in self?.toggleStart?() }
