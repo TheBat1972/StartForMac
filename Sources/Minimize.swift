@@ -468,6 +468,7 @@ final class MinimizeController: NSObject, ObservableObject {
     @Published var switcherOn = WindowSwitcher.enabled
     @Published var thumbsOn = WindowSwitcher.thumbsEnabled
     /// Умный буфер обмена (⇧⌘V) и сколько записей хранить (по умолчанию выключен)
+    @Published var dockPreviewOn = DockPreview.enabled
     @Published var clipOn = ClipboardHistory.enabled
     @Published var clipLimit = ClipboardHistory.limit
     @Published var trayOn = (UserDefaults.standard.object(forKey: "ui.trayIcon") as? Bool) ?? true
@@ -531,7 +532,16 @@ final class MinimizeController: NSObject, ObservableObject {
     func setThumbs(_ on: Bool) {
         WindowSwitcher.thumbsEnabled = on
         thumbsOn = on
-        if on && switcherOn && !CGPreflightScreenCaptureAccess() { CGRequestScreenCaptureAccess() }
+        if on && (switcherOn || dockPreviewOn) && !CGPreflightScreenCaptureAccess() { CGRequestScreenCaptureAccess() }
+    }
+
+    func setDockPreview(_ on: Bool) {
+        DockPreview.enabled = on
+        dockPreviewOn = on
+        DockPreview.shared.setEnabled(on)
+        // чтобы находить значок под курсором в Dock, нужен доступ «Управление устройством и доступ к данным»
+        if on { _ = requestAccessibility(prompt: true) }
+        if on && thumbsOn && !CGPreflightScreenCaptureAccess() { CGRequestScreenCaptureAccess() }
     }
 
     func setClip(_ on: Bool) {
@@ -575,6 +585,7 @@ final class MinimizeController: NSObject, ObservableObject {
         if FinderCut.enabled { FinderCut.shared.start() }
         if ClipboardHistory.enabled { ClipboardHistory.shared.start() }
         if WindowSwitcher.enabled { WindowSwitcher.shared.start() }
+        if DockPreview.enabled { DockPreview.shared.start() }
         pinch.onPinch = { [weak self] in self?.toggleStart?() }
         pinch.start()
         dockWatcher.onMinimize = { [weak self] pid in self?.minimizer.minimize(pids: [pid], remember: false) }

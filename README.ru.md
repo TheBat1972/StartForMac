@@ -85,7 +85,8 @@ NOTARY_PROFILE= ./build.sh
 | `Sources/main.swift` | интерфейс, список приложений, удаление, окна инструментов (очистка, анализатор диска, внешние диски), сайты, настройки |
 | `Sources/WindowSnap.swift` | управление окнами по ⌃⌥ + стрелки (половины экрана, на весь экран, свернуть) |
 | `Sources/FinderCut.swift` | ⌘X в Finder как «вырезать» (перехват клавиш) |
-| `Sources/WindowSwitcher.swift` | переключатель окон по ⌥Tab с миниатюрами |
+| `Sources/WindowSwitcher.swift` | переключатель окон по ⌥Tab с миниатюрами, поиском и кнопками окон |
+| `Sources/DockPreview.swift` | окна при наведении на значок в Dock |
 | `Sources/Duplicates.swift` | дубликаты и похожие фото (SHA-256, перцептивный хеш) |
 | `Sources/Minimize.swift` | «Свернуть всё», горячие клавиши, автозапуск, закрепление в Dock |
 | `Sources/Gesture.swift` | жест-щипок (системная библиотека MultitouchSupport, загружается динамически) |
