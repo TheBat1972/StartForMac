@@ -11,6 +11,9 @@
 
 **Улучшения**
 - Окно разрешений приведено в порядок: у каждого разрешения есть кнопка «Открыть настройки» прямо в нужный раздел Системных настроек; добавлены «Управление приложениями» и «Файлы и папки»; «Данные других приложений» объединено с «Полным доступом к диску»; «Мониторинг ввода» больше не показывает «Выдан», когда это не так.
+- Сочетание ручного исправления раскладки теперь исправляет и набираемое слово, и последнее набранное: раньше сама комбинация стирала слово из памяти до того, как успевала сработать.
+- Автоматический переключатель раскладки стал умнее: короткие слова перед исправленным («И вот», «А кто это?») теперь исправляются вместе с ним, а не остаются в неверной раскладке; слова с дефисом («что-то», «кто-нибудь») исправляются по частям; знаки после слова («привет.», «привет?», «привет!») набираются правильно; адреса сайтов («github.com») не трогаются; при смене программы набираемое слово и память об исправлении сбрасываются.
+- Повторные нажатия сочетания переключают слово туда и обратно: после автоисправления, после исправления набираемого или последнего слова и после исправления выделенного текста (он остаётся выделенным) каждое следующее нажатие меняет раскладку слова, сколько раз ни нажми, пока не набран следующий символ. Слово, которое вернули к набранному виду после автоисправления, больше автоматически не исправляется (до 500 слов); вернули снова — оно опять исправляется.
 - Версия 8.0.
 
 ### Версия 7.0 — 2026-11-21
@@ -168,6 +171,9 @@
 
 **Improvements**
 - The permissions window has been tidied up: every permission has an “Open Settings” button that goes straight to the right Settings pane; App Management and Files & Folders were added; “Other apps’ data” was merged into Full Disk Access; Input Monitoring no longer shows “Granted” when it is not.
+- The manual layout-fix shortcut now fixes both the word being typed and the last typed word: before, the combination itself cleared the word from memory before it could act.
+- The automatic layout switcher got smarter: short words before a corrected one (“И вот”, “А кто это?”) are now fixed together with it instead of staying in the wrong layout; hyphenated words (“что-то”, “кто-нибудь”) are fixed part by part; punctuation after a word (“привет.”, “привет?”, “привет!”) is typed correctly; website addresses (“github.com”) are left alone; switching to another app resets the word being typed and the undo memory.
+- Pressing the shortcut again toggles the word back and forth: after an auto-fix, after fixing the word being typed or the last word, and after fixing selected text (it stays selected), every further press switches the word’s layout as many times as you press, until the next character is typed. A word you return to its typed form after an auto-fix is no longer fixed automatically (up to 500 words); switch it again and it is fixed again.
 - Version 8.0.
 
 ### Version 7.0 — 2026-11-21

@@ -42,6 +42,17 @@ final class LayoutSwitcher {
     private struct Stroke { let code: CGKeyCode; let shift: Bool; let caps: Bool }
     private struct Lay { let id: String; let ru: Bool; let data: CFData; let src: TISInputSource }
     private struct LastWord { let strokes: [Stroke]; let layID: String; let boundary: CGKeyCode; let pid: pid_t }
+    private struct RunWord { let strokes: [Stroke]; let layID: String }
+    /// Последнее исправление: сочетание переключает слово туда и обратно, сколько раз ни нажми
+    private struct UndoInfo {
+        let now: String                                     // что сейчас на экране
+        let other: String                                   // что будет после нажатия
+        let layNow: Lay
+        let layOther: Lay
+        let boundary: (CGKeyCode, CGEventFlags)?            // клавиша после слова (пробел), если она уже набрана
+        let never: String?                                  // набранный вид автоисправленного слова
+        let isAuto: Bool                                    // на экране результат автоисправления
+    }
 
     private var tap: CFMachPort?
     private var source: CFRunLoopSource?
@@ -54,9 +65,35 @@ final class LayoutSwitcher {
     private var wordLayID = ""
     private var poison = false                              // в слове цифра или знак — слово не трогаем
     private var last: LastWord?                             // последнее законченное слово (для горячей клавиши)
+    private var run: [RunWord] = []                         // слова текущей фразы, набранные подряд и не исправленные (для коротких слов «И», «А»)
+    private var undo: UndoInfo?                             // откат последнего автоисправления (пока ничего не набрано дальше)
+    private var pendingUndo: UndoInfo?
+    private var appObserver: NSObjectProtocol?
     private var busy = false                                // идёт исправление: новые нажатия ждут
     private var deferred: [CGEvent] = []
     private let work = DispatchQueue(label: "layoutswitcher.work", qos: .userInteractive)
+
+    private static let ruShort: Set<String> = ["а", "в", "и", "к", "о", "с", "у", "я", "во", "на", "не", "ни", "но", "да", "за", "из",
+        "по", "от", "до", "он", "мы", "вы", "ты", "то", "ту", "ко", "со", "об", "ли", "же", "бы", "ну", "ей", "им", "их", "её", "ее",
+        "уж", "ах", "ох", "эх", "ой", "ай"]
+    private static let enShort: Set<String> = ["i", "a", "am", "an", "as", "at", "be", "by", "do", "go", "he", "if", "in", "is", "it",
+        "me", "my", "no", "of", "on", "or", "so", "to", "up", "us", "we"]
+    private func isShort(_ s: String, ru: Bool) -> Bool { (ru ? LayoutSwitcher.ruShort : LayoutSwitcher.enShort).contains(s.lowercased()) }
+
+    /// Слова, которые пользователь откатил: их больше не исправляем (набранный вид, строчными)
+    static var never: Set<String> { Set(UserDefaults.standard.stringArray(forKey: "layout.never") ?? []) }
+    static func addNever(_ w: String) {
+        var a = UserDefaults.standard.stringArray(forKey: "layout.never") ?? []
+        if !a.contains(w) { a.append(w) }
+        if a.count > 500 { a.removeFirst(a.count - 500) }
+        UserDefaults.standard.set(a, forKey: "layout.never")
+    }
+    static func removeNever(_ w: String) {
+        var a = UserDefaults.standard.stringArray(forKey: "layout.never") ?? []
+        a.removeAll { $0 == w }
+        UserDefaults.standard.set(a, forKey: "layout.never")
+    }
+    static func clearNever() { UserDefaults.standard.removeObject(forKey: "layout.never") }
 
     private static let letterCodes: Set<CGKeyCode> = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16, 17,
                                                       31, 32, 34, 35, 37, 38, 40, 45, 46]
@@ -96,6 +133,9 @@ final class LayoutSwitcher {
             self?.resetWord()
         }
         HotKeyCenter.shared.register(LayoutSwitcher.loadCombo(), id: 16) { [weak self] in self?.manual() }
+        // другая программа выходит вперёд: слово, которое набиралось, и память об исправлении больше не актуальны
+        appObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification,
+                                                                         object: nil, queue: .main) { [weak self] _ in self?.resetWord() }
     }
 
     func stop() {
@@ -105,6 +145,8 @@ final class LayoutSwitcher {
         if let s = source { CFRunLoopRemoveSource(CFRunLoopGetMain(), s, .commonModes) }
         if let m = clickMonitor { NSEvent.removeMonitor(m) }
         clickMonitor = nil
+        if let o = appObserver { NSWorkspace.shared.notificationCenter.removeObserver(o) }
+        appObserver = nil
         tap = nil
         source = nil
         HotKeyCenter.shared.unregister(id: 16)
@@ -124,6 +166,8 @@ final class LayoutSwitcher {
         keys = []
         poison = false
         last = nil
+        run = []
+        undo = nil
     }
 
     // MARK: Раскладки
@@ -187,22 +231,60 @@ final class LayoutSwitcher {
         return ok(s) || ok(s.lowercased())
     }
 
+    /// Конец слова: знаки, которые могут стоять после слова и не мешают его исправить
+    private func isTail(_ s: Stroke, to: Lay) -> Bool {
+        LayoutSwitcher.punctCodes.contains(s.code) || s.code == 44 || (to.ru && s.shift && (s.code == 26 || s.code == 18))
+    }
+
+    private func tailText(_ strokes: [Stroke], from: Lay, to: Lay) -> String {
+        strokes.map { s -> String in
+            if to.ru {
+                if s.code == 44 { return s.shift ? "," : "." }
+                if s.code == 26 && s.shift { return "?" }
+                if s.code == 18 && s.shift { return "!" }
+                return translate(s, from) ?? ""
+            }
+            return translate(s, to) ?? ""
+        }.joined()
+    }
+
+    /// Слово с дефисом («что-то»): каждая часть проверяется отдельно
+    private func decideHyphen(_ k: [Stroke], from: Lay, to: Lay) -> String? {
+        var segs: [[Stroke]] = [[]]
+        for s in k { if s.code == 27 && !s.shift { segs.append([]) } else { segs[segs.count - 1].append(s) } }
+        guard segs.count >= 2, segs.allSatisfy({ !$0.isEmpty }) else { return nil }
+        let typed = segs.map { string($0, from) }, conv = segs.map { string($0, to) }
+        guard conv.allSatisfy({ !$0.isEmpty && $0.allSatisfy { $0.isLetter } }) else { return nil }
+        if typed.allSatisfy({ $0.allSatisfy { $0.isLetter } && isWord($0, ru: from.ru) }) { return nil }   // набрано верно
+        for (i, c) in conv.enumerated() {
+            let ok = segs[i].count <= 2 ? isShort(c, ru: to.ru) : isWord(c, ru: to.ru)
+            if !ok { return nil }
+        }
+        return conv.joined(separator: "-")
+    }
+
     /// Что напечатать вместо слова, набранного не в той раскладке; nil — слово трогать не нужно
     private func decide(_ k: [Stroke], from: Lay, to: Lay) -> String? {
         guard spellLang(ru: from.ru) != nil, spellLang(ru: to.ru) != nil else { return nil }
+        let typedAll = string(k, from).lowercased()
+        if LayoutSwitcher.never.contains(typedAll) { return nil }                    // слово, которое пользователь откатывал
+        // адреса сайтов («github.com») не трогаем
+        if !from.ru, typedAll.range(of: "^[a-z0-9-]+\\.(com|ru|org|net|io|dev|app|su|info|biz|edu|gov|me|co|ai|xyz|tv|pro|tech)$",
+                                    options: .regularExpression) != nil { return nil }
+        if k.contains(where: { $0.code == 27 && !$0.shift }) { return decideHyphen(k, from: from, to: to) }
         // внутренние заглавные (camelCase) и короткие слова не трогаем
         if k.dropFirst().contains(where: { $0.shift != k[0].shift && !$0.caps && !k[0].caps && !$0.shift }) == false,
            k.dropFirst().filter({ $0.shift }).count > 0, k.count != k.filter({ $0.shift }).count { return nil }
         var tailMax = 0
-        for s in k.reversed() { if LayoutSwitcher.punctCodes.contains(s.code) { tailMax += 1 } else { break } }
+        for s in k.reversed() { if isTail(s, to: to) { tailMax += 1 } else { break } }
         tailMax = min(tailMax, 3)
         for t in 0...tailMax {
             let part = Array(k.dropLast(t))
             guard part.count >= 3 else { break }
             let typed = string(part, from), conv = string(part, to)
             guard !conv.isEmpty, conv.allSatisfy({ $0.isLetter }) else { continue }
-            if t == 0, typed.allSatisfy({ $0.isLetter }), isWord(typed, ru: from.ru) { return nil }   // слово набрано верно
-            if isWord(conv, ru: to.ru) { return conv + string(Array(k.suffix(t)), from) }
+            if typed.allSatisfy({ $0.isLetter }), isWord(typed, ru: from.ru) { return nil }   // слово набрано верно
+            if isWord(conv, ru: to.ru) { return conv + tailText(Array(k.suffix(t)), from: from, to: to) }
         }
         return nil
     }
@@ -229,9 +311,24 @@ final class LayoutSwitcher {
         return process(code, event.flags, allowFix: true) ? nil : pass
     }
 
+    private func isFixCombo(_ code: CGKeyCode, _ flags: CGEventFlags) -> Bool {
+        let c = LayoutSwitcher.loadCombo()
+        guard UInt32(code) == c.keyCode else { return false }
+        var m: UInt32 = 0
+        if flags.contains(.maskControl) { m |= UInt32(controlKey) }
+        if flags.contains(.maskAlternate) { m |= UInt32(optionKey) }
+        if flags.contains(.maskShift) { m |= UInt32(shiftKey) }
+        if flags.contains(.maskCommand) { m |= UInt32(cmdKey) }
+        return m == c.mods
+    }
+
     /// Разбор нажатия. Возвращает true, если нажатие поглощено (слово исправляется)
     private func process(_ code: CGKeyCode, _ flags: CGEventFlags, allowFix: Bool) -> Bool {
+        let fixCombo = isFixCombo(code, flags)
+        if !fixCombo { undo = nil }                         // любое другое нажатие закрывает возможность отката
         if flags.contains(.maskCommand) || flags.contains(.maskControl) || flags.contains(.maskAlternate) {
+            // само сочетание исправления не должно стирать слово, которое оно собирается исправить
+            if fixCombo { return false }
             resetWord(); return false
         }
         if frontExcluded() || IsSecureEventInputEnabled() || !hasPair() { resetWord(); return false }
@@ -239,18 +336,37 @@ final class LayoutSwitcher {
 
         switch code {
         case 51:                                            // ⌫ — убираем последнюю букву слова
-            if !keys.isEmpty { keys.removeLast() }
+            if !keys.isEmpty { keys.removeLast() } else { run = [] }
             last = nil
             return false
         case 49, 36, 76, 48:                                // пробел, Enter, Tab — конец слова
             let k = keys, wl = wordLayID, poisoned = poison
+            let before = run
             keys = []
             poison = false
             if allowFix, LayoutSwitcher.autoFix, !poisoned, k.count >= 3, let from = lay(wl), let to = other(from),
                let text = decide(k, from: from, to: to) {
                 last = nil
-                fix(text, delete: k.count, target: to, boundary: (code, flags.intersection(.maskShift)))
+                run = []
+                // короткие слова перед ним («И вот»), набранные в той же раскладке, исправляем вместе с ним
+                var pre: [RunWord] = []
+                for w in before.reversed() {
+                    guard w.layID == wl, w.strokes.count <= 2, isShort(string(w.strokes, to), ru: to.ru) else { break }
+                    pre.insert(w, at: 0)
+                }
+                let preTo = pre.map { string($0.strokes, to) + " " }.joined()
+                let preFrom = pre.map { string($0.strokes, from) + " " }.joined()
+                let full = preTo + text
+                let del = k.count + pre.reduce(0) { $0 + $1.strokes.count + 1 }
+                let u = UndoInfo(now: full, other: preFrom + string(k, from), layNow: to, layOther: from,
+                                 boundary: (code, flags.intersection(.maskShift)), never: string(k, from).lowercased(), isAuto: true)
+                fix(full, delete: del, target: to, boundary: (code, flags.intersection(.maskShift)), undo: u)
                 return true
+            }
+            if code == 49, !poisoned, !k.isEmpty {
+                run = Array((before + [RunWord(strokes: k, layID: wl)]).suffix(6))
+            } else if !(code == 49 && k.isEmpty && !poisoned) {
+                run = []                                    // слово со знаком или цифрой, Enter, Tab — фраза закончилась
             }
             if (code == 49 || code == 48), !poisoned, !k.isEmpty {
                 last = LastWord(strokes: k, layID: wl, boundary: code, pid: NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0)
@@ -261,11 +377,15 @@ final class LayoutSwitcher {
         default:
             break
         }
-        if LayoutSwitcher.letterCodes.contains(code) || LayoutSwitcher.punctCodes.contains(code) {
+        let tailExtra = code == 44 || (shift && (code == 26 || code == 18))
+        if LayoutSwitcher.letterCodes.contains(code) || LayoutSwitcher.punctCodes.contains(code) || tailExtra {
             let cur = Kb.current().id
             guard lay(cur) != nil else { resetWord(); return false }
             if keys.isEmpty || wordLayID != cur { keys = []; wordLayID = cur; poison = false }
             keys.append(Stroke(code: code, shift: shift, caps: caps))
+            last = nil
+        } else if code == 27 && !shift && !keys.isEmpty {         // дефис внутри слова («что-то»)
+            keys.append(Stroke(code: code, shift: false, caps: caps))
             last = nil
         } else if LayoutSwitcher.digitCodes.contains(code) {
             poison = true
@@ -279,9 +399,10 @@ final class LayoutSwitcher {
     // MARK: Исправление
 
     /// Стирает `delete` символов, печатает `text`, переключает раскладку и (если нужно) повторяет клавишу конца слова
-    private func fix(_ text: String, delete n: Int, target: Lay, boundary: (CGKeyCode, CGEventFlags)?) {
+    private func fix(_ text: String, delete n: Int, target: Lay, boundary: (CGKeyCode, CGEventFlags)?, undo u: UndoInfo? = nil) {
         busy = true
         deferred = []
+        pendingUndo = u
         DispatchQueue.main.async { Kb.select(target.src) }       // с проверкой и повтором, если macOS «потеряла» переключение
         work.async { [weak self] in
             guard let self = self else { return }
@@ -309,6 +430,8 @@ final class LayoutSwitcher {
                 up.post(tap: .cghidEventTap)
             }
         }
+        undo = pending.isEmpty ? pendingUndo : nil          // откат возможен, только пока после исправления ничего не набрано
+        pendingUndo = nil
     }
 
     private func post(_ code: CGKeyCode, _ flags: CGEventFlags) {
@@ -345,11 +468,24 @@ final class LayoutSwitcher {
     /// Слово, которое набирается сейчас → выделенный текст → последнее слово
     private func manual() {
         guard tap != nil, !busy, !frontExcluded(), hasPair() else { return }
+        if let u = undo {                                   // повторное нажатие: переключаем слово обратно (и снова вперёд)
+            undo = nil
+            keys = []
+            last = nil
+            run = []
+            if let w = u.never { if u.isAuto { LayoutSwitcher.addNever(w) } else { LayoutSwitcher.removeNever(w) } }
+            let next = UndoInfo(now: u.other, other: u.now, layNow: u.layOther, layOther: u.layNow,
+                                boundary: u.boundary, never: u.never, isAuto: !u.isAuto)
+            fix(u.other, delete: u.now.count + (u.boundary != nil ? 1 : 0), target: u.layOther, boundary: u.boundary, undo: next)
+            return
+        }
         if !keys.isEmpty, !poison, let from = lay(wordLayID), let to = other(from) {
             let text = string(keys, to)
             let n = keys.count
+            let orig = string(keys, from)
             keys = []
-            fix(text, delete: n, target: to, boundary: nil)
+            let u = UndoInfo(now: text, other: orig, layNow: to, layOther: from, boundary: nil, never: nil, isAuto: false)
+            fix(text, delete: n, target: to, boundary: nil, undo: u)
             return
         }
         convertSelection { [weak self] done in
@@ -358,7 +494,9 @@ final class LayoutSwitcher {
                   let from = self.lay(l.layID), let to = self.other(from) else { NSSound.beep(); return }
             let text = self.string(l.strokes, to)
             self.last = nil
-            self.fix(text, delete: l.strokes.count + 1, target: to, boundary: (l.boundary, []))
+            let u = UndoInfo(now: text, other: self.string(l.strokes, from), layNow: to, layOther: from,
+                             boundary: (l.boundary, []), never: nil, isAuto: false)
+            self.fix(text, delete: l.strokes.count + 1, target: to, boundary: (l.boundary, []), undo: u)
         }
     }
 
@@ -384,6 +522,10 @@ final class LayoutSwitcher {
             self.post(9, .maskCommand)                      // ⌘V
             let dst = (toEnglish ? en : ru).src
             DispatchQueue.main.async { Kb.select(dst) }
+            let n = out.count
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) { [weak self] in
+                for _ in 0..<n { self?.post(123, .maskShift) }            // ⇧← : текст снова выделен, повторное нажатие вернёт его обратно
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { self.restore(saved, pb) }
             done(true)
         }
