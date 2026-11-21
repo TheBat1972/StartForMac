@@ -1,20 +1,20 @@
 #!/bin/bash
-# Собирает «Пуск.app» (universal: arm64 + Intel, macOS 12+).
-# Builds «Пуск.app» (universal: arm64 + Intel, macOS 12+).
+# Собирает «StartForMac.app» (universal: arm64 + Intel, macOS 12+).
+# Builds «StartForMac.app» (universal: arm64 + Intel, macOS 12+).
 #
 #   ./build.sh                         — сборка; подписывается, если задан SIGN_ID
 #                                        (в .sign.local или в командной строке), иначе ad-hoc
 #   SIGN_ID="<хэш или имя сертификата Developer ID Application>" \
 #   NOTARY_PROFILE="<профиль notarytool>" ./build.sh
-#                                      — подпись Developer ID + нотаризация, на выходе Пуск.zip
+#                                      — подпись Developer ID + нотаризация, на выходе StartForMac.zip
 #   NOTARY_PROFILE= ./build.sh         — быстрая сборка с подписью, без нотаризации
 set -e
 cd "$(dirname "$0")"
 # Личные настройки подписи читаются из файла .sign.local (он не попадает в git).
 # Значения из командной строки главнее. Пример файла: .sign.local.example
 [ -f .sign.local ] && . ./.sign.local
-APP="Пуск.app"
-ZIP="Пуск.zip"
+APP="StartForMac.app"
+ZIP="StartForMac.zip"
 TMP="$(mktemp -d)"
 STAGE="$TMP/$APP"
 
@@ -23,7 +23,7 @@ mkdir -p "$STAGE/Contents/MacOS" "$STAGE/Contents/Resources"
 
 swiftc -O -target arm64-apple-macos12.0  Sources/*.swift -o "$TMP/arm64"
 swiftc -O -target x86_64-apple-macos12.0 Sources/*.swift -o "$TMP/x86_64"
-lipo -create "$TMP/arm64" "$TMP/x86_64" -output "$STAGE/Contents/MacOS/StartMenu"
+lipo -create "$TMP/arm64" "$TMP/x86_64" -output "$STAGE/Contents/MacOS/StartForMac"
 
 cp Info.plist "$STAGE/Contents/Info.plist"
 [ -d Cards ] && cp -R Cards "$STAGE/Contents/Resources/Cards"     # картинки и звуки карт для «Косынки»
@@ -45,7 +45,7 @@ else
   codesign --force --sign - "$STAGE"
 fi
 
-# Обновляем Пуск.app НА МЕСТЕ, не удаляя саму папку: так значок в Dock не пропадает при пересборке
+# Обновляем StartForMac.app НА МЕСТЕ, не удаляя саму папку: так значок в Dock не пропадает при пересборке
 mkdir -p "$APP"
 rsync -a --delete "$STAGE/" "$APP/"
 codesign --verify --strict "$APP"

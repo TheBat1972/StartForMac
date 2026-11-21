@@ -225,7 +225,7 @@ final class Store: ObservableObject, @unchecked Sendable {
             var id: IOPMAssertionID = 0
             let r = IOPMAssertionCreateWithName("PreventUserIdleDisplaySleep" as CFString,
                                                 IOPMAssertionLevel(kIOPMAssertionLevelOn),
-                                                "Пуск: не давать компьютеру уснуть" as CFString, &id)
+                                                "StartForMac: не давать компьютеру уснуть" as CFString, &id)
             if r == kIOReturnSuccess { awakeAssertion = id; keepAwake = true }
         } else {
             if awakeAssertion != 0 { IOPMAssertionRelease(awakeAssertion); awakeAssertion = 0 }
@@ -771,6 +771,8 @@ final class Store: ObservableObject, @unchecked Sendable {
         ToolWindows.shared.show(.fmt, store: self)
     }
     func beginDisk() { DiskWindowController.shared.show(store: self) }
+    func beginDups() { DupWindowController.shared.show(store: self) }
+    func beginUnrar() { UnRarWindowController.shared.show(store: self) }
 
     func runMaint(_ m: MaintModel) {
         let ids = m.tasks.filter { $0.selected }.map { $0.id }
@@ -1329,7 +1331,7 @@ struct UninstallOverlay: View {
                     .font(.callout).foregroundColor(.secondary)
             }
             if !model.failed.isEmpty {
-                Text(Tf("Не удалось удалить (%@). Пароль не введён, файл защищён системой или нужен «Полный доступ к диску» для «Пуск»:", "\(model.failed.count)"))
+                Text(Tf("Не удалось удалить (%@). Пароль не введён, файл защищён системой или нужен «Полный доступ к диску» для «StartForMac»:", "\(model.failed.count)"))
                     .font(.caption).foregroundColor(.secondary)
                     .multilineTextAlignment(.center).padding(.horizontal, 24)
                 ScrollView {
@@ -1409,7 +1411,7 @@ struct PermissionsOverlay: View {
                     Image(systemName: "lock.shield").font(.system(size: 28)).foregroundColor(.accentColor)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(T("Разрешения")).font(.headline)
-                        Text(T("Что нужно «Пуск» для полного удаления приложений")).font(.caption).foregroundColor(.secondary)
+                        Text(T("Что нужно «StartForMac» для полного удаления приложений")).font(.caption).foregroundColor(.secondary)
                     }
                     Spacer()
                 }
@@ -1453,7 +1455,7 @@ struct PermissionsOverlay: View {
             Text(T("Нужен, чтобы полностью чистить данные приложений: контейнеры, почту, данные Safari и другие защищённые папки."))
                 .font(.caption).foregroundColor(.secondary)
             if !store.fullDiskAccess {
-                Text(T("1. Нажмите «Открыть настройки».\n2. Нажмите «+» и выберите «Пуск» (кнопка «Показать в Finder» покажет файл, его можно перетащить в список).\n3. Включите переключатель и нажмите «Перезапустить»."))
+                Text(T("1. Нажмите «Открыть настройки».\n2. Нажмите «+» и выберите «StartForMac» (кнопка «Показать в Finder» покажет файл, его можно перетащить в список).\n3. Включите переключатель и нажмите «Перезапустить»."))
                     .font(.caption)
                 HStack {
                     Button(T("Открыть настройки")) { Permissions.openFullDiskAccessPane() }
@@ -2006,7 +2008,7 @@ struct PasswordOverlay: View {
             VStack(spacing: 12) {
                 Image(systemName: "lock.shield.fill").font(.system(size: 30)).foregroundColor(.accentColor)
                 Text(T("Нужен пароль администратора")).font(.headline)
-                Text(Tf("«Пуск» вносит изменения в систему.\nПользователь: %@", "\(request.user)"))
+                Text(Tf("«StartForMac» вносит изменения в систему.\nПользователь: %@", "\(request.user)"))
                     .font(.callout).foregroundColor(.secondary).multilineTextAlignment(.center)
                 if let m = request.message {
                     Text(m).font(.callout).foregroundColor(.orange)
@@ -2353,10 +2355,20 @@ final class FSHistory {
 
     func start(root: String, since: UInt64, done: @escaping ([(String, Bool)]?) -> Void) {
         self.done = done
-        var ctx = FSEventStreamContext(version: 0, info: Unmanaged.passUnretained(self).toOpaque(), retain: nil, release: nil, copyDescription: nil)
+        // поток удерживает объект сам: иначе запоздалый вызов от FSEvents после освобождения FSHistory падал (EXC_BAD_ACCESS)
+        var ctx = FSEventStreamContext(version: 0, info: Unmanaged.passUnretained(self).toOpaque(),
+                                       retain: { info in
+                                           if let i = info { _ = Unmanaged<FSHistory>.fromOpaque(i).retain() }
+                                           return info
+                                       },
+                                       release: { info in
+                                           if let i = info { Unmanaged<FSHistory>.fromOpaque(i).release() }
+                                       },
+                                       copyDescription: nil)
         let callback: FSEventStreamCallback = { _, info, count, eventPaths, eventFlags, _ in
             guard let info = info else { return }
             let me = Unmanaged<FSHistory>.fromOpaque(info).takeUnretainedValue()
+            if me.finished { return }
             let list = Unmanaged<CFArray>.fromOpaque(eventPaths).takeUnretainedValue() as? [String] ?? []
             let droppedMask = UInt32(kFSEventStreamEventFlagUserDropped) | UInt32(kFSEventStreamEventFlagKernelDropped) | UInt32(kFSEventStreamEventFlagEventIdsWrapped)
             for i in 0..<count {
@@ -2392,6 +2404,29 @@ final class FSHistory {
     }
 }
 
+struct CollectedItem: Identifiable {
+    let url: URL
+    let name: String
+    let size: Int64
+    let isDir: Bool
+    var id: String { url.path }
+}
+
+/// Предпросмотр файла стандартной утилитой macOS (Quick Look)
+enum DiskPreview {
+    private static var proc: Process?
+    static func show(_ url: URL) {
+        proc?.terminate()
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/qlmanage")
+        p.arguments = ["-p", url.path]
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        try? p.run()
+        proc = p
+    }
+}
+
 final class DiskModel: ObservableObject {
     static let shared = DiskModel()
 
@@ -2407,6 +2442,11 @@ final class DiskModel: ObservableObject {
     @Published var refreshing = false
     @Published var scanDate: Date?
     private(set) var whole = false
+    /// Папка, выбранная вручную (или брошенная в окно); nil — «Домашняя папка» / «Весь диск»
+    private(set) var customPath: String?
+    /// Коллектор: объекты, собранные для удаления одним махом
+    @Published var collected: [CollectedItem] = []
+    @Published var confirmCollector = false
     private var eventId: UInt64 = 0
     private var generation = 0
     private var state: DiskScanner.State?
@@ -2419,19 +2459,51 @@ final class DiskModel: ObservableObject {
         let depth: Int
     }
 
-    private var rootPath: String { whole ? "/" : NSHomeDirectory() }
+    private var rootPath: String { customPath ?? (whole ? "/" : NSHomeDirectory()) }
     private var skipSet: Set<String> { whole ? ["/Volumes", "/System/Volumes", "/dev", "/net", "/home"] : [] }
 
-    private static func cacheURL(whole: Bool) -> URL {
+    private static func cacheURL(path: String) -> URL {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("StartMenu")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent(whole ? "disk-whole.json" : "disk-home.json")
+        if path == "/" { return dir.appendingPathComponent("disk-whole.json") }
+        if path == NSHomeDirectory() { return dir.appendingPathComponent("disk-home.json") }
+        var h: UInt64 = 14695981039346656037                      // FNV-1a: имя файла кэша не должно меняться между запусками
+        for b in path.utf8 { h = (h ^ UInt64(b)) &* 1099511628211 }
+        return dir.appendingPathComponent("disk-\(String(h, radix: 16)).json")
     }
 
-    /// Открыть анализ: если есть сохранённый — показать его сразу и обновить только изменения; иначе полный обход
+    /// «Домашняя папка» или «Весь диск»
     func scan(whole: Bool, fresh: Bool = false) {
+        customPath = nil
         self.whole = whole
+        begin(fresh: fresh)
+    }
+
+    /// Любая папка или диск
+    func scan(folder: URL, fresh: Bool = false) {
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: folder.path, isDirectory: &isDir), isDir.boolValue else { return }
+        if stage == .scanning { cancel() }
+        let path = folder.standardizedFileURL.path
+        customPath = path
+        whole = path == "/"
+        begin(fresh: fresh)
+    }
+
+    /// Брошенный в окно объект: папку или диск анализируем, у файла берём его папку
+    func scanDropped(_ url: URL) {
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) else { return }
+        scan(folder: isDir.boolValue ? url : url.deletingLastPathComponent())
+    }
+
+    func rescan() { begin(fresh: true) }
+
+    /// Открыть анализ: если есть сохранённый — показать его сразу и обновить только изменения; иначе полный обход
+    private func begin(fresh: Bool) {
         message = nil
+        collected = []
+        confirmCollector = false
         if fresh { fullScan(); return }
         generation += 1
         let gen = generation
@@ -2441,7 +2513,7 @@ final class DiskModel: ObservableObject {
         scanPath = T("Загрузка сохранённого анализа…")
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             var cache: DiskCache?
-            if let data = try? Data(contentsOf: DiskModel.cacheURL(whole: whole)),
+            if let data = try? Data(contentsOf: DiskModel.cacheURL(path: rp)),
                let c = try? JSONDecoder().decode(DiskCache.self, from: data),
                c.root == rp, Date().timeIntervalSince(c.date) < 14 * 86400 {
                 cache = c
@@ -2471,7 +2543,7 @@ final class DiskModel: ObservableObject {
     private func saveCache() {
         guard let root = root else { return }
         let cache = DiskCache(root: rootPath, event: eventId, date: scanDate ?? Date(), unreadable: unreadable, tree: root.cacheNode())
-        let url = DiskModel.cacheURL(whole: whole)
+        let url = DiskModel.cacheURL(path: rootPath)
         DispatchQueue.global(qos: .utility).async {
             if let data = try? JSONEncoder().encode(cache) { try? data.write(to: url, options: .atomic) }
         }
@@ -2645,6 +2717,70 @@ final class DiskModel: ObservableObject {
         stage = .choose
     }
 
+    // MARK: Коллектор
+
+    var collectedSize: Int64 { collected.reduce(0) { $0 + $1.size } }
+
+    func isCollected(_ n: DiskNode) -> Bool {
+        let p = n.url.path
+        return collected.contains { p == $0.url.path || p.hasPrefix($0.url.path + "/") }
+    }
+
+    func collect(_ n: DiskNode) {
+        guard !n.isBucket, !isCollected(n) else { return }
+        let p = n.url.path
+        collected.removeAll { $0.url.path.hasPrefix(p + "/") }          // вложенное уже не нужно: берём папку целиком
+        collected.append(CollectedItem(url: n.url, name: n.name, size: n.size, isDir: n.isDir))
+    }
+
+    func collect(path: String) {
+        if let r = root, let n = nodeAt(path, in: r) { collect(n) }
+    }
+
+    func toggleCollect(_ n: DiskNode) {
+        if isCollected(n) { collected.removeAll { $0.url.path == n.url.path } } else { collect(n) }
+    }
+
+    func uncollect(_ c: CollectedItem) { collected.removeAll { $0.id == c.id } }
+
+    private func nodeAt(_ path: String, in rootNode: DiskNode) -> DiskNode? {
+        let rp = rootPath
+        let prefix = rp == "/" ? "/" : rp + "/"
+        if path == rp { return rootNode }
+        guard path.hasPrefix(prefix) else { return nil }
+        var node = rootNode
+        for comp in path.dropFirst(prefix.count).split(separator: "/") {
+            let name = String(comp)
+            guard let ch = node.children.first(where: { !$0.isBucket && $0.name == name }) else { return nil }
+            node = ch
+        }
+        return node
+    }
+
+    /// Всё из коллектора — в Корзину одним действием
+    func trashCollected() {
+        let items = collected
+        guard !items.isEmpty else { return }
+        NSWorkspace.shared.recycle(items.map { $0.url }) { _, _ in
+            DispatchQueue.main.async {
+                var left: [CollectedItem] = []
+                for it in items {
+                    if FileManager.default.fileExists(atPath: it.url.path) { left.append(it); continue }
+                    if let r = self.root, let n = self.nodeAt(it.url.path, in: r), let par = n.parent {
+                        let size = n.size
+                        par.children.removeAll { $0 === n }
+                        var p: DiskNode? = par
+                        while let q = p { q.size -= size; p = q.parent }
+                    }
+                }
+                self.collected = left
+                self.message = left.isEmpty ? nil : Tf("Не удалось переместить в Корзину объектов: %@", "\(left.count)")
+                self.objectWillChange.send()
+                self.saveCache()
+            }
+        }
+    }
+
     func drill(_ n: DiskNode) { if n.isDir && !n.isBucket { current = n } }
     func up() { if let p = current?.parent { current = p } }
 
@@ -2674,11 +2810,51 @@ struct DiskSeg {
     let color: Color
 }
 
+/// Невидимая прослойка: сообщает положение мыши над видом (координаты сверху вниз, как в SwiftUI); клики пропускает
+struct HoverTracker: NSViewRepresentable {
+    let onMove: (CGPoint?) -> Void
+
+    func makeNSView(context: Context) -> TrackerView {
+        let v = TrackerView()
+        v.onMove = onMove
+        return v
+    }
+
+    func updateNSView(_ v: TrackerView, context: Context) { v.onMove = onMove }
+
+    final class TrackerView: NSView {
+        var onMove: ((CGPoint?) -> Void)?
+        override var isFlipped: Bool { true }
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func updateTrackingAreas() {
+            for a in trackingAreas { removeTrackingArea(a) }
+            addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                           owner: self, userInfo: nil))
+            super.updateTrackingAreas()
+        }
+        override func mouseMoved(with e: NSEvent) { onMove?(convert(e.locationInWindow, from: nil)) }
+        override func mouseEntered(with e: NSEvent) { onMove?(convert(e.locationInWindow, from: nil)) }
+        override func mouseExited(with e: NSEvent) { onMove?(nil) }
+    }
+}
+
 struct SunburstView: View {
     let current: DiskNode
     let onPick: (DiskNode) -> Void
     let onUp: () -> Void
     private let rings = 3
+    @State private var hover: CGPoint?
+
+    private func hit(_ p: CGPoint, _ g: (c: CGPoint, R: CGFloat, hole: CGFloat, ringW: CGFloat), _ segs: [DiskSeg]) -> DiskSeg? {
+        let dx = p.x - g.c.x
+        let dy = p.y - g.c.y
+        let r = (dx * dx + dy * dy).squareRoot()
+        guard r > g.hole, r <= g.R else { return nil }
+        let ring = Int((r - g.hole) / g.ringW)
+        var a = Double(atan2(dy, dx)) + Double.pi / 2
+        if a < 0 { a += 2 * Double.pi }
+        return segs.first(where: { $0.ring == ring && a >= $0.a0 && a < $0.a1 })
+    }
 
     private func segments() -> [DiskSeg] {
         var out: [DiskSeg] = []
@@ -2714,6 +2890,7 @@ struct SunburstView: View {
         GeometryReader { geo in
             let g = geometry(geo.size)
             let segs = segments()
+            let hovered: DiskSeg? = hover.flatMap { hit($0, g, segs) }
             ZStack {
                 Canvas { ctx, size in
                     for sg in segs {
@@ -2732,30 +2909,37 @@ struct SunburstView: View {
                         }
                         path.closeSubpath()
                         ctx.fill(path, with: .color(sg.color))
+                        if let h = hovered, h.node === sg.node {
+                            ctx.stroke(path, with: .color(Color.primary), lineWidth: 2)
+                        }
                     }
                     let hole = Path(ellipseIn: CGRect(x: g.c.x - g.hole, y: g.c.y - g.hole, width: g.hole * 2, height: g.hole * 2))
                     ctx.fill(hole, with: .color(Color.primary.opacity(0.08)))
                 }
                 VStack(spacing: 2) {
-                    if current.parent != nil { Image(systemName: "arrow.up").font(.caption).foregroundColor(.secondary) }
-                    Text(current.name).font(.system(size: 11, weight: .semibold)).lineLimit(1)
-                    Text(ByteCountFormatter.string(fromByteCount: current.size, countStyle: .file))
-                        .font(.system(size: 10)).foregroundColor(.secondary)
+                    if let h = hovered {
+                        Text(h.node.name).font(.system(size: 11, weight: .semibold)).lineLimit(2).multilineTextAlignment(.center)
+                        Text(ByteCountFormatter.string(fromByteCount: h.node.size, countStyle: .file))
+                            .font(.system(size: 12, weight: .medium))
+                        Text(String(format: "%.1f%%", 100 * Double(h.node.size) / Double(max(1, current.size))))
+                            .font(.system(size: 10)).foregroundColor(.secondary)
+                    } else {
+                        if current.parent != nil { Image(systemName: "arrow.up").font(.caption).foregroundColor(.secondary) }
+                        Text(current.name).font(.system(size: 11, weight: .semibold)).lineLimit(1)
+                        Text(ByteCountFormatter.string(fromByteCount: current.size, countStyle: .file))
+                            .font(.system(size: 10)).foregroundColor(.secondary)
+                    }
                 }
                 .frame(width: g.hole * 1.7)
                 .allowsHitTesting(false)
             }
             .contentShape(Rectangle())
+            .overlay(HoverTracker { hover = $0 })
             .gesture(DragGesture(minimumDistance: 0).onEnded { v in
                 let dx = v.location.x - g.c.x
                 let dy = v.location.y - g.c.y
-                let r = (dx * dx + dy * dy).squareRoot()
-                if r <= g.hole { onUp(); return }
-                guard r <= g.R else { return }
-                let ring = Int((r - g.hole) / g.ringW)
-                var a = Double(atan2(dy, dx)) + Double.pi / 2
-                if a < 0 { a += 2 * Double.pi }
-                if let hit = segs.first(where: { $0.ring == ring && a >= $0.a0 && a < $0.a1 }) { onPick(hit.node) }
+                if (dx * dx + dy * dy).squareRoot() <= g.hole { onUp(); return }
+                if let h = hit(v.location, g, segs) { onPick(h.node) }
             })
         }
     }
@@ -2764,6 +2948,8 @@ struct SunburstView: View {
 struct DiskPanel: View {
     @ObservedObject var model: DiskModel
     @ObservedObject var store: Store
+    @State private var dropTargeted = false
+    @State private var collectorTargeted = false
 
     private func fmt(_ b: Int64) -> String { ByteCountFormatter.string(fromByteCount: b, countStyle: .file) }
     static let dateFmt: DateFormatter = {
@@ -2794,7 +2980,121 @@ struct DiskPanel: View {
         }
         .frame(minWidth: 640, minHeight: 440)
         .background(Color(NSColor.windowBackgroundColor))
-        .overlay { if let d = model.pendingDelete { confirm(d) } }
+        .onDrop(of: [UTType.fileURL], isTargeted: $dropTargeted) { providers in dropFolder(providers) }
+        .overlay {
+            if dropTargeted {
+                ZStack {
+                    Color.accentColor.opacity(0.12)
+                    RoundedRectangle(cornerRadius: 12).strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [8]))
+                        .padding(10)
+                }
+                .allowsHitTesting(false)
+            }
+        }
+        .overlay {
+            if let d = model.pendingDelete { confirm(d) }
+            else if model.confirmCollector { confirmCollected() }
+        }
+    }
+
+    private func dropFolder(_ providers: [NSItemProvider]) -> Bool {
+        guard let p = providers.first(where: { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }) else { return false }
+        p.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+            var url: URL?
+            if let d = item as? Data { url = URL(dataRepresentation: d, relativeTo: nil) }
+            else if let u = item as? URL { url = u }
+            guard let u = url else { return }
+            DispatchQueue.main.async { model.scanDropped(u) }
+        }
+        return true
+    }
+
+    private func chooseFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = T("Анализировать")
+        panel.message = T("Выберите папку или диск")
+        panel.directoryURL = URL(fileURLWithPath: "/Volumes")
+        panel.begin { r in
+            if r == .OK, let u = panel.url { model.scan(folder: u) }
+        }
+    }
+
+    private func dropCollect(_ providers: [NSItemProvider]) -> Bool {
+        guard let p = providers.first(where: { $0.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) }) else { return false }
+        _ = p.loadObject(ofClass: NSString.self) { obj, _ in
+            guard let ns = obj as? NSString else { return }
+            let str = ns as String
+            guard str.hasPrefix("disk:") else { return }
+            DispatchQueue.main.async { model.collect(path: String(str.dropFirst(5))) }
+        }
+        return true
+    }
+
+    private var collectorBar: some View {
+        Group {
+            if model.collected.isEmpty {
+                HStack(spacing: 8) {
+                    Image(systemName: "tray").foregroundColor(.secondary)
+                    Text(T("Коллектор: перетащите сюда лишнее или нажмите значок лотка у объекта"))
+                        .font(.caption).foregroundColor(.secondary)
+                    Spacer()
+                }
+                .padding(.horizontal, 12).frame(height: 40)
+            } else {
+                HStack(spacing: 8) {
+                    Image(systemName: "tray.full.fill").foregroundColor(.accentColor)
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(model.collected) { c in
+                                HStack(spacing: 4) {
+                                    Text(c.name).lineLimit(1).frame(maxWidth: 140)
+                                    Text(fmt(c.size)).foregroundColor(.secondary)
+                                    Button { model.uncollect(c) } label: { Image(systemName: "xmark.circle.fill").foregroundColor(.secondary) }
+                                        .buttonStyle(.plain).help(T("Убрать из коллектора"))
+                                }
+                                .font(.caption)
+                                .padding(.horizontal, 8).padding(.vertical, 3)
+                                .background(Capsule().fill(Color.accentColor.opacity(0.15)))
+                                .help(c.url.path)
+                            }
+                        }
+                    }
+                    Text(Tf("В коллекторе: %@ (%@)", "\(model.collected.count)", "\(fmt(model.collectedSize))")).font(.callout)
+                    Button(T("Очистить")) { model.collected = [] }
+                    Button(T("Удалить…")) { model.confirmCollector = true }
+                        .disabled(model.refreshing)
+                }
+                .padding(.horizontal, 12).frame(height: 44)
+            }
+        }
+        .background(collectorTargeted ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.06))
+        .onDrop(of: [UTType.plainText], isTargeted: $collectorTargeted) { providers in dropCollect(providers) }
+    }
+
+    private func confirmCollected() -> some View {
+        ZStack {
+            Color.black.opacity(0.4).contentShape(Rectangle()).onTapGesture { }
+            VStack(spacing: 12) {
+                Image(systemName: "trash.circle.fill").font(.system(size: 34)).foregroundColor(.orange)
+                Text(Tf("Переместить в Корзину объектов: %@?", "\(model.collected.count)")).font(.title3.bold())
+                Text(model.collected.prefix(5).map { "\($0.name) (\(fmt($0.size)))" }.joined(separator: "\n")
+                     + (model.collected.count > 5 ? "\n…" : ""))
+                    .font(.caption).multilineTextAlignment(.center).lineLimit(7)
+                Text(Tf("Освободится: %@", "\(fmt(model.collectedSize))")).font(.callout)
+                Text(T("Вернуть можно из Корзины, пока вы её не очистили.")).font(.caption).foregroundColor(.secondary)
+                HStack {
+                    Button(T("Нет, вернуться")) { model.confirmCollector = false }
+                    Button(T("Да, в Корзину")) { model.confirmCollector = false; model.trashCollected() }.foregroundColor(.red)
+                }
+            }
+            .padding(20)
+            .frame(width: 340)
+            .background(RoundedRectangle(cornerRadius: 12).fill(Color(NSColor.windowBackgroundColor)))
+            .shadow(radius: 20)
+        }
     }
 
     @ViewBuilder
@@ -2816,7 +3116,14 @@ struct DiskPanel: View {
                             Text(T("Весь диск"))
                         }.frame(width: 150, height: 90)
                     }
+                    Button { chooseFolder() } label: {
+                        VStack(spacing: 6) {
+                            Image(systemName: "folder.badge.plus").font(.system(size: 26))
+                            Text(T("Выбрать папку…"))
+                        }.frame(width: 150, height: 90)
+                    }
                 }
+                Text(T("Или перетащите папку или диск в окно")).font(.caption).foregroundColor(.secondary)
                 if !store.fullDiskAccess {
                     Text(T("Для анализа всего диска нужен «Полный доступ к диску», иначе часть папок будет недоступна."))
                         .font(.caption).foregroundColor(.secondary).multilineTextAlignment(.center).padding(.horizontal, 30)
@@ -2849,6 +3156,8 @@ struct DiskPanel: View {
                             .frame(minWidth: 280)
                     }
                     Divider()
+                    collectorBar
+                    Divider()
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(Tf("Всего: %@", "\(fmt(root.size))")).font(.callout)
@@ -2870,7 +3179,7 @@ struct DiskPanel: View {
                         }
                         Spacer()
                         if model.unreadable > 0 && !store.fullDiskAccess { Button(T("Разрешения…")) { openFullDiskSettings() } }
-                        Button(T("Пересканировать")) { model.scan(whole: model.whole, fresh: true) }
+                        Button(T("Пересканировать")) { model.rescan() }
                         Button(T("Новый анализ")) { model.stage = .choose }
                         Button(T("Закрыть")) { DiskWindowController.shared.close() }
                     }
@@ -2918,6 +3227,17 @@ struct DiskPanel: View {
                         }
                         Text(fmt(c.size)).font(.callout).foregroundColor(.secondary)
                         if !c.isBucket {
+                            if !c.isDir {
+                                Button { DiskPreview.show(c.url) } label: {
+                                    Image(systemName: "eye").foregroundColor(.secondary)
+                                }
+                                .buttonStyle(.plain).help(T("Предпросмотр"))
+                            }
+                            Button { model.toggleCollect(c) } label: {
+                                Image(systemName: model.isCollected(c) ? "tray.full.fill" : "tray.and.arrow.down")
+                                    .foregroundColor(model.isCollected(c) ? .accentColor : .secondary)
+                            }
+                            .buttonStyle(.plain).help(model.isCollected(c) ? T("Убрать из коллектора") : T("В коллектор"))
                             Button { NSWorkspace.shared.activateFileViewerSelecting([c.url]) } label: {
                                 Image(systemName: "magnifyingglass.circle").foregroundColor(.secondary)
                             }
@@ -2930,8 +3250,10 @@ struct DiskPanel: View {
                     }
                     .padding(.vertical, 5).padding(.horizontal, 8)
                     .hoverHighlight(6)
+                    .background(RoundedRectangle(cornerRadius: 6).fill(model.isCollected(c) ? Color.accentColor.opacity(0.12) : Color.clear))
                     .contentShape(Rectangle())
                     .onTapGesture { model.drill(c) }
+                    .onDrag { c.isBucket ? NSItemProvider() : internalDragProvider("disk:" + c.url.path) }
                 }
             }
             .padding(.horizontal, 6).padding(.vertical, 4)
@@ -5948,8 +6270,13 @@ struct SettingsOverlay: View {
     }
 
     private func toggleRow(_ title: String, _ on: Bool, _ set: @escaping (Bool) -> Void) -> some View {
-        Toggle(title, isOn: Binding(get: { on }, set: set))
-            .toggleStyle(.switch)
+        HStack(alignment: .center, spacing: 12) {
+            Text(title).fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 12)
+            Toggle("", isOn: Binding(get: { on }, set: set))
+                .labelsHidden()
+                .toggleStyle(.switch)
+        }
     }
 
     var body: some View {
@@ -5957,7 +6284,7 @@ struct SettingsOverlay: View {
             Color.black.opacity(0.4).contentShape(Rectangle()).onTapGesture { }
             VStack(spacing: 0) {
                 HStack {
-                    Text(T("Настройки Пуска")).font(.headline)
+                    Text(T("Настройки StartForMac")).font(.headline)
                     Spacer()
                 }
                 .padding(16)
@@ -5988,7 +6315,7 @@ struct SettingsOverlay: View {
                             .labelsHidden()
                         }
                         section(T("Горячие клавиши")) {
-                            hotkeyRow(T("Открыть или скрыть «Пуск»"), combo: mc.startComboTitle, forStart: true)
+                            hotkeyRow(T("Открыть или скрыть «StartForMac»"), combo: mc.startComboTitle, forStart: true)
                             hotkeyRow(T("Свернуть все окна"), combo: mc.minimizeComboTitle, forStart: false)
                             if mc.recordingFor != nil {
                                 Text(T("Нужен хотя бы один модификатор (⌃ ⌥ ⌘ ⇧). Esc — отмена."))
@@ -5996,7 +6323,7 @@ struct SettingsOverlay: View {
                             }
                         }
                         section(T("Жест")) {
-                            toggleRow(T("Открывать «Пуск» жестом: большой + три пальца"), mc.pinchOn) { on in
+                            toggleRow(T("Открывать «StartForMac» жестом: большой + три пальца"), mc.pinchOn) { on in
                                 if on { confirmPinch = true } else { mc.setPinch(false) }
                             }
                             if mc.pinchOn {
@@ -6007,7 +6334,7 @@ struct SettingsOverlay: View {
                             if confirmPinch {
                                 VStack(alignment: .leading, spacing: 8) {
                                     Text(T("Включить жест «большой + три пальца»?")).font(.system(size: 13, weight: .semibold))
-                                    Text(T("Чтобы системный жест не открывал своё приложение одновременно с «Пуском», ")
+                                    Text(T("Чтобы системный жест не открывал своё приложение одновременно с «StartForMac», ")
                                          + T("сначала отключите его: Настройки → Трекпад → Другие жесты → «Launchpad» («Приложения»)."))
                                         .font(.caption).foregroundColor(.secondary)
                                     HStack {
@@ -6044,11 +6371,38 @@ struct SettingsOverlay: View {
                         section(T("Система")) {
                             toggleRow(T("Запускать при входе в систему"), mc.loginOn) { mc.setLogin($0) }
                             toggleRow(T("Значок в верхней панели"), mc.trayOn) { mc.setTray($0) }
-                            Button(T("Вернуть размер и положение окна по умолчанию…")) { confirmReset = true }
+                            toggleRow(T("Окна по ⌃⌥ + стрелки"), mc.snapOn) { mc.setSnap($0) }
+                            Text(T("Активное окно любого приложения: ⌃⌥← и ⌃⌥→ — в левую или правую половину экрана (если размер окна не меняется, окно просто сдвигается до края), ⌃⌥↑ — на весь экран, ⌃⌥↓ — свернуть в Dock. Нужен доступ «Универсальный доступ»."))
+                                .font(.caption).foregroundColor(.secondary)
+                            toggleRow(T("⌘X в Finder — вырезать"), mc.finderCutOn) { mc.setFinderCut($0) }
+                            Text(T("⌘X в Finder копирует выделенные файлы и помечает их вырезанными: следующая вставка ⌘V в Finder переместит их, а не скопирует. ⌘C отменяет вырезание. В полях ввода ⌘X работает как обычно. Нужен доступ «Универсальный доступ»."))
+                                .font(.caption).foregroundColor(.secondary)
+                            toggleRow(T("Переключение окон по ⌥Tab"), mc.switcherOn) { mc.setSwitcher($0) }
+                            Text(T("Option + Tab показывает окна (а не приложения целиком) с миниатюрами. Пока Option зажат: Tab или ⇧Tab — выбор окна, Esc — отмена; отпустили Option — выбранное окно выходит вперёд. Нужен доступ «Универсальный доступ»."))
+                                .font(.caption).foregroundColor(.secondary)
+                            toggleRow(T("Миниатюры окон"), mc.thumbsOn) { mc.setThumbs($0) }
+                            Text(T("Для показа миниатюр нужно разрешение «Запись экрана и системного звука». Его можно не давать: функция будет работать без миниатюр, вместо них показываются значки приложений."))
+                                .font(.caption).foregroundColor(.red)
+                            toggleRow(T("Умный буфер обмена — ⇧⌘V"), mc.clipOn) { mc.setClip($0) }
+                            Text(T("История последних копирований (текст, картинки, файлы). ⇧⌘V открывает список у курсора: выбор стрелками или цифрами, Enter вставляет, P закрепляет запись, ⌫ убирает. Значок буфера на верхней панели «Пуска» открывает тот же список — клик копирует запись. Закреплённые записи не вытесняются и не считаются в лимите. Пароли не сохраняются (скрытые копии и менеджеры паролей пропускаются), история хранится только в памяти и исчезает при выходе из программы. Для автоматической вставки нужен доступ «Универсальный доступ»."))
+                                .font(.caption).foregroundColor(.secondary)
+                            if mc.clipOn {
+                                HStack {
+                                    Text(T("Сколько записей хранить"))
+                                    Spacer()
+                                    Picker("", selection: Binding(get: { mc.clipLimit }, set: { mc.setClipLimit($0) })) {
+                                        Text("3").tag(3)
+                                        Text("5").tag(5)
+                                        Text("10").tag(10)
+                                    }
+                                    .pickerStyle(.segmented).labelsHidden().frame(width: 150)
+                                }
+                            }
+                            HStack { Spacer(); Button(T("Вернуть размер и положение окна по умолчанию…")) { confirmReset = true }.frame(width: 340); Spacer() }
                             if confirmReset {
                                 VStack(alignment: .leading, spacing: 8) {
                                     Text(T("Вернуть размер и положение окна?")).font(.system(size: 13, weight: .semibold))
-                                    Text(T("Окно «Пуск» станет стандартного размера и встанет у Dock."))
+                                    Text(T("Окно «StartForMac» станет стандартного размера и встанет у Dock."))
                                         .font(.caption).foregroundColor(.secondary)
                                     HStack {
                                         Button(T("Отмена")) { confirmReset = false }
@@ -6059,11 +6413,11 @@ struct SettingsOverlay: View {
                                 .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.06)))
                                 .id("confirmReset")
                             }
-                            Button(T("Закрепить в Dock первым (справа от Finder)…")) { confirmPin = true }
+                            HStack { Spacer(); Button(T("Закрепить в Dock первым (справа от Finder)…")) { confirmPin = true }.frame(width: 340); Spacer() }
                             if confirmPin {
                                 VStack(alignment: .leading, spacing: 8) {
-                                    Text(T("Закрепить «Пуск» в Dock?")).font(.system(size: 13, weight: .semibold))
-                                    Text(T("Иконка встанет первой справа от Finder. Dock на секунду перезапустится. Делайте это, когда «Пуск» лежит на своём постоянном месте."))
+                                    Text(T("Закрепить «StartForMac» в Dock?")).font(.system(size: 13, weight: .semibold))
+                                    Text(T("Иконка встанет первой справа от Finder. Dock на секунду перезапустится. Делайте это, когда «StartForMac» лежит на своём постоянном месте."))
                                         .font(.caption).foregroundColor(.secondary)
                                     HStack {
                                         Button(T("Отмена")) { confirmPin = false }
@@ -6117,6 +6471,9 @@ struct RootView: View {
     @State private var toolsMon: Any?
     @State private var toolsBox = FrameBox()
     @State private var toolsBtnBox = FrameBox()
+    @State private var showClip = false
+    @ObservedObject private var clipHist = ClipboardHistory.shared
+    @StateObject private var clipUI = ClipUI()
     @State private var restOpen = false      // «Передохни» раскрыто: Тетрис / Косынка
     @StateObject private var files = FileSearch()
     @StateObject private var recents = RecentDocs()
@@ -6370,7 +6727,7 @@ struct RootView: View {
                     .buttonStyle(.plain)
                     .hoverHighlight(6)
                     .foregroundColor(.secondary)
-                    .help(T("Настройки Пуска"))
+                    .help(T("Настройки StartForMac"))
                     Button { store.setKeepAwake(!store.keepAwake) } label: {
                         Image(systemName: store.keepAwake ? "cup.and.saucer.fill" : "cup.and.saucer")
                             .padding(5).contentShape(Rectangle())
@@ -6379,6 +6736,24 @@ struct RootView: View {
                     .hoverHighlight(6)
                     .foregroundColor(store.keepAwake ? .accentColor : .secondary)
                     .help(store.keepAwake ? T("Компьютер не уснёт — нажмите, чтобы отключить") : T("Не давать компьютеру уснуть"))
+                    Button { CalcWindowController.shared.show() } label: {
+                        Image(systemName: "plusminus.circle")
+                            .padding(5).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .hoverHighlight(6)
+                    .foregroundColor(.secondary)
+                    .help(T("Калькулятор"))
+                    if clipHist.enabled {
+                        Button { showClip.toggle() } label: {
+                            Image(systemName: "doc.on.clipboard")
+                                .padding(5).contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .hoverHighlight(6)
+                        .foregroundColor(showClip ? .accentColor : .secondary)
+                        .help(T("Буфер обмена"))
+                    }
                     Button { store.showPermissions = true } label: {
                         Image(systemName: store.permissionsOK ? "lock.shield" : "exclamationmark.shield")
                             .padding(5).contentShape(Rectangle())
@@ -6430,12 +6805,28 @@ struct RootView: View {
             if showTools {
                 ZStack(alignment: .bottomLeading) {
                     Color.clear.contentShape(Rectangle()).onTapGesture { showTools = false; restOpen = false }
-                    // меню над кнопкой «Инструменты»: по центру колонки категорий (ширина 236)
+                    // меню над кнопкой «Инструменты»: левый край на уровне рамки быстрых вызовов (отступ 12 от края колонки шириной 236)
                     toolsMenu
                         .fixedSize()
                         .background(FrameReader(box: toolsBox))
-                        .frame(width: 236, alignment: .center)
+                        .padding(.leading, 12)
+                        .frame(width: 236, alignment: .leading)
                         .padding(.bottom, 82)
+                }
+            }
+        }
+        .overlay(alignment: .topTrailing) {
+            if showClip && clipHist.enabled {
+                ZStack(alignment: .topTrailing) {
+                    Color.clear.contentShape(Rectangle()).onTapGesture { showClip = false }
+                    ClipListView(history: clipHist, ui: clipUI, pasteMode: false) { item in
+                        clipHist.copy(item)
+                        showClip = false
+                    }
+                    .background(VisualEffect())
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .shadow(radius: 12)
+                    .padding(.top, 90).padding(.trailing, 14)
                 }
             }
         }
@@ -6753,10 +7144,16 @@ struct RootView: View {
                     DurakWindowController.shared.show()
                 }
                 .padding(.leading, 22)
-            }
-            ToolRow(title: T("Калькулятор"), symbol: "plusminus.circle") {
-                showTools = false
-                CalcWindowController.shared.show()
+                ToolRow(title: "JezzBall", symbol: "rectangle.split.2x2") {
+                    showTools = false; restOpen = false
+                    JezzWindowController.shared.show()
+                }
+                .padding(.leading, 22)
+                ToolRow(title: "Lode Runner", symbol: "figure.run") {
+                    showTools = false; restOpen = false
+                    LodeWindowController.shared.show()
+                }
+                .padding(.leading, 22)
             }
             ToolRow(title: T("Файл менеджер"), symbol: "rectangle.split.2x1") {
                 showTools = false
@@ -6769,6 +7166,14 @@ struct RootView: View {
             ToolRow(title: T("Большие и старые файлы"), symbol: "archivebox") {
                 showTools = false
                 store.beginBig()
+            }
+            ToolRow(title: T("Дубликаты и похожие фото"), symbol: "square.on.square") {
+                showTools = false
+                store.beginDups()
+            }
+            ToolRow(title: T("UnRar — распаковка архивов"), symbol: "doc.zipper") {
+                showTools = false
+                store.beginUnrar()
             }
             ToolRow(title: T("Обслуживание"), symbol: "wrench.and.screwdriver") {
                 showTools = false
@@ -7147,9 +7552,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let main = NSMenu()
         let appItem = NSMenuItem(); main.addItem(appItem)
         let appMenu = NSMenu(); appItem.submenu = appMenu
-        appMenu.addItem(withTitle: T("О программе «Пуск»"), action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(withTitle: T("О программе «StartForMac»"), action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: T("Завершить Пуск"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appMenu.addItem(withTitle: T("Завершить StartForMac"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
 
         let editItem = NSMenuItem(); main.addItem(editItem)
         let edit = NSMenu(title: T("Правка")); editItem.submenu = edit

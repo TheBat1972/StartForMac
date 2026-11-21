@@ -76,6 +76,11 @@ final class HotKeyCenter {
         RegisterEventHotKey(c.keyCode, c.mods, hid, GetApplicationEventTarget(), 0, &ref)
         if let r = ref { refs[id] = r }
     }
+
+    func unregister(id: UInt32) {
+        if let r = refs[id] { UnregisterEventHotKey(r); refs[id] = nil }
+        handlers[id] = nil
+    }
 }
 
 // MARK: - Поиск окон приложения (несколько способов)
@@ -405,7 +410,7 @@ enum DockPin {
             "tile-type": "file-tile",
             "tile-data": [
                 "file-data": ["_CFURLString": url, "_CFURLStringType": 15],
-                "file-label": "Пуск",
+                "file-label": "StartForMac",
                 "bundle-identifier": bid,
                 "file-type": 41
             ] as [String: Any]
@@ -453,6 +458,16 @@ final class MinimizeController: NSObject, ObservableObject {
     @Published var dockOn = false
     @Published var loginOn = false
     /// Значок в верхней панели (строке меню); по умолчанию есть
+    /// Окна по ⌃⌥ + стрелки (по умолчанию выключено)
+    @Published var snapOn = WindowSnap.enabled
+    /// ⌘X в Finder как «вырезать» (по умолчанию выключено)
+    @Published var finderCutOn = FinderCut.enabled
+    /// Переключение окон по ⌥Tab и миниатюры (по умолчанию оба выключены)
+    @Published var switcherOn = WindowSwitcher.enabled
+    @Published var thumbsOn = WindowSwitcher.thumbsEnabled
+    /// Умный буфер обмена (⇧⌘V) и сколько записей хранить (по умолчанию выключен)
+    @Published var clipOn = ClipboardHistory.enabled
+    @Published var clipLimit = ClipboardHistory.limit
     @Published var trayOn = (UserDefaults.standard.object(forKey: "ui.trayIcon") as? Bool) ?? true
     /// Идёт запись сочетания: 1 — «Свернуть всё», 2 — «Пуск»
     @Published var recordingFor: Int? = nil
@@ -491,6 +506,44 @@ final class MinimizeController: NSObject, ObservableObject {
         b.contentTintColor = nil
     }
 
+    func setSnap(_ on: Bool) {
+        WindowSnap.enabled = on
+        snapOn = on
+        WindowSnap.registerAll(on)
+        if on { _ = requestAccessibility(prompt: true) }
+    }
+
+    func setSwitcher(_ on: Bool) {
+        WindowSwitcher.enabled = on
+        switcherOn = on
+        WindowSwitcher.shared.setEnabled(on)
+        if on && thumbsOn && !CGPreflightScreenCaptureAccess() { CGRequestScreenCaptureAccess() }
+    }
+
+    func setThumbs(_ on: Bool) {
+        WindowSwitcher.thumbsEnabled = on
+        thumbsOn = on
+        if on && switcherOn && !CGPreflightScreenCaptureAccess() { CGRequestScreenCaptureAccess() }
+    }
+
+    func setClip(_ on: Bool) {
+        clipOn = on
+        ClipboardHistory.shared.setEnabled(on)
+        // автоматическая вставка (⌘V от имени программы) требует «Универсальный доступ» — просим при включении
+        if on { _ = requestAccessibility(prompt: true) }
+    }
+
+    func setClipLimit(_ n: Int) {
+        clipLimit = n
+        ClipboardHistory.shared.setLimit(n)
+    }
+
+    func setFinderCut(_ on: Bool) {
+        FinderCut.enabled = on
+        finderCutOn = on
+        FinderCut.shared.setEnabled(on)
+    }
+
     func setTray(_ on: Bool) {
         UserDefaults.standard.set(on, forKey: "ui.trayIcon")
         trayOn = on
@@ -509,10 +562,20 @@ final class MinimizeController: NSObject, ObservableObject {
         }
         HotKeyCenter.shared.register(combo, id: 1) { [weak self] in self?.doToggle() }
         HotKeyCenter.shared.register(startCombo, id: 2) { [weak self] in self?.toggleStart?() }
+        WindowSnap.registerAll(WindowSnap.enabled)
+        if FinderCut.enabled { FinderCut.shared.start() }
+        if ClipboardHistory.enabled { ClipboardHistory.shared.start() }
+        if WindowSwitcher.enabled { WindowSwitcher.shared.start() }
         pinch.onPinch = { [weak self] in self?.toggleStart?() }
         pinch.start()
         dockWatcher.onMinimize = { [weak self] pid in self?.minimizer.minimize(pids: [pid], remember: false) }
         dockWatcher.start()
+        // после переименования или переезда программы автозапуск должен указывать на новый файл
+        let here = Bundle.main.bundlePath
+        if UserDefaults.standard.string(forKey: "login.path") != here {
+            if LoginItem.isEnabled { LoginItem.set(false); LoginItem.set(true) }
+            UserDefaults.standard.set(here, forKey: "login.path")
+        }
         syncSettings()
     }
 
@@ -554,7 +617,7 @@ final class MinimizeController: NSObject, ObservableObject {
     /// В строке меню остаются только «Открыть «Пуск»» и «Выход»; все настройки — внутри «Пуска»
     func showMenu() {
         let m = NSMenu()
-        m.addItem(withTitle: T("Открыть «Пуск»"), action: #selector(openStartMenu), keyEquivalent: "").target = self
+        m.addItem(withTitle: T("Открыть «StartForMac»"), action: #selector(openStartMenu), keyEquivalent: "").target = self
         let awake = m.addItem(withTitle: T("Не давать компьютеру уснуть"), action: #selector(toggleAwakeItem), keyEquivalent: "")
         awake.target = self
         awake.state = awakeOn ? .on : .off
