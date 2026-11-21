@@ -243,6 +243,8 @@ final class Store: ObservableObject, @unchecked Sendable {
     @Published var showPermissions = false
     @Published var fullDiskAccess = true
     @Published var accessibility = true
+    @Published var screenRecording = true
+    @Published var inputMonitoring = true
     static var suppressAutoHide = false
 
     private var iconCache: [String: NSImage] = [:]
@@ -274,6 +276,8 @@ final class Store: ObservableObject, @unchecked Sendable {
     func refreshPermissions() {
         fullDiskAccess = Permissions.hasFullDiskAccess()
         accessibility = Permissions.hasAccessibility()
+        screenRecording = CGPreflightScreenCaptureAccess()
+        inputMonitoring = CGPreflightListenEventAccess()
     }
 
     var permissionsOK: Bool { fullDiskAccess && accessibility }
@@ -1203,7 +1207,7 @@ struct UninstallOverlay: View {
                 Divider()
                 content
             }
-            .frame(width: 540, height: 400)
+            .frame(width: 540, height: 520)
             .background(RoundedRectangle(cornerRadius: 12).fill(Color(NSColor.windowBackgroundColor)))
             .shadow(radius: 20)
         }
@@ -1380,6 +1384,18 @@ enum Permissions {
         }
     }
 
+    static func openScreenRecordingPane() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    static func openInputMonitoringPane() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
     static func openFullDiskAccessPane() {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
             NSWorkspace.shared.open(url)
@@ -1411,7 +1427,7 @@ struct PermissionsOverlay: View {
                     Image(systemName: "lock.shield").font(.system(size: 28)).foregroundColor(.accentColor)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(T("Разрешения")).font(.headline)
-                        Text(T("Что нужно «StartForMac» для полного удаления приложений")).font(.caption).foregroundColor(.secondary)
+                        Text(T("Что нужно «StartForMac» для работы")).font(.caption).foregroundColor(.secondary)
                     }
                     Spacer()
                 }
@@ -1421,6 +1437,16 @@ struct PermissionsOverlay: View {
                     VStack(alignment: .leading, spacing: 14) {
                         fullDisk
                         accessibilityRow
+                        permissionRow(T("Запись экрана и системного звука"), store.screenRecording,
+                                      T("Нужна только для снимков окон (миниатюры в ⌥Tab и при наведении на значок в Dock) и точной копии обоев для новых чистых столов. Звук не записывается, снимки нигде не сохраняются и никуда не передаются. Без разрешения вместо миниатюр показываются значки приложений."),
+                                      red: true,
+                                      request: { _ = CGRequestScreenCaptureAccess() },
+                                      open: { Permissions.openScreenRecordingPane() })
+                        permissionRow(T("Мониторинг ввода"), store.inputMonitoring,
+                                      T("Нужен, чтобы «Пуск» видел нажатия клавиш: автоматический переключатель раскладки, клавиша Globe (fn) и поиск в ⌥Tab. Нажатия нигде не сохраняются и никуда не передаются, в памяти только текущее слово."),
+                                      red: false,
+                                      request: { _ = CGRequestListenEventAccess() },
+                                      open: { Permissions.openInputMonitoringPane() })
                         info("key", T("Права администратора"),
                              T("Заранее не нужны. Окно с паролем появится само, когда понадобится удалить файлы в /Library."))
                         info("lock.open", T("Данные других приложений"),
@@ -1483,6 +1509,27 @@ struct PermissionsOverlay: View {
                 HStack {
                     Button(T("Запросить")) { Permissions.requestAccessibility() }
                     Button(T("Открыть настройки")) { Permissions.openAccessibilityPane() }
+                    Button(T("Проверить снова")) { store.refreshPermissions() }
+                }
+            }
+        }
+    }
+
+    private func permissionRow(_ title: String, _ granted: Bool, _ text: String, red: Bool,
+                               request: @escaping () -> Void, open: @escaping () -> Void) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: granted ? "checkmark.circle.fill" : "xmark.circle.fill")
+                    .foregroundColor(granted ? .green : .orange)
+                Text(title).font(.system(size: 13, weight: .semibold))
+                Spacer()
+                Text(granted ? T("Выдан") : T("Не выдан")).font(.caption).foregroundColor(.secondary)
+            }
+            Text(text).font(.caption).foregroundColor(red ? .red : .secondary)
+            if !granted {
+                HStack {
+                    Button(T("Запросить")) { request() }
+                    Button(T("Открыть настройки")) { open() }
                     Button(T("Проверить снова")) { store.refreshPermissions() }
                 }
             }
@@ -6394,7 +6441,6 @@ struct SettingsOverlay: View {
                         section(T("Свернуть всё")) {
                             toggleRow(T("Возвращать окна, если экран пуст"), mc.restoreOn) { mc.setRestore($0) }
                             toggleRow(T("Сворачивать по клику в Dock"), mc.dockOn) { mc.setDock($0) }
-                            Button(T("Разрешения…")) { store.showSettings = false; store.showPermissions = true }
                         }
                         sep()
                         section(T("Конвертер валют в поиске")) {

@@ -602,7 +602,7 @@ private let translations: [String: String] = [
     "Файлы из /Library/Caches и /Library/Logs. Для удаления понадобится пароль администратора.": "Files from /Library/Caches and /Library/Logs. An administrator password is needed to delete them.",
     "Файлы поддержки iOS/watchOS/tvOS (DeviceSupport). Xcode скачает их заново при подключении устройства.": "iOS/watchOS/tvOS support files (DeviceSupport). Xcode will download them again when you connect a device.",
     "Что не удастся переместить в Корзину (нужны права администратора), будет удалено сразу и безвозвратно — система запросит пароль.": "Whatever can’t be moved to the Trash (administrator rights needed) will be deleted immediately and permanently — macOS will ask for a password.",
-    "Что нужно «StartForMac» для полного удаления приложений": "What “StartForMac” needs to fully remove apps",
+    "Что нужно «StartForMac» для работы": "What “StartForMac” needs to work",
     "выбрано %@": "selected %@",
     "код %@": "code %@",
     "любое время": "any time",
@@ -824,4 +824,8 @@ private let translations: [String: String] = [
     "Для Globe (fn) отключите системное действие: Системные настройки → Клавиатура → «Нажатие 🌐 для» → «Ничего не делать».": "For Globe (fn), turn off the system action: System Settings → Keyboard → “Press 🌐 key to” → “Do Nothing”.",
     "Скрыть системную плашку раскладки у курсора": "Hide the system layout popup near the cursor",
     "Маленькая плашка с буквой («A», «Р») под текстовым курсором, которую macOS показывает при смене раскладки (Sonoma и новее). Она часто глючит: запаздывает, показывает не ту раскладку, а иногда переключение в поле ввода вообще «теряется» и нужно нажимать дважды. Флаги «Пуска» берут раскладку напрямую из системы и проверяют переключение, поэтому плашка не нужна. Если она не исчезла сразу, перезапустите программу, в которой печатаете, или выйдите из системы и войдите снова.": "The small popup with a letter (“A”, “Р”) under the text cursor that macOS shows when the layout changes (Sonoma and newer). It is often buggy: it lags, shows the wrong layout, and sometimes the switch in a text field is “lost” so you have to press twice. Start’s flags read the layout straight from the system and verify the switch, so the popup is not needed. If it does not disappear at once, restart the app you type in, or log out and back in.",
+    "Запись экрана и системного звука": "Screen & System Audio Recording",
+    "Нужна только для снимков окон (миниатюры в ⌥Tab и при наведении на значок в Dock) и точной копии обоев для новых чистых столов. Звук не записывается, снимки нигде не сохраняются и никуда не передаются. Без разрешения вместо миниатюр показываются значки приложений.": "Needed only for window snapshots (thumbnails in ⌥Tab and when hovering a Dock icon) and an exact copy of the wallpaper for new clean desktops. No audio is recorded; snapshots are never saved or sent anywhere. Without it app icons are shown instead of thumbnails.",
+    "Мониторинг ввода": "Input Monitoring",
+    "Нужен, чтобы «Пуск» видел нажатия клавиш: автоматический переключатель раскладки, клавиша Globe (fn) и поиск в ⌥Tab. Нажатия нигде не сохраняются и никуда не передаются, в памяти только текущее слово.": "Needed so Start can see key presses: the automatic layout switcher, the Globe (fn) key and ⌥Tab search. Key presses are never saved or sent anywhere; only the current word is kept in memory.",
 ]
