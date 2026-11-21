@@ -5,6 +5,7 @@ import SwiftUI
 import AppKit
 import CoreServices
 import IOKit.pwr_mgt
+import IOKit.hid
 import Carbon
 import ApplicationServices
 import Security
@@ -244,7 +245,7 @@ final class Store: ObservableObject, @unchecked Sendable {
     @Published var fullDiskAccess = true
     @Published var accessibility = true
     @Published var screenRecording = true
-    @Published var inputMonitoring = true
+    @Published var inputMonitoring: Bool? = nil
     static var suppressAutoHide = false
 
     private var iconCache: [String: NSImage] = [:]
@@ -277,7 +278,7 @@ final class Store: ObservableObject, @unchecked Sendable {
         fullDiskAccess = Permissions.hasFullDiskAccess()
         accessibility = Permissions.hasAccessibility()
         screenRecording = CGPreflightScreenCaptureAccess()
-        inputMonitoring = CGPreflightListenEventAccess()
+        inputMonitoring = Permissions.inputMonitoringState()
     }
 
     var permissionsOK: Bool { fullDiskAccess && accessibility }
@@ -1374,6 +1375,29 @@ enum Permissions {
     /// Универсальный доступ (Accessibility): нужен для «Свернуть всё»
     static func hasAccessibility() -> Bool { AXIsProcessTrusted() }
 
+    /// «Мониторинг ввода»: функции macOS отвечают «да» и при одном «Универсальном доступе», поэтому читаем базу разрешений.
+    /// Она открыта только при полном доступе к диску; иначе статус неизвестен (nil).
+    static func inputMonitoringState() -> Bool? {
+        let db = NSHomeDirectory() + "/Library/Application Support/com.apple.TCC/TCC.db"
+        guard FileManager.default.isReadableFile(atPath: db), let id = Bundle.main.bundleIdentifier else { return nil }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+        p.arguments = ["-readonly", db, "SELECT auth_value FROM access WHERE service='kTCCServiceListenEvent' AND client='\(id)';"]
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = FileHandle.nullDevice
+        guard (try? p.run()) != nil else { return nil }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        guard p.terminationStatus == 0 else { return nil }
+        let out = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return out.split(separator: "\n").contains("2")
+    }
+
+    static func requestInputMonitoring() {
+        _ = IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
+    }
+
     static func requestAccessibility() {
         _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
     }
@@ -1443,14 +1467,18 @@ struct PermissionsOverlay: View {
                                       request: { _ = CGRequestScreenCaptureAccess() },
                                       open: { Permissions.openScreenRecordingPane() })
                         permissionRow(T("Мониторинг ввода"), store.inputMonitoring,
-                                      T("Нужен, чтобы «Пуск» видел нажатия клавиш: автоматический переключатель раскладки, клавиша Globe (fn) и поиск в ⌥Tab. Нажатия нигде не сохраняются и никуда не передаются, в памяти только текущее слово."),
+                                      T("Обычно не нужен: клавиши «Пуск» принимает с доступом «Управление устройством и доступ к данным». Выдайте и этот, только если автоматический переключатель раскладки, клавиша Globe (fn) или поиск в ⌥Tab не работают. Нажатия нигде не сохраняются и никуда не передаются."),
                                       red: false,
-                                      request: { _ = CGRequestListenEventAccess() },
+                                      request: { Permissions.requestInputMonitoring() },
                                       open: { Permissions.openInputMonitoringPane() })
+                        linkInfo("square.stack.3d.up", T("Управление приложениями"),
+                                 T("Статус программа прочитать не может. Нужно, чтобы удалять и менять другие программы: полное удаление приложения вместе с ним самим, переименование и перенос. Если macOS спросит или удаление не получается — включите «StartForMac» в списке."),
+                                 "Privacy_AppBundles")
+                        linkInfo("folder", T("Файлы и папки"),
+                                 T("Статус программа прочитать не может. macOS спрашивает доступ к «Рабочему столу», «Документам» и «Загрузкам», когда «Пуск» собирает файлы стола, очищает его или считает мусор. Полный доступ к диску эти вопросы снимает."),
+                                 "Privacy_FilesAndFolders")
                         info("key", T("Права администратора"),
                              T("Заранее не нужны. Окно с паролем появится само, когда понадобится удалить файлы в /Library."))
-                        info("lock.open", T("Данные других приложений"),
-                             T("Если macOS спросит про доступ к данным других приложений — нажмите «Разрешить». Полный доступ к диску снимает эти вопросы."))
                     }
                     .padding(14)
                 }
@@ -1461,7 +1489,7 @@ struct PermissionsOverlay: View {
                 }
                 .padding(12)
             }
-            .frame(width: 540, height: 400)
+            .frame(width: 540, height: 520)
             .background(RoundedRectangle(cornerRadius: 12).fill(Color(NSColor.windowBackgroundColor)))
             .shadow(radius: 20)
         }
@@ -1478,7 +1506,7 @@ struct PermissionsOverlay: View {
                 Text(store.fullDiskAccess ? T("Выдан") : T("Не выдан"))
                     .font(.caption).foregroundColor(.secondary)
             }
-            Text(T("Нужен, чтобы полностью чистить данные приложений: контейнеры, почту, данные Safari и другие защищённые папки."))
+            Text(T("Нужен, чтобы полностью чистить данные приложений: контейнеры, почту, данные Safari и другие защищённые папки. Снимает и вопросы macOS про доступ к данным других приложений."))
                 .font(.caption).foregroundColor(.secondary)
             if !store.fullDiskAccess {
                 Text(T("1. Нажмите «Открыть настройки».\n2. Нажмите «+» и выберите «StartForMac» (кнопка «Показать в Finder» покажет файл, его можно перетащить в список).\n3. Включите переключатель и нажмите «Перезапустить»."))
@@ -1489,6 +1517,8 @@ struct PermissionsOverlay: View {
                     Button(T("Проверить снова")) { store.refreshPermissions() }
                     Button(T("Перезапустить")) { Permissions.relaunch() }
                 }
+            } else {
+                Button(T("Открыть настройки")) { Permissions.openFullDiskAccessPane() }
             }
         }
     }
@@ -1505,33 +1535,38 @@ struct PermissionsOverlay: View {
             }
             Text(T("Нужен для «Свернуть всё»: кнопка в строке меню, горячая клавиша и сворачивание кликом по иконке в Dock."))
                 .font(.caption).foregroundColor(.secondary)
-            if !store.accessibility {
-                HStack {
-                    Button(T("Запросить")) { Permissions.requestAccessibility() }
-                    Button(T("Открыть настройки")) { Permissions.openAccessibilityPane() }
-                    Button(T("Проверить снова")) { store.refreshPermissions() }
-                }
+            HStack {
+                if !store.accessibility { Button(T("Запросить")) { Permissions.requestAccessibility() } }
+                Button(T("Открыть настройки")) { Permissions.openAccessibilityPane() }
+                if !store.accessibility { Button(T("Проверить снова")) { store.refreshPermissions() } }
             }
         }
     }
 
-    private func permissionRow(_ title: String, _ granted: Bool, _ text: String, red: Bool,
+    private func permissionRow(_ title: String, _ granted: Bool?, _ text: String, red: Bool,
                                request: @escaping () -> Void, open: @escaping () -> Void) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                Image(systemName: granted ? "checkmark.circle.fill" : "xmark.circle.fill")
-                    .foregroundColor(granted ? .green : .orange)
+                Image(systemName: granted == nil ? "questionmark.circle.fill" : (granted! ? "checkmark.circle.fill" : "xmark.circle.fill"))
+                    .foregroundColor(granted == nil ? .secondary : (granted! ? .green : .orange))
                 Text(title).font(.system(size: 13, weight: .semibold))
                 Spacer()
-                Text(granted ? T("Выдан") : T("Не выдан")).font(.caption).foregroundColor(.secondary)
+                Text(granted == nil ? T("Статус недоступен") : (granted! ? T("Выдан") : T("Не выдан"))).font(.caption).foregroundColor(.secondary)
             }
             Text(text).font(.caption).foregroundColor(red ? .red : .secondary)
-            if !granted {
-                HStack {
-                    Button(T("Запросить")) { request() }
-                    Button(T("Открыть настройки")) { open() }
-                    Button(T("Проверить снова")) { store.refreshPermissions() }
-                }
+            HStack {
+                if granted != true { Button(T("Запросить")) { request() } }
+                Button(T("Открыть настройки")) { open() }
+                if granted != true { Button(T("Проверить снова")) { store.refreshPermissions() } }
+            }
+        }
+    }
+
+    private func linkInfo(_ symbol: String, _ title: String, _ text: String, _ pane: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            info(symbol, title, text)
+            Button(T("Открыть настройки")) {
+                if let u = URL(string: "x-apple.systempreferences:com.apple.preference.security?" + pane) { NSWorkspace.shared.open(u) }
             }
         }
     }
@@ -7351,6 +7386,10 @@ struct RootView: View {
             ToolRow(title: T("Загрузка и конвертация"), symbol: "arrow.down.circle") {
                 showTools = false
                 DCWindowController.shared.show(store: store)
+            }
+            ToolRow(title: T("Диспетчер задач"), symbol: "chart.bar.xaxis") {
+                showTools = false
+                TMWindowController.shared.show()
             }
             ToolRow(title: T("Закрыть все программы"), symbol: "xmark.circle") {
                 showTools = false

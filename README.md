@@ -34,7 +34,7 @@ Personal project, built with SwiftUI + AppKit, no third-party dependencies. Univ
 - **Minimize All** (built in, formerly a separate app): menu bar button, hotkey (default `⌃⌥M`), restores windows if the screen is empty, minimize by clicking the active app's Dock icon. Needs the Accessibility permission.
 - **Hotkey** to show/hide Start (default `⌃⌥P`) and an optional *thumb + three fingers* pinch gesture (off by default; disable the system gesture first).
 - **New clean desktop** (Settings → “System”, off by default): a “+” button in the top bar creates a new, completely clean macOS desktop with its own icons (an app window over the Finder icons, files in a “Desktops” folder in your home folder); the main desktop and iCloud are untouched; drag and drop, ⌘C/⌘V/⌘X; the list survives restarts; when a desktop is deleted (also while the app was not running), the app asks: Trash, move to the main desktop, or keep the folder. Needs Accessibility.
-- **About:** version 7.0 and copyright in the app menu.
+- **About:** version 8.0 and copyright in the app menu.
 - **Settings:** language (system / Russian / English), theme (system / light / dark), hotkeys, gesture, launch at login, pin to the Dock first (right of Finder).
 - **Permissions:** Full Disk Access (to clean protected folders) and Accessibility (for Minimize All) are explained and requested inside the app.
 
@@ -86,6 +86,8 @@ See [CHANGELOG.md](CHANGELOG.md) for the list of changes.
 | `Sources/DockPreview.swift` | window previews when hovering a Dock icon |
 | `Sources/LayoutSwitcher.swift` | automatic keyboard layout switcher |
 | `Sources/LayoutKey.swift` | own layout switch key (Globe/fn or shortcut) |
+| `Sources/TaskManager.swift` | Task Manager (processes and performance) |
+| `Sources/StartupItems.swift` | Task Manager: startup items |
 | `Sources/LayoutFlag.swift` | floating layout flag (built-in LangFlag) |
 | `Sources/Clipboard.swift` | smart clipboard history (⇧⌘V, pinning, in-memory, skips passwords) |
 | `Sources/UnRar.swift` | archive extraction (RAR/RAR5, 7z, ZIP, TAR…; passwords, multi-volume) via 7-Zip |
