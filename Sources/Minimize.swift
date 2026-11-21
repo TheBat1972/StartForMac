@@ -460,6 +460,8 @@ final class MinimizeController: NSObject, ObservableObject {
     /// Значок в верхней панели (строке меню); по умолчанию есть
     /// Окна по ⌃⌥ + стрелки (по умолчанию выключено)
     @Published var snapOn = WindowSnap.enabled
+    /// Кнопка «+» — новый чистый рабочий стол (по умолчанию выключено)
+    @Published var cleanDeskOn = CleanDesktop.shared.enabled
     /// ⌘X в Finder как «вырезать» (по умолчанию выключено)
     @Published var finderCutOn = FinderCut.enabled
     /// Переключение окон по ⌥Tab и миниатюры (по умолчанию оба выключены)
@@ -506,6 +508,12 @@ final class MinimizeController: NSObject, ObservableObject {
         b.contentTintColor = nil
     }
 
+    func setCleanDesk(_ on: Bool) {
+        CleanDesktop.shared.enabled = on
+        cleanDeskOn = on
+        if on { DispatchQueue.main.async { CleanDesktop.shared.checkPermissions() } }
+    }
+
     func setSnap(_ on: Bool) {
         WindowSnap.enabled = on
         snapOn = on
@@ -529,7 +537,7 @@ final class MinimizeController: NSObject, ObservableObject {
     func setClip(_ on: Bool) {
         clipOn = on
         ClipboardHistory.shared.setEnabled(on)
-        // автоматическая вставка (⌘V от имени программы) требует «Универсальный доступ» — просим при включении
+        // автоматическая вставка (⌘V от имени программы) требует «Управление устройством и доступ к данным» (в ранних версиях macOS: «Универсальный доступ») — просим при включении
         if on { _ = requestAccessibility(prompt: true) }
     }
 
@@ -563,6 +571,7 @@ final class MinimizeController: NSObject, ObservableObject {
         HotKeyCenter.shared.register(combo, id: 1) { [weak self] in self?.doToggle() }
         HotKeyCenter.shared.register(startCombo, id: 2) { [weak self] in self?.toggleStart?() }
         WindowSnap.registerAll(WindowSnap.enabled)
+        CleanDesktop.shared.launch()
         if FinderCut.enabled { FinderCut.shared.start() }
         if ClipboardHistory.enabled { ClipboardHistory.shared.start() }
         if WindowSwitcher.enabled { WindowSwitcher.shared.start() }

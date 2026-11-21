@@ -190,7 +190,7 @@ final class ClipboardHistory: ObservableObject {
         }
     }
 
-    /// Копирует запись и нажимает ⌘V в активном приложении (если выдан «Универсальный доступ»)
+    /// Копирует запись и нажимает ⌘V в активном приложении (если выдан «Управление устройством и доступ к данным» (в ранних версиях macOS: «Универсальный доступ»))
     func paste(_ item: ClipItem) {
         copy(item)
         guard AXIsProcessTrusted() else { return }

@@ -5,7 +5,7 @@ import Cocoa
 // В Finder нет «вырезать»: ⌘X ничего не делает. Здесь ⌘X работает как «копировать» и запоминает, что файлы вырезаны;
 // следующая вставка ⌘V в Finder превращается в «Переместить объект сюда» (⌘⌥V). Любой другой ⌘C после этого
 // отменяет вырезание. В полях ввода (переименование, поиск) ⌘X и ⌘V остаются обычными.
-// Для перехвата клавиш нужен доступ «Универсальный доступ».
+// Для перехвата клавиш нужен доступ «Управление устройством и доступ к данным» (в ранних версиях macOS: «Универсальный доступ»).
 
 final class FinderCut {
     static let shared = FinderCut()
@@ -73,7 +73,13 @@ final class FinderCut {
 
     private var toast: NSPanel?
 
-    private func showToast() {
+    /// Файлы вырезаны и ещё не вставлены (используется и окном нового рабочего стола)
+    var cutPending: Bool { pending && (cutCount == 0 || NSPasteboard.general.changeCount == cutCount) }
+    /// Пометить текущее содержимое буфера обмена как вырезанное
+    func markCut() { pending = true; cutCount = NSPasteboard.general.changeCount }
+    func cancelCut() { pending = false }
+
+    func showToast() {
         let urls = NSPasteboard.general.readObjects(forClasses: [NSURL.self],
                                                     options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
         guard !urls.isEmpty else { return }

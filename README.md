@@ -33,7 +33,8 @@ Personal project, built with SwiftUI + AppKit, no third-party dependencies. Univ
 - **Websites tab.** Quick links with icons taken from the sites themselves, organized in folders (drag a site onto a folder). The icon order is chosen with a switch above the tiles: “Manual” (drag an icon onto another one and it is placed before it, or onto the “Add site” tile to put it last), “A–Z”, or “Frequent” (by number of opens); the choice is remembered. IP addresses and local devices work too (plain `http://` is used for them).
 - **Minimize All** (built in, formerly a separate app): menu bar button, hotkey (default `⌃⌥M`), restores windows if the screen is empty, minimize by clicking the active app's Dock icon. Needs the Accessibility permission.
 - **Hotkey** to show/hide Start (default `⌃⌥P`) and an optional *thumb + three fingers* pinch gesture (off by default; disable the system gesture first).
-- **About:** version 6.0 and copyright in the app menu.
+- **New clean desktop** (Settings → “System”, off by default): a “+” button in the top bar creates a new, completely clean macOS desktop with its own icons (an app window over the Finder icons, files in a “Desktops” folder in your home folder); the main desktop and iCloud are untouched; drag and drop, ⌘C/⌘V/⌘X; the list survives restarts; when a desktop is deleted (also while the app was not running), the app asks: Trash, move to the main desktop, or keep the folder. Needs Accessibility.
+- **About:** version 7.0 and copyright in the app menu.
 - **Settings:** language (system / Russian / English), theme (system / light / dark), hotkeys, gesture, launch at login, pin to the Dock first (right of Finder).
 - **Permissions:** Full Disk Access (to clean protected folders) and Accessibility (for Minimize All) are explained and requested inside the app.
 

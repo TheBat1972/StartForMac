@@ -1472,7 +1472,7 @@ struct PermissionsOverlay: View {
             HStack(spacing: 8) {
                 Image(systemName: store.accessibility ? "checkmark.circle.fill" : "xmark.circle.fill")
                     .foregroundColor(store.accessibility ? .green : .orange)
-                Text(T("Универсальный доступ")).font(.system(size: 13, weight: .semibold))
+                Text(T("Управление устройством и доступ к данным")).font(.system(size: 13, weight: .semibold))
                 Spacer()
                 Text(store.accessibility ? T("Выдан") : T("Не выдан"))
                     .font(.caption).foregroundColor(.secondary)
@@ -6372,19 +6372,24 @@ struct SettingsOverlay: View {
                             toggleRow(T("Запускать при входе в систему"), mc.loginOn) { mc.setLogin($0) }
                             toggleRow(T("Значок в верхней панели"), mc.trayOn) { mc.setTray($0) }
                             toggleRow(T("Окна по ⌃⌥ + стрелки"), mc.snapOn) { mc.setSnap($0) }
-                            Text(T("Активное окно любого приложения: ⌃⌥← и ⌃⌥→ — в левую или правую половину экрана (если размер окна не меняется, окно просто сдвигается до края), ⌃⌥↑ — на весь экран, ⌃⌥↓ — свернуть в Dock. Нужен доступ «Универсальный доступ»."))
+                            Text(T("Активное окно любого приложения: ⌃⌥← и ⌃⌥→ — в левую или правую половину экрана (если размер окна не меняется, окно просто сдвигается до края), ⌃⌥↑ — на весь экран, ⌃⌥↓ — свернуть в Dock. Нужен доступ «Управление устройством и доступ к данным» (в ранних версиях macOS: «Универсальный доступ»)."))
                                 .font(.caption).foregroundColor(.secondary)
+                            toggleRow(T("Кнопка «+» — новый чистый рабочий стол"), mc.cleanDeskOn) { mc.setCleanDesk($0) }
+                            Text(T("Справа от замка на верхней панели появляется «+»: он создаёт новый рабочий стол macOS и переходит на него. Новый стол совершенно чистый: на нём своё окно со своими значками (файлы лежат в папке «Рабочие столы» в домашней папке, не в iCloud), файлы основного стола не затрагиваются и ничего не перекачивается. Файлы можно перетащить на новый стол из Finder и обратно, работают ⌘C, ⌘V и (если включено) ⌘X, двойной щелчок открывает файл. Если новый стол удалить (в Mission Control), программа спросит, что сделать с его файлами: в Корзину, на основной стол или оставить папку; то же при запуске, если стола уже нет."))
+                                .font(.caption).foregroundColor(.secondary)
+                            Text(T("Нужно разрешение «Управление устройством и доступ к данным» (в ранних версиях macOS: «Универсальный доступ»; программа сама нажимает «+» в Mission Control). Для точной копии обоев нужно «Запись экрана и системного звука», без него берётся файл обоев."))
+                                .font(.caption).foregroundColor(.red)
                             toggleRow(T("⌘X в Finder — вырезать"), mc.finderCutOn) { mc.setFinderCut($0) }
-                            Text(T("⌘X в Finder копирует выделенные файлы и помечает их вырезанными: следующая вставка ⌘V в Finder переместит их, а не скопирует. ⌘C отменяет вырезание. В полях ввода ⌘X работает как обычно. Нужен доступ «Универсальный доступ»."))
+                            Text(T("⌘X в Finder копирует выделенные файлы и помечает их вырезанными: следующая вставка ⌘V в Finder переместит их, а не скопирует. ⌘C отменяет вырезание. В полях ввода ⌘X работает как обычно. Нужен доступ «Управление устройством и доступ к данным» (в ранних версиях macOS: «Универсальный доступ»)."))
                                 .font(.caption).foregroundColor(.secondary)
                             toggleRow(T("Переключение окон по ⌥Tab"), mc.switcherOn) { mc.setSwitcher($0) }
-                            Text(T("Option + Tab показывает окна (а не приложения целиком) с миниатюрами. Пока Option зажат: Tab или ⇧Tab — выбор окна, Esc — отмена; отпустили Option — выбранное окно выходит вперёд. Нужен доступ «Универсальный доступ»."))
+                            Text(T("Option + Tab показывает окна (а не приложения целиком) с миниатюрами. Пока Option зажат: Tab или ⇧Tab — выбор окна, Esc — отмена; отпустили Option — выбранное окно выходит вперёд. Нужен доступ «Управление устройством и доступ к данным» (в ранних версиях macOS: «Универсальный доступ»)."))
                                 .font(.caption).foregroundColor(.secondary)
                             toggleRow(T("Миниатюры окон"), mc.thumbsOn) { mc.setThumbs($0) }
                             Text(T("Для показа миниатюр нужно разрешение «Запись экрана и системного звука». Его можно не давать: функция будет работать без миниатюр, вместо них показываются значки приложений."))
                                 .font(.caption).foregroundColor(.red)
                             toggleRow(T("Умный буфер обмена — ⇧⌘V"), mc.clipOn) { mc.setClip($0) }
-                            Text(T("История последних копирований (текст, картинки, файлы). ⇧⌘V открывает список у курсора: выбор стрелками или цифрами, Enter вставляет, P закрепляет запись, ⌫ убирает. Значок буфера на верхней панели «Пуска» открывает тот же список — клик копирует запись. Закреплённые записи не вытесняются и не считаются в лимите. Пароли не сохраняются (скрытые копии и менеджеры паролей пропускаются), история хранится только в памяти и исчезает при выходе из программы. Для автоматической вставки нужен доступ «Универсальный доступ»."))
+                            Text(T("История последних копирований (текст, картинки, файлы). ⇧⌘V открывает список у курсора: выбор стрелками или цифрами, Enter вставляет, P закрепляет запись, ⌫ убирает. Значок буфера на верхней панели «Пуска» открывает тот же список — клик копирует запись. Закреплённые записи не вытесняются и не считаются в лимите. Пароли не сохраняются (скрытые копии и менеджеры паролей пропускаются), история хранится только в памяти и исчезает при выходе из программы. Для автоматической вставки нужен доступ «Управление устройством и доступ к данным» (в ранних версиях macOS: «Универсальный доступ»)."))
                                 .font(.caption).foregroundColor(.secondary)
                             if mc.clipOn {
                                 HStack {
@@ -6473,6 +6478,7 @@ struct RootView: View {
     @State private var toolsBtnBox = FrameBox()
     @State private var showClip = false
     @ObservedObject private var clipHist = ClipboardHistory.shared
+    @ObservedObject private var cleanDesk = CleanDesktop.shared
     @StateObject private var clipUI = ClipUI()
     @State private var restOpen = false      // «Передохни» раскрыто: Тетрис / Косынка
     @StateObject private var files = FileSearch()
@@ -6762,6 +6768,17 @@ struct RootView: View {
                     .hoverHighlight(6)
                     .foregroundColor(store.permissionsOK ? .secondary : .orange)
                     .help(store.permissionsOK ? T("Разрешения") : T("Не все разрешения выданы — нажмите, чтобы настроить"))
+                    if cleanDesk.enabled {
+                        Button { CleanDesktop.shared.create() } label: {
+                            Image(systemName: "plus")
+                                .padding(5).contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .hoverHighlight(6)
+                        .foregroundColor(.secondary)
+                        .disabled(cleanDesk.busy)
+                        .help(T("Новый чистый рабочий стол"))
+                    }
                 }
                 .padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 4)
                 ScrollView {
