@@ -143,6 +143,7 @@ final class FinderNew {
             it.target = target ?? self
             it.representedObject = ["dir": dir.path, "kind": kind]
         }
+        sub.addItem(NewImage.menuItem(dir: dir, target: target ?? self, action: action ?? #selector(menuPick(_:))))
         let top = NSMenuItem(title: T("Создать"), action: nil, keyEquivalent: "")
         top.submenu = sub
         return top
@@ -172,6 +173,7 @@ final class FinderNew {
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: dir, isDirectory: &isDir), isDir.boolValue else { return nil }
         let base = URL(fileURLWithPath: dir)
+        if kind.contains(":") { return createImage(in: base, kind: kind) }
         let name: String, ext: String
         switch kind {
         case "txt":    name = T("Новый текстовый документ"); ext = "txt"

@@ -67,6 +67,35 @@ final class StartFinderSync: FIFinderSync {
             item.tag = i
             sub.addItem(item)
         }
+        // «Изображение» → формат → размер (PSD, XCF, KRA — только если есть программа)
+        let gimp = ["org.gimp.gimp", "org.gimp.gimp-2.10", "org.gimp.gimp-3.0", "org.gimp.gimp-2.99", "org.gimp.gimp-2.8"]
+        var fmts: [(String, String)] = [("png", "PNG"), ("jpg", "JPEG"), ("svg", "SVG")]
+        if (["com.adobe.Photoshop", "com.pixelmatorteam.pixelmator.x", "com.seriflabs.affinityphoto2", "com.seriflabs.affinityphoto"] + gimp).contains(where: installed) {
+            fmts.append(("psd", "Photoshop (.psd)"))
+        }
+        if gimp.contains(where: installed) { fmts.append(("xcf", "GIMP (.xcf)")) }
+        if installed("org.kde.krita") { fmts.append(("kra", "Krita (.kra)")) }
+        let imgMenu = NSMenu(title: "")
+        for (fmt, title) in fmts {
+            let fm = NSMenu(title: "")
+            for (w, h) in [(1920, 1080), (1024, 1024), (512, 512)] {
+                let it = NSMenuItem(title: "\(w)×\(h)", action: #selector(create(_:)), keyEquivalent: "")
+                it.tag = kinds.count
+                kinds.append("\(fmt):\(w)x\(h)")
+                fm.addItem(it)
+            }
+            fm.addItem(.separator())
+            let own = NSMenuItem(title: russian ? "Свой размер…" : "Custom size…", action: #selector(create(_:)), keyEquivalent: "")
+            own.tag = kinds.count
+            kinds.append("\(fmt):ask")
+            fm.addItem(own)
+            let fi = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            fi.submenu = fm
+            imgMenu.addItem(fi)
+        }
+        let imgItem = NSMenuItem(title: russian ? "Изображение" : "Image", action: nil, keyEquivalent: "")
+        imgItem.submenu = imgMenu
+        sub.addItem(imgItem)
         let top = NSMenuItem(title: russian ? "Создать" : "Create", action: nil, keyEquivalent: "")
         top.submenu = sub
         menu.addItem(top)
