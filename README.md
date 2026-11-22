@@ -34,9 +34,18 @@ Personal project, built with SwiftUI + AppKit, no third-party dependencies. Univ
 - **Minimize All** (built in, formerly a separate app): menu bar button, hotkey (default `⌃⌥M`), restores windows if the screen is empty, minimize by clicking the active app's Dock icon. Needs the Accessibility permission.
 - **Hotkey** to show/hide Start (default `⌃⌥P`) and an optional *thumb + three fingers* pinch gesture (off by default; disable the system gesture first).
 - **New clean desktop** (Settings → “System”, off by default): a “+” button in the top bar creates a new, completely clean macOS desktop with its own icons (an app window over the Finder icons, files in a “Desktops” folder in your home folder); the main desktop and iCloud are untouched; drag and drop, ⌘C/⌘V/⌘X; the list survives restarts; when a desktop is deleted (also while the app was not running), the app asks: Trash, move to the main desktop, or keep the folder. Needs Accessibility.
+- **Task Manager** (Tools): four tabs. “Processes” — groups by app, expandable; columns CPU, Memory, Disk, Network, Energy (selectable); end, suspend, priority. “Details” — flat list of all processes with PID and user. “Performance” — graph cards: CPU (per core), memory and pressure, disk, network (interface picker), GPU and battery when present. “Startup” — login items with enable/disable.
+- **Automatic layout switcher** (Settings → “System”, off by default): fixes a word typed in the wrong layout right after the space, including short words (“И вот”, “А кто это?”), hyphenated words and trailing punctuation; site addresses are left alone. The hotkey (default ⌃⌥Space) fixes the last word or the selected text, and repeated presses toggle back and forth. A word you reverted by hand is remembered and no longer auto-fixed (up to 500 words). Apps can be excluded. Typed text is not stored.
+- **Own layout key:** Globe/fn or your own shortcut switches the layout; the system language popup can be hidden.
+- **Layout flag** (built-in LangFlag): a small on-screen and menu-bar indicator of the current layout with a flag.
+- **Dock window previews:** thumbnails of an app’s windows above its Dock icon on hover.
+- **⌥Tab window switcher:** thumbnails, search and window buttons.
+- **Window snap:** ⌃⌥ + arrows put the active window in a half of the screen, full screen, or minimize it.
+- **⌘X in Finder:** cut files; the next ⌘V moves them.
+- **Quick launch:** five slots at the bottom of the panel for favourite apps (the fifth is empty by default, with a plus).
 - **About:** version 8.0 and copyright in the app menu.
 - **Settings:** language (system / Russian / English), theme (system / light / dark), hotkeys, gesture, launch at login, pin to the Dock first (right of Finder).
-- **Permissions:** Full Disk Access (to clean protected folders) and Accessibility (for Minimize All) are explained and requested inside the app.
+- **Permissions:** the Permissions tab explains and opens the right System Settings panes: Full Disk Access (protected folders; also removes macOS prompts about other apps’ data), Accessibility (hotkeys, Minimize All, layout switcher), 🔴 **Screen & System Audio Recording** — only needed for window thumbnails in ⌥Tab and on Dock hover, Input Monitoring (usually not needed; its status is readable only with Full Disk Access, otherwise “Status unavailable”), App Management (app removal) and Files & Folders. Every item has an “Open Settings” button.
 
 ## Privacy and security
 
@@ -85,11 +94,12 @@ See [CHANGELOG.md](CHANGELOG.md) for the list of changes.
 | `Sources/WindowSwitcher.swift` | ⌥Tab window switcher with thumbnails, search and window buttons |
 | `Sources/DockPreview.swift` | window previews when hovering a Dock icon |
 | `Sources/LayoutSwitcher.swift` | automatic keyboard layout switcher |
-| `Sources/LayoutKey.swift` | own layout switch key (Globe/fn or shortcut) |
-| `Sources/TaskManager.swift` | Task Manager (processes and performance) |
+| `Sources/LayoutKey.swift` | own layout key (Globe/fn), hiding the system language popup |
+| `Sources/TaskManager.swift` | Task Manager: processes, details, performance (disk, network, GPU, battery) |
 | `Sources/StartupItems.swift` | Task Manager: startup items |
 | `Sources/LayoutFlag.swift` | floating layout flag (built-in LangFlag) |
 | `Sources/Clipboard.swift` | smart clipboard history (⇧⌘V, pinning, in-memory, skips passwords) |
+| `Sources/CleanDesktop.swift` | new clean desktop (“+” button) |
 | `Sources/UnRar.swift` | archive extraction (RAR/RAR5, 7z, ZIP, TAR…; passwords, multi-volume) via 7-Zip |
 | `Sources/Duplicates.swift` | duplicates and similar photos (SHA-256, perceptual hash) |
 | `Sources/Minimize.swift` | Minimize All, hotkeys, login item, Dock pinning |
