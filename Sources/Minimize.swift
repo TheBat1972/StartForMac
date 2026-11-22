@@ -178,16 +178,16 @@ final class Minimizer {
         }
     }
 
-    /// Сворачивать ли и сам «Пуск» с его окнами (по умолчанию нет)
-    static var includeSelf: Bool {
-        get { UserDefaults.standard.bool(forKey: "minimizeSelf") }
-        set { UserDefaults.standard.set(newValue, forKey: "minimizeSelf") }
+    /// Не сворачивать «Пуск» и его программы (по умолчанию выключено: сворачиваются вместе со всеми)
+    static var keepSelf: Bool {
+        get { UserDefaults.standard.bool(forKey: "minimizeKeepSelf") }
+        set { UserDefaults.standard.set(newValue, forKey: "minimizeKeepSelf") }
     }
 
     /// Программы, чьи окна сворачиваем
     private func appPids() -> [pid_t] {
         let me = ProcessInfo.processInfo.processIdentifier
-        let inc = Minimizer.includeSelf
+        let inc = !Minimizer.keepSelf
         var a = NSWorkspace.shared.runningApplications.filter {
             ($0.activationPolicy == .regular || $0.bundleIdentifier == "com.apple.finder")
                 && (inc || $0.processIdentifier != me)
@@ -206,16 +206,17 @@ final class Minimizer {
         if Minimizer.restoreEnabled && !screenHasWindows() && !minimized.isEmpty { restore() } else { minimizeAll() }
     }
 
-    func minimizeAll() {
-        minimize(pids: appPids())
+    /// keepPopup: свернуть из самого «Пуска» (кнопка в его меню) — главное окно «Пуска» остаётся на месте
+    func minimizeAll(keepPopup: Bool = false) {
+        minimize(pids: appPids(), keepPopup: keepPopup)
     }
 
     /// remember: запомнить окна для «вернуть» (заменяет прошлый список). Клик по Dock ничего не запоминает.
-    func minimize(pids allPids: [pid_t], remember: Bool = true) {
+    func minimize(pids allPids: [pid_t], remember: Bool = true, keepPopup: Bool = false) {
         // Свои окна сворачиваем средствами AppKit в главном потоке: через Accessibility из фонового потока AppKit падает
         let me = ProcessInfo.processInfo.processIdentifier
         let pids = allPids.filter { $0 != me }
-        if allPids.contains(me) { minimizeOwn(remember: remember) }
+        if allPids.contains(me) { minimizeOwn(remember: remember, keepPopup: keepPopup) }
         DispatchQueue.global(qos: .userInteractive).async {
             let lock = NSLock()
             let key = kAXMinimizedAttribute as CFString
@@ -256,13 +257,15 @@ final class Minimizer {
 
     private var ownMinimized: [NSWindow] = []
 
-    private func minimizeOwn(remember: Bool) {
+    private func minimizeOwn(remember: Bool, keepPopup: Bool) {
         DispatchQueue.main.async {
             let ws = NSApp.windows.filter {
                 $0.isVisible && !$0.isMiniaturized && $0.styleMask.contains(.miniaturizable) && !($0 is PopupWindow)
             }
             ws.forEach { $0.miniaturize(nil) }
-            NSApp.windows.compactMap { $0 as? PopupWindow }.forEach { $0.orderOut(nil) }     // само окно «Пуска» просто закрывается
+            if !keepPopup {
+                NSApp.windows.compactMap { $0 as? PopupWindow }.forEach { $0.orderOut(nil) }     // само окно «Пуска» просто закрывается
+            }
             if remember { self.ownMinimized = ws }
         }
     }
@@ -723,7 +726,7 @@ final class MinimizeController: NSObject, ObservableObject {
         minimizeComboTitle = combo.title
         pinchOn = pinch.enabled
         restoreOn = Minimizer.restoreEnabled
-        selfOn = Minimizer.includeSelf
+        selfOn = Minimizer.keepSelf
         dockOn = dockWatcher.enabled
         loginOn = LoginItem.isEnabled
     }
@@ -742,7 +745,7 @@ final class MinimizeController: NSObject, ObservableObject {
     /// Только свернуть все окна (без «вернуть» при повторном нажатии) — кнопка в «Пуске»
     func minimizeOnly() {
         guard requestAccessibility(prompt: true) else { return }
-        minimizer.minimizeAll()
+        minimizer.minimizeAll(keepPopup: true)
     }
 
     @objc func statusClicked() {
@@ -779,7 +782,7 @@ final class MinimizeController: NSObject, ObservableObject {
     func setPinch(_ on: Bool) { pinch.enabled = on; pinchOn = pinch.enabled; if on { pinch.restart() } }
     func pinchDiagnostic() -> String { pinch.diagnostic() }
     func setRestore(_ on: Bool) { Minimizer.restoreEnabled = on; restoreOn = on }
-    func setSelf(_ on: Bool) { Minimizer.includeSelf = on; selfOn = on }
+    func setSelf(_ on: Bool) { Minimizer.keepSelf = on; selfOn = on }
     func setDock(_ on: Bool) { dockWatcher.enabled = on; dockOn = dockWatcher.enabled }
     func setLogin(_ on: Bool) {
         if !LoginItem.set(on) { NSSound.beep() }

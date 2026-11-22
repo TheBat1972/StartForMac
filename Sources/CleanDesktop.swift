@@ -1,5 +1,6 @@
 import Cocoa
 import ApplicationServices
+import ImageIO
 
 // MARK: - Новые чистые рабочие столы (кнопка «+» на верхней панели)
 //
@@ -20,6 +21,9 @@ private typealias CDWindowImageFn = @convention(c) (CGRect, UInt32, CGWindowID, 
 private let cdHandle = dlopen("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics", RTLD_LAZY)
 private let cdWindowImage: CDWindowImageFn? = dlsym(cdHandle, "CGWindowListCreateImage")
     .map { unsafeBitCast($0, to: CDWindowImageFn.self) }
+private typealias CDWindowArrayFn = @convention(c) (CGRect, CFArray, UInt32) -> Unmanaged<CGImage>?
+private let cdWindowArrayImage: CDWindowArrayFn? = dlsym(cdHandle, "CGWindowListCreateImageFromArray")
+    .map { unsafeBitCast($0, to: CDWindowArrayFn.self) }
 
 final class CleanDesktop: ObservableObject {
     static let shared = CleanDesktop()
@@ -191,6 +195,7 @@ final class CleanDesktop: ObservableObject {
     // MARK: Синхронизация окон со столами
 
     private func sync() {
+        refreshDynamicWallpaper()
         guard enabled, !asking, let info = spacesInfo() else { return }
 
         // 1. Окно удалённого стола система переносит на соседний: сразу убираем, чтобы оно не закрыло основной стол
@@ -211,13 +216,14 @@ final class CleanDesktop: ObservableObject {
         guard let d = state.desktops[key], let screen = NSScreen.screens.first else { return }
         let folder = folderURL(d)
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        let p = DeskPanel(screen: screen, folder: folder, wallpaper: fileWallpaper(screen))
+        let p = DeskPanel(screen: screen, folder: folder, wallpaper: startWallpaper(screen))
         p.onRefreshWallpaper = { [weak self, weak p] in
             guard let self = self, let p = p, let s = NSScreen.screens.first else { return }
             p.setWallpaper(self.capturedWallpaper(s) ?? self.fileWallpaper(s))
         }
         p.onMoveToMain = { [weak self] urls in self?.moveToMain(urls) }
         panels[key] = p
+        startWallpaperWatch()
         p.orderFrontRegardless()
         // точная копия обоев (нужно разрешение «Запись экрана»): подставляем, когда стол уже показан
         if CGPreflightScreenCaptureAccess() {
@@ -232,11 +238,118 @@ final class CleanDesktop: ObservableObject {
         guard let p = panels.removeValue(forKey: key) else { return }
         p.shutdown()
         p.orderOut(nil)
+        if panels.isEmpty { stopWallpaperWatch() }
+    }
+
+    // MARK: Слежение за сменой обоев (без опроса)
+    //
+    // Система сама пишет файлы настроек обоев, когда их меняют: следим за папкой и файлом настроек через ядро
+    // (событие приходит только при изменении), плюс на всякий случай слушаем старое уведомление «com.apple.desktop».
+    // После события ждём пару секунд, пока система закончит смену, и подставляем новые обои.
+
+    private var wallSources: [DispatchSourceFileSystemObject] = []
+    private var wallObserver: NSObjectProtocol?
+    private var wallDebounce: DispatchWorkItem?
+
+    private func startWallpaperWatch() {
+        if wallObserver == nil {
+            wallObserver = DistributedNotificationCenter.default().addObserver(
+                forName: NSNotification.Name("com.apple.desktop"), object: nil, queue: .main) { [weak self] _ in
+                self?.wallpaperChanged()
+            }
+        }
+        openWallpaperSources()
+    }
+
+    private func openWallpaperSources() {
+        wallSources.forEach { $0.cancel() }
+        wallSources = []
+        let store = home.appendingPathComponent("Library/Application Support/com.apple.wallpaper/Store")
+        for path in [store.path, store.appendingPathComponent("Index.plist").path] {
+            let fd = open(path, O_EVTONLY)
+            guard fd >= 0 else { continue }
+            let src = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: [.write, .delete, .rename, .extend],
+                                                                queue: .main)
+            src.setEventHandler { [weak self] in self?.wallpaperChanged() }
+            src.setCancelHandler { close(fd) }
+            src.resume()
+            wallSources.append(src)
+        }
+    }
+
+    private func wallpaperChanged() {
+        wallDebounce?.cancel()
+        let w = DispatchWorkItem { [weak self] in
+            guard let self = self, !self.panels.isEmpty else { return }
+            self.applyWallpaperNow()
+            self.openWallpaperSources()          // файл настроек мог быть заменён целиком: открываем заново
+        }
+        wallDebounce = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: w)
+    }
+
+    private func stopWallpaperWatch() {
+        wallDebounce?.cancel()
+        wallSources.forEach { $0.cancel() }
+        wallSources = []
+        if let o = wallObserver { DistributedNotificationCenter.default().removeObserver(o) }
+        wallObserver = nil
     }
 
     // MARK: Обои
 
-    /// Обои из файла (быстрый запасной вариант)
+    private var lastDynamic = Date()
+    private var mainWallURL: URL?
+    private var mainWallImage: NSImage?
+
+    /// Перед созданием нового стола, пока мы ещё на основном, запоминаем его обои: новый стол берёт их, а не обои,
+    /// которые система держит для самого нового стола (они могут остаться старыми, если обои сменили на основном)
+    private func snapshotMainWallpaper(_ activeKey: String) {
+        guard state.desktops[activeKey] == nil, let s = NSScreen.screens.first else { return }
+        mainWallURL = wallpaperURL(s)
+        mainWallImage = CGPreflightScreenCaptureAccess() ? capturedWallpaper(s) : nil
+    }
+
+    /// Обои для только что созданного стола
+    private func startWallpaper(_ screen: NSScreen) -> NSImage? {
+        if let i = mainWallImage { return i }
+        if let u = mainWallURL, let i = DynWall.frame(at: u) ?? NSImage(contentsOf: u) { return i }
+        return fileWallpaper(screen)
+    }
+
+    /// Динамические обои (смена по времени суток): раз в 5 минут подставляем кадр, подходящий к текущему времени
+    private func refreshDynamicWallpaper() {
+        guard !panels.isEmpty, Date().timeIntervalSince(lastDynamic) >= 300 else { return }
+        applyWallpaperNow()
+    }
+
+    /// Подставляет на все новые столы текущие обои
+    private func applyWallpaperNow() {
+        lastDynamic = Date()
+        guard !panels.isEmpty, let s = NSScreen.screens.first else { return }
+        // точный снимок текущих обоев (работает и для новых динамических обоев macOS); на каком бы столе мы ни были
+        if CGPreflightScreenCaptureAccess() {
+            if let img = capturedWallpaper(s) { panels.values.forEach { $0.setWallpaper(img) } }
+            return
+        }
+        guard let u = mainWallURL ?? wallpaperURL(s), let img = DynWall.frame(at: u) else { return }
+        for p in panels.values { p.setWallpaper(img) }
+    }
+
+    private func wallpaperURL(_ screen: NSScreen) -> URL? {
+        guard var u = NSWorkspace.shared.desktopImageURL(for: screen) else { return nil }
+        var isDir: ObjCBool = false
+        if FileManager.default.fileExists(atPath: u.path, isDirectory: &isDir), isDir.boolValue {
+            let files = ((try? FileManager.default.contentsOfDirectory(at: u, includingPropertiesForKeys: nil)) ?? [])
+                .filter { ["jpg", "jpeg", "png", "heic", "tif", "tiff"].contains($0.pathExtension.lowercased()) }
+                .sorted { $0.lastPathComponent < $1.lastPathComponent }
+            guard let f = files.first else { return nil }
+            u = f
+        }
+        return u
+    }
+
+    /// Обои из файла (быстрый запасной вариант). Для динамических обоев берётся кадр под текущее время
     private func fileWallpaper(_ screen: NSScreen) -> NSImage? {
         guard var u = NSWorkspace.shared.desktopImageURL(for: screen) else { return nil }
         var isDir: ObjCBool = false
@@ -247,28 +360,64 @@ final class CleanDesktop: ObservableObject {
             guard let f = files.first else { return nil }
             u = f
         }
+        if let d = DynWall.frame(at: u) { return d }
         return NSImage(contentsOf: u)
     }
 
-    /// Точная копия того, что сейчас нарисовано как обои (без значков), — через снимок окна обоев
+    /// Точная копия того, что сейчас нарисовано как обои (без значков). Снимается всё, что система рисует под значками
+    /// рабочего стола, то есть все окна обоев вместе, как они сложены на экране (у новых обоев macOS таких окон
+    /// несколько, и среди них есть старые слои). Что нашлось, пишется в «wallpaper-debug.txt» рядом с настройками.
     private func capturedWallpaper(_ screen: NSScreen) -> NSImage? {
-        guard CGPreflightScreenCaptureAccess(), let fn = cdWindowImage,
+        guard CGPreflightScreenCaptureAccess(),
               let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else { return nil }
-        let deskLevel = Int(CGWindowLevelForKey(.desktopWindow))
-        var best: (id: CGWindowID, area: CGFloat)?
+        let iconLevel = Int(CGWindowLevelForKey(.desktopIconWindow))
+        var log = "screen \(Int(screen.frame.width))x\(Int(screen.frame.height)), icon level \(iconLevel), \(Date())\n"
+        var below: [CGWindowID] = []
+        var ref: (id: CGWindowID, layer: Int, finder: Bool)?
         for w in list {
-            guard (w[kCGWindowLayer as String] as? Int) == deskLevel,
-                  let id = w[kCGWindowNumber as String] as? Int,
-                  let b = w[kCGWindowBounds as String] as? NSDictionary,
-                  let r = CGRect(dictionaryRepresentation: b as CFDictionary),
-                  abs(r.width - screen.frame.width) < 2, abs(r.height - screen.frame.height) < 2 else { continue }
-            if best == nil || r.width * r.height > best!.area { best = (CGWindowID(id), r.width * r.height) }
+            guard let layer = w[kCGWindowLayer as String] as? Int, let id = w[kCGWindowNumber as String] as? Int else { continue }
+            let alpha = w[kCGWindowAlpha as String] as? Double ?? 1
+            let owner = w[kCGWindowOwnerName as String] as? String ?? "?"
+            let name = w[kCGWindowName as String] as? String ?? ""
+            var r = CGRect.zero
+            if let b = w[kCGWindowBounds as String] as? NSDictionary, let rr = CGRect(dictionaryRepresentation: b as CFDictionary) { r = rr }
+            let big = r.width >= screen.frame.width / 2 && r.height >= screen.frame.height / 2
+            if layer <= iconLevel {
+                log += "  layer \(layer) id \(id) owner \(owner) name '\(name)' alpha \(alpha) \(Int(r.minX)),\(Int(r.minY)) \(Int(r.width))x\(Int(r.height))\n"
+            }
+            if layer < iconLevel, alpha > 0.01, big { below.append(CGWindowID(id)) }
+            // окно, относительно которого снимаем «всё, что под ним»: значки рабочего стола Finder или самое нижнее окно не ниже их уровня
+            if layer >= iconLevel, big, (owner == "Finder" || owner == "Dock" || layer == iconLevel) {
+                let isFinder = owner == "Finder" && layer == iconLevel
+                if ref == nil || (isFinder && !ref!.finder) || (isFinder == ref!.finder && layer < ref!.layer) {
+                    ref = (CGWindowID(id), layer, isFinder)
+                }
+            }
         }
-        guard let b = best,
-              let cg = fn(.null, UInt32(CGWindowListOption.optionIncludingWindow.rawValue), b.id,
-                          UInt32(CGWindowImageOption.bestResolution.rawValue))?.takeRetainedValue(),
-              cg.width > 100 else { return nil }
-        return NSImage(cgImage: cg, size: screen.frame.size)
+        log += "  below-icons windows: \(below.count), reference: \(ref.map { "\($0.id)" } ?? "none")\n"
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("StartMenu", isDirectory: true)
+        try? log.write(to: dir.appendingPathComponent("wallpaper-debug.txt"), atomically: true, encoding: .utf8)
+
+        let rect = CGDisplayBounds(CGMainDisplayID())
+        let opts = UInt32(CGWindowImageOption.bestResolution.rawValue)
+        func make(_ cg: CGImage?) -> NSImage? {
+            guard let cg = cg, cg.width > 100 else { return nil }
+            return NSImage(cgImage: cg, size: screen.frame.size)
+        }
+        // 1. всё, что нарисовано под значками рабочего стола
+        if let fn = cdWindowImage, let r = ref,
+           let img = make(fn(rect, UInt32(CGWindowListOption.optionOnScreenBelowWindow.rawValue), r.id, opts)?.takeRetainedValue()) {
+            return img
+        }
+        // 2. окна обоев списком
+        if let fn = cdWindowArrayImage, !below.isEmpty {
+            var vals: [UnsafeRawPointer?] = below.map { UnsafeRawPointer(bitPattern: UInt($0)) }
+            if let arr = CFArrayCreate(nil, &vals, vals.count, nil), let img = make(fn(rect, arr, opts)?.takeRetainedValue()) {
+                return img
+            }
+        }
+        return nil
     }
 
     // MARK: Удаление стола и перенос файлов
@@ -357,6 +506,17 @@ final class CleanDesktop: ObservableObject {
         }
         state.desktops[key] = nil
         save()
+        resetAfterRemoval(key)
+    }
+
+    /// После удаления стола и вопроса про файлы всё запоминаемое сбрасывается, чтобы следующий новый стол начинал с нуля:
+    /// окно, счётчики проверки, запомненные обои (они заново читаются с основного стола)
+    private func resetAfterRemoval(_ key: String) {
+        closePanel(key)
+        misses[key] = nil
+        mainWallURL = nil
+        mainWallImage = nil
+        lastDynamic = Date()
     }
 
     // MARK: Создание нового стола
@@ -489,6 +649,7 @@ final class CleanDesktop: ObservableObject {
             fail(T("Не удалось определить текущий рабочий стол."))
             return
         }
+        snapshotMainWallpaper(before.active)
         busy = true
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
@@ -1099,5 +1260,79 @@ final class DeskView: NSView, NSDraggingSource {
             a.informativeText = failed.prefix(6).joined(separator: "\n")
             a.runModal()
         }
+    }
+}
+
+
+// MARK: - Динамические обои (.heic со сменой по времени суток)
+//
+// В таком файле несколько кадров, а в метаданных (XMP, `apple_desktop:solar`, `h24` или `apr`) записано, какой кадр
+// когда показывать: по положению солнца, по времени суток или по светлой/тёмной теме. Положение солнца считается
+// приблизительно: долгота — по часовому поясу, широта — средняя (определение места не запрашиваем).
+
+enum DynWall {
+    static func frame(at url: URL, date: Date = Date()) -> NSImage? {
+        guard let src = CGImageSourceCreateWithURL(url as CFURL, nil), CGImageSourceGetCount(src) > 1,
+              let md = CGImageSourceCopyMetadataAtIndex(src, 0, nil) else { return nil }
+        var found: [String: String] = [:]
+        CGImageMetadataEnumerateTagsUsingBlock(md, nil, nil) { path, tag in
+            let p = path as String
+            for k in ["solar", "h24", "apr"] where p.hasSuffix(k) {
+                if let v = CGImageMetadataTagCopyValue(tag) as? String { found[k] = v }
+            }
+            return true
+        }
+        func plist(_ k: String) -> [String: Any]? {
+            guard let v = found[k], let d = Data(base64Encoded: v, options: .ignoreUnknownCharacters),
+                  let o = try? PropertyListSerialization.propertyList(from: d, options: [], format: nil) as? [String: Any]
+            else { return nil }
+            return o
+        }
+        var index: Int?
+        if let o = plist("h24"), let ti = o["ti"] as? [[String: Any]] {
+            let cal = Calendar.current
+            let sec = Double(cal.component(.hour, from: date) * 3600 + cal.component(.minute, from: date) * 60 + cal.component(.second, from: date))
+            let frac = sec / 86400
+            let items = ti.compactMap { e -> (Double, Int)? in
+                guard let t = (e["t"] as? NSNumber)?.doubleValue, let i = (e["i"] as? NSNumber)?.intValue else { return nil }
+                return (t, i)
+            }.sorted { $0.0 < $1.0 }
+            index = (items.last { $0.0 <= frac } ?? items.last)?.1
+        } else if let o = plist("solar"), let si = o["si"] as? [[String: Any]] {
+            let sun = sunPosition(date)
+            var best: (Double, Int)?
+            for e in si {
+                guard let a = (e["a"] as? NSNumber)?.doubleValue, let z = (e["z"] as? NSNumber)?.doubleValue,
+                      let i = (e["i"] as? NSNumber)?.intValue else { continue }
+                var dz = abs(z - sun.az).truncatingRemainder(dividingBy: 360)
+                if dz > 180 { dz = 360 - dz }
+                let dist = (a - sun.alt) * (a - sun.alt) + dz * dz
+                if best == nil || dist < best!.0 { best = (dist, i) }
+            }
+            index = best?.1
+        } else if let o = plist("apr"), let ap = o["ap"] as? [String: Any] {
+            let dark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            index = (ap[dark ? "d" : "l"] as? NSNumber)?.intValue
+        }
+        guard let i = index, i >= 0, i < CGImageSourceGetCount(src),
+              let cg = CGImageSourceCreateImageAtIndex(src, i, nil) else { return nil }
+        return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+    }
+
+    /// Высота и азимут солнца в градусах (приблизительно)
+    private static func sunPosition(_ date: Date) -> (alt: Double, az: Double) {
+        let lat = 50.0 * Double.pi / 180
+        let lon = Double(TimeZone.current.secondsFromGMT(for: date)) / 3600 * 15
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(secondsFromGMT: 0)!
+        let n = Double(cal.ordinality(of: .day, in: .year, for: date) ?? 1)
+        let decl = 23.44 * sin(2 * Double.pi / 365 * (284 + n) ) * Double.pi / 180
+        let utc = Double(cal.component(.hour, from: date)) + Double(cal.component(.minute, from: date)) / 60
+        let solar = utc + lon / 15
+        let h = (solar - 12) * 15 * Double.pi / 180
+        let sinAlt = sin(lat) * sin(decl) + cos(lat) * cos(decl) * cos(h)
+        let alt = asin(max(-1, min(1, sinAlt)))
+        let az = atan2(sin(h), cos(h) * sin(lat) - tan(decl) * cos(lat)) + Double.pi
+        return (alt * 180 / Double.pi, az * 180 / Double.pi)
     }
 }

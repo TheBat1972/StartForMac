@@ -18,9 +18,13 @@
 - «Lode Runner»: короткое нажатие в сторону, противоположную бегу, только разворачивает бегуна без шага, а удержание — разворачивает и сразу бежит без паузы; копание стало быстрее на 50%.
 - Диспетчер задач: при открытии список процессов иногда оставался пустым, пока не переключишь вкладку; теперь содержимое обновляется, как только приходят первые данные.
 - Красные пояснения в настройках и в окне разрешений (про запись экрана и системного звука) теперь обычного серого цвета, как остальные.
-- «Свернуть всё»: в настройках новый переключатель «Сворачивать и «Пуск» с его окнами». Выключен — как раньше, «Пуск» и его программы не сворачиваются; включён — сворачиваются вместе с остальными окнами и возвращаются так же.
-- «Свернуть всё» с включённым «Сворачивать и «Пуск» с его окнами» больше не вылетает: свои окна сворачиваются средствами самой программы, а само окно «Пуска» закрывается.
+- «Свернуть всё» теперь сворачивает и «Пуск» с его программами (возвращаются так же). В настройках новый переключатель «Не сворачивать «Пуск» и его программы»: включишь — они остаются на месте, как раньше; по умолчанию выключен.
+- «Свернуть всё» больше не вылетает при сворачивании «Пуска» и его программ: свои окна сворачиваются средствами самой программы, а само окно «Пуска» закрывается (кроме случая, когда «Свернуть всё» нажато кнопкой внутри «Пуска»: тогда главное окно остаётся).
 - Настройки открываются и из меню программы на верхней панели («Настройки…», ⌘,): появляется окно «Пуска» сразу на настройках. Такой же пункт есть в меню значка «Свернуть всё» в строке меню.
+- Новый чистый рабочий стол понимает динамические обои macOS со сменой по времени суток (по положению солнца, по времени или по светлой/тёмной теме): берётся кадр под текущее время; пока новый стол существует, кадр обновляется снимком при смене обоев (система сообщает об этом сама, без постоянного опроса) и раз в 5 минут (с разрешением на запись экрана это работает и для новых динамических обоев macOS). Положение солнца считается приблизительно (долгота по часовому поясу). Анимированные обои-видео по-прежнему показываются одним кадром.
+- Новый чистый рабочий стол берёт обои основного стола: после смены обоев на основном столе новые столы больше не показывают старые (обои считываются один раз, в момент создания стола).
+- После удаления нового стола и вопроса про его файлы всё запомненное (окно, счётчики проверки, обои) сбрасывается, и следующий новый стол начинает с нуля.
+- Новый чистый рабочий стол снимает обои иначе: всё, что система рисует под значками рабочего стола, одним снимком (раньше искалось одно окно обоев, а у новых обоев macOS такого окна может не быть). Что нашлось, пишется в «wallpaper-debug.txt» в папке настроек «Пуска».
 - Версия 8.0.
 
 ### Версия 7.0 — 2026-11-21
@@ -185,9 +189,13 @@
 - “Lode Runner”: a short tap in the direction opposite to the run only turns the runner around without a step, while holding the key turns and runs at once with no pause; digging is 50% faster.
 - Task Manager: the process list sometimes stayed empty on opening until you switched tabs; it now refreshes as soon as the first data arrives.
 - The red notes in Settings and in the permissions window (about Screen & System Audio Recording) now use the regular grey colour like the rest.
-- “Minimize All”: a new Settings switch “Also minimize Start and its windows”. Off — as before, Start and its tools are left alone; on — they are minimized with the other windows and restored the same way.
-- “Minimize All” with “Also minimize Start and its windows” on no longer crashes: the app’s own windows are minimized by the app itself, and the Start window itself is closed.
+- “Minimize All”: now also minimizes Start and its tools (restored the same way). A new Settings switch “Don’t minimize Start and its tools”: turn it on and they stay in place, as before; off by default.
+- “Minimize All” no longer crashes when minimizing Start and its tools: the app’s own windows are minimized by the app itself, and the Start window itself is closed (except when “Minimize All” is pressed with the button inside Start: then the main window stays).
 - Settings also open from the app menu in the menu bar (“Settings…”, ⌘,): the Start window appears right on the settings. The same item is in the menu of the “Minimize All” menu-bar icon.
+- The new clean desktop understands macOS dynamic wallpapers that change through the day (by sun position, time or light/dark appearance): it picks the frame for the current time; while a new desktop exists, the frame is refreshed with a screenshot when the wallpaper changes (the system reports it itself, no polling) and every 5 minutes (with the Screen Recording permission this also works for new macOS dynamic wallpapers). The sun position is approximate (longitude from the time zone). Animated video wallpapers are still shown as a single frame.
+- The new clean desktop takes the main desktop’s wallpaper: after you change the wallpaper on the main desktop, new desktops no longer show the old one (the wallpaper is read once, when the desktop is created).
+- After a new desktop is removed and its files are dealt with, everything remembered (window, check counters, wallpaper) is reset, so the next new desktop starts from scratch.
+- The new clean desktop captures the wallpaper differently: everything the system draws under the desktop icons in one shot (before, a single wallpaper window was looked up, which new macOS wallpapers may not have). What was found is written to “wallpaper-debug.txt” in Start’s settings folder.
 - Version 8.0.
 
 ### Version 7.0 — 2026-11-21
