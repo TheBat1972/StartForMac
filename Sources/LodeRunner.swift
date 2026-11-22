@@ -389,6 +389,9 @@ final class LodeView: NSView {
     private var holes: [Int: Int] = [:]
     private var digTimer = 0, digX = 0, digY = 0
     private var digReq = 0
+    private var turnKey: UInt16?                // нажата клавиша в обратную сторону: ждём, короткое это нажатие или удержание
+    private var turnTime = 0.0
+    private var digBonus = 0.0                  // копание на 50% быстрее: после раскопки следующий такт приходит раньше
     private var held: [UInt16] = []
     private var latched: UInt16?                 // быстрое нажатие: клавиша отпущена до такта, но направление не теряется
     private var revealed = false
@@ -515,6 +518,7 @@ final class LodeView: NSView {
     }
 
     func autoPause() {
+        turnKey = nil
         held.removeAll()
         digReq = 0
         if state == .playing {
@@ -553,9 +557,18 @@ final class LodeView: NSView {
         case .playing:
             acc += dt
             gacc += dt
+            if let tk = turnKey {
+                if !held.contains(tk) { turnKey = nil }                       // короткое нажатие: только разворот
+                else if now - turnTime >= 0.12 {                              // удержание: бежим сразу, без паузы
+                    turnKey = nil
+                    latched = tk
+                    acc = max(acc, tickDur)
+                }
+            }
             while acc >= tickDur && state == .playing {
                 tick()
                 acc -= tickDur
+                acc += digBonus; digBonus = 0
             }
             while gacc >= guardDur && state == .playing {
                 guardTick()
@@ -622,6 +635,7 @@ final class LodeView: NSView {
     // MARK: Шаг игры
 
     private func currentDir() -> (Int, Int) {
+        if turnKey != nil { return (0, 0) }
         for k in (held.isEmpty ? (latched.map { [$0] } ?? []) : held).reversed() {
             switch k {
             case 123, 0: return (-1, 0)
@@ -723,7 +737,7 @@ final class LodeView: NSView {
     private func stepRunner() {
         if digTimer > 0 {
             digTimer -= 1
-            if digTimer == 0 { openHole(digX, digY) }
+            if digTimer == 0 { openHole(digX, digY); digBonus = tickDur * 2.0 / 3.0 }
             return
         }
         let x = runner.x, y = runner.y
@@ -920,6 +934,17 @@ final class LodeView: NSView {
             kick()
             return
         case 123, 124, 125, 126, 0, 1, 2, 13:
+            if state == .playing, digTimer == 0, holes[idx(runner.x, runner.y)] == nil, supported(runner.x, runner.y) {
+                let d = (k == 123 || k == 0) ? -1 : ((k == 124 || k == 2) ? 1 : 0)
+                if d != 0 && d != runner.face {      // разворот: сначала только поворачиваемся, шаг будет со следующего такта
+                    runner.face = d
+                    turnKey = k
+                    turnTime = CACurrentMediaTime()
+                    held.removeAll { $0 == k }
+                    held.append(k)
+                    return
+                }
+            }
             held.removeAll { $0 == k }
             held.append(k)
             latched = k
@@ -934,8 +959,9 @@ final class LodeView: NSView {
     /// Отзывчивость: если текущий шаг уже почти завершён, не ждём конца такта, а сразу делаем следующий
     private func kick() {
         guard state == .playing, acc >= tickDur * 0.6 else { return }
+        digBonus = 0
         tick()
-        acc = 0
+        acc = digBonus; digBonus = 0
     }
 
     override func keyUp(with e: NSEvent) {

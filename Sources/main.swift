@@ -7617,6 +7617,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         AppTheme.apply()
         DispatchQueue.global(qos: .utility).async { cleanDropTemp() }
         setupMenu()
+        TMExtras.bootstrap()
         NotificationCenter.default.addObserver(forName: .languageChanged, object: nil, queue: .main) { [weak self] _ in
             self?.setupMenu()
         }

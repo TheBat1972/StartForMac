@@ -105,6 +105,8 @@ final class TMSampler: ObservableObject {
     @Published var batteryHistory: [Double] = []
 
     static let historyLength = 60
+    var windowVisible = false               // окно открыто: частый опрос; иначе (фон) — реже
+    private var skip = 0
 
     private var timer: Timer?
     private let queue = DispatchQueue(label: "tm.sampler", qos: .utility)
@@ -161,13 +163,16 @@ final class TMSampler: ObservableObject {
     func stop() {
         timer?.invalidate()
         timer = nil
+        TMJournal.shared.save()
     }
 
     // MARK: Действия
 
     /// Снять задачу: обычное завершение, а с `force` — принудительное
     func end(_ r: TMRow, force: Bool) {
-        if r.pids.contains(getpid()) { NSSound.beep(); return }
+        let k = TMGuard.kind(path: r.path, name: r.name, user: r.pids.first.flatMap { procs[$0]?.user } ?? "", pids: r.pids)
+        if !TMGuard.confirm(r.name, k, verb: T("Завершить")) { return }
+        if k == .selfApp { NSApp.terminate(nil); return }
         if r.isApp, let a = NSWorkspace.shared.runningApplications.first(where: { $0.bundleURL?.path == r.id }) {
             if force {
                 a.forceTerminate()
@@ -181,20 +186,44 @@ final class TMSampler: ObservableObject {
     }
 
     func endPid(_ pid: Int32, force: Bool) {
-        if pid == getpid() || pid <= 1 { NSSound.beep(); return }
+        if pid <= 1 { NSSound.beep(); return }
+        let p = procs[pid]
+        let k = TMGuard.kind(path: p?.path ?? "", name: p?.name ?? "", user: p?.user ?? "", pids: [pid])
+        if !TMGuard.confirm(p?.name ?? "\(pid)", k, verb: T("Завершить")) { return }
+        if k == .selfApp { NSApp.terminate(nil); return }
         if kill(pid, force ? SIGKILL : SIGTERM) != 0 { NSSound.beep() }
     }
 
     /// Приостановить / продолжить процесс
-    func suspend(_ pid: Int32, _ on: Bool) {
-        if pid == getpid() || pid <= 1 { NSSound.beep(); return }
-        if kill(pid, on ? SIGSTOP : SIGCONT) != 0 { NSSound.beep() }
+    func suspend(_ pid: Int32, _ on: Bool) { suspend([pid], on) }
+
+    func suspend(_ pids: [Int32], _ on: Bool) {
+        guard let first = pids.first else { return }
+        if pids.contains(getpid()) { NSSound.beep(); return }
+        if on {
+            let p = procs[first]
+            let k = TMGuard.kind(path: p?.path ?? "", name: p?.name ?? "", user: p?.user ?? "", pids: pids)
+            if !TMGuard.confirm(p?.name ?? "\(first)", k, verb: T("Приостановить")) { return }
+        }
+        for pid in pids where pid > 1 {
+            if kill(pid, on ? SIGSTOP : SIGCONT) != 0 { NSSound.beep() }
+        }
     }
 
     /// Приоритет (nice): повысить значение (сделать менее важным) можно без прав администратора
-    func setNice(_ pid: Int32, _ value: Int32) {
-        if pid <= 1 { NSSound.beep(); return }
-        if setpriority(PRIO_PROCESS, id_t(pid), value) != 0 { NSSound.beep() }
+    func setNice(_ pid: Int32, _ value: Int32) { setNice([pid], value) }
+
+    /// Повысить значение (понизить приоритет) можно сразу; понизить значение (повысить приоритет) просит пароль администратора
+    func setNice(_ pids: [Int32], _ value: Int32) {
+        var failed: [Int32] = []
+        for pid in pids where pid > 1 {
+            if setpriority(PRIO_PROCESS, id_t(pid), value) != 0 { failed.append(pid) }
+        }
+        guard !failed.isEmpty else { return }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let r = TMAdmin.run("/usr/bin/renice", ["-n", "\(value)", "-p"] + failed.map { "\($0)" })
+            if !r.ok { DispatchQueue.main.async { NSSound.beep() } }
+        }
     }
 
     func reveal(_ r: TMRow) {
@@ -210,6 +239,10 @@ final class TMSampler: ObservableObject {
     // MARK: Сбор
 
     private func sample() {
+        if !windowVisible {
+            skip += 1
+            if skip % 3 != 0 { return }
+        } else { skip = 0 }
         queue.async { [weak self] in self?.collect() }
         pollNettop()
     }
@@ -635,6 +668,7 @@ final class TMSampler: ObservableObject {
             self.gpuName = gpu?.0
             self.gpuNow = gpu?.1 ?? 0
             self.battery = bat
+            TMExtras.afterSample(self)
             func push(_ a: inout [Double], _ v: Double) {
                 a.append(v)
                 if a.count > TMSampler.historyLength { a.removeFirst(a.count - TMSampler.historyLength) }
@@ -697,17 +731,32 @@ func tmEnergyColor(_ e: Double) -> Color {
 struct TMRootView: View {
     @ObservedObject private var s = TMSampler.shared
     @State private var tab = 0
+    @State private var showRules = false
+    @State private var onTop = UserDefaults.standard.bool(forKey: "tm.onTop")
+    @State private var menuBar = UserDefaults.standard.bool(forKey: "tm.menubar")
 
     private func tabButton(_ title: String, _ i: Int) -> some View {
         Button { tab = i } label: {
             Text(title)
                 .font(.system(size: 13, weight: tab == i ? .semibold : .regular))
                 .foregroundColor(tab == i ? .accentColor : .secondary)
-                .padding(.horizontal, 14).padding(.vertical, 7)
+                .padding(.horizontal, 10).padding(.vertical, 7)
                 .overlay(Rectangle().fill(tab == i ? Color.accentColor : Color.clear).frame(height: 2), alignment: .bottom)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+
+    private func toolButton(_ icon: String, _ help: String, _ on: Bool, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 13))
+                .foregroundColor(on ? .accentColor : .secondary)
+                .frame(width: 28, height: 26)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(help)
     }
 
     var body: some View {
@@ -715,9 +764,22 @@ struct TMRootView: View {
             HStack(spacing: 0) {
                 tabButton(T("Процессы"), 0)
                 tabButton(T("Производительность"), 1)
+                tabButton(T("Журнал"), 5)
                 tabButton(T("Подробности"), 4)
+                if TMUsers.count(s.procs) > 1 { tabButton(T("Пользователи"), 6) }
+                tabButton(T("Службы"), 7)
                 tabButton(T("Автозагрузка"), 2)
                 Spacer()
+                toolButton(onTop ? "pin.fill" : "pin", T("Поверх остальных окон"), onTop) {
+                    onTop.toggle()
+                    TMWindowController.shared.setOnTop(onTop)
+                }
+                toolButton("chart.xyaxis.line", T("Значок с графиком ЦП в строке меню"), menuBar) {
+                    menuBar.toggle()
+                    TMMenuBar.shared.setEnabled(menuBar)
+                }
+                toolButton("bolt.badge.clock", T("Автоматические действия"), TMRules.shared.enabled) { showRules = true }
+                    .popover(isPresented: $showRules) { TMRulesView() }
             }
             .padding(.horizontal, 8)
             Divider()
@@ -725,6 +787,9 @@ struct TMRootView: View {
             case 0: TMProcessesView(s: s)
             case 1: TMPerformanceView(s: s)
             case 2: TMStartupView()
+            case 5: TMJournalView()
+            case 6: TMUsersView(s: s)
+            case 7: TMServicesView(s: s)
             default: TMDetailsView(s: s)
             }
         }
@@ -901,6 +966,13 @@ struct TMProcessesView: View {
         .contextMenu {
             Button(T("Снять задачу")) { s.end(r, force: false) }
             Button(T("Принудительно завершить")) { s.end(r, force: true) }
+            Divider()
+            Button(T("Приостановить")) { s.suspend(r.pids, true) }
+            Button(T("Продолжить")) { s.suspend(r.pids, false) }
+            Menu(T("Приоритет")) {
+                ForEach(TMPriority.all) { pr in Button(pr.title) { s.setNice(r.pids, pr.value) } }
+            }
+            Divider()
             if canExpand { Button(expanded.contains(r.id) ? T("Свернуть") : T("Развернуть")) {
                 if expanded.contains(r.id) { expanded.remove(r.id) } else { expanded.insert(r.id) } } }
             if !r.path.isEmpty {
@@ -1066,8 +1138,9 @@ struct TMDetailsView: View {
         Button(T("Приостановить")) { s.suspend(p.id, true) }
         Button(T("Продолжить")) { s.suspend(p.id, false) }
         Divider()
-        Button(T("Понизить приоритет")) { s.setNice(p.id, 10) }
-        Button(T("Обычный приоритет")) { s.setNice(p.id, 0) }
+        Menu(T("Приоритет")) {
+            ForEach(TMPriority.all) { pr in Button(pr.title) { s.setNice([p.id], pr.value) } }
+        }
         if !p.path.isEmpty {
             Divider()
             Button(T("Показать в Finder")) { s.reveal(path: p.path) }
@@ -1450,11 +1523,11 @@ final class TMWindowController: NSObject, NSWindowDelegate {
 
     func show() {
         if window == nil {
-            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 620),
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 980, height: 620),
                              styleMask: [.titled, .closable, .miniaturizable, .resizable],
                              backing: .buffered, defer: false)
             w.isReleasedWhenClosed = false
-            w.minSize = NSSize(width: 760, height: 460)
+            w.minSize = NSSize(width: 880, height: 460)
             w.contentView = NSHostingView(rootView: LangRefresh { TMRootView() })
             w.delegate = self
             if !w.setFrameUsingName("TMWindow") { w.center() }
@@ -1463,7 +1536,9 @@ final class TMWindowController: NSObject, NSWindowDelegate {
             NotificationCenter.default.addObserver(self, selector: #selector(languageChanged), name: .languageChanged, object: nil)
         }
         window?.title = T("Диспетчер задач")
+        TMSampler.shared.windowVisible = true
         TMSampler.shared.start()
+        window?.level = UserDefaults.standard.bool(forKey: "tm.onTop") ? .floating : .normal
         NSApp.windows.compactMap { $0 as? PopupWindow }.forEach { $0.orderOut(nil) }
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
@@ -1473,7 +1548,14 @@ final class TMWindowController: NSObject, NSWindowDelegate {
         window?.title = T("Диспетчер задач")
     }
 
+    func setOnTop(_ on: Bool) {
+        UserDefaults.standard.set(on, forKey: "tm.onTop")
+        window?.level = on ? .floating : .normal
+    }
+
     func windowWillClose(_ notification: Notification) {
-        TMSampler.shared.stop()
+        TMSampler.shared.windowVisible = false
+        TMJournal.shared.save()
+        if !TMExtras.keepRunning { TMSampler.shared.stop() }
     }
 }
