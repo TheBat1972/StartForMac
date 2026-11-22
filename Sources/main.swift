@@ -6297,7 +6297,7 @@ enum AppInfo {
     }
 }
 
-struct SettingsOverlay: View {
+struct SettingsView: View {
     let store: Store
     @ObservedObject var mc: MinimizeController
     let resetPlacement: () -> Void
@@ -6389,6 +6389,8 @@ struct SettingsOverlay: View {
         }
     }
 
+    @State private var clipRemember = ClipboardHistory.remember
+
     private func toggleRow(_ title: String, _ on: Bool, disabled: Bool = false, _ set: @escaping (Bool) -> Void) -> some View {
         HStack(alignment: .center, spacing: 12) {
             Text(title).fixedSize(horizontal: false, vertical: true)
@@ -6408,19 +6410,33 @@ struct SettingsOverlay: View {
         .opacity(disabled ? 0.55 : 1)
     }
 
-    var body: some View {
-        ZStack {
-            Color.black.opacity(0.4).contentShape(Rectangle()).onTapGesture { }
-            VStack(spacing: 0) {
-                HStack {
-                    Text(T("Настройки StartForMac")).font(.headline)
-                    Spacer()
-                }
-                .padding(16)
-                Divider()
-                ScrollViewReader { proxy in
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 18) {
+    private enum Tab: String, CaseIterable, Identifiable {
+        case interface, control, windows, finder, layout
+        var id: String { rawValue }
+        var title: String {
+            switch self {
+            case .interface: return T("Интерфейс")
+            case .control: return T("Управление")
+            case .windows: return T("Окна")
+            case .finder: return T("Finder и рабочий стол")
+            case .layout: return T("Раскладка")
+            }
+        }
+        var symbol: String {
+            switch self {
+            case .interface: return "paintbrush"
+            case .control: return "keyboard"
+            case .windows: return "macwindow.on.rectangle"
+            case .finder: return "folder"
+            case .layout: return "globe"
+            }
+        }
+    }
+
+    @State private var tab: Tab = .interface
+
+    private var interfaceTab: some View {
+        VStack(alignment: .leading, spacing: 18) {
                         section(T("Язык")) {
                             Picker("", selection: Binding(get: { store.language }, set: { store.setLanguage($0) })) {
                                 ForEach(AppLanguage.allCases, id: \.self) { Text(languageTitle($0)).tag($0) }
@@ -6446,6 +6462,65 @@ struct SettingsOverlay: View {
                             .labelsHidden()
                         }
                         sep()
+                        section(T("Запуск")) {
+                            toggleRow(T("Запускать при входе в систему"), mc.loginOn) { mc.setLogin($0) }
+                            toggleRow(T("Значок в верхней панели"), mc.trayOn) { mc.setTray($0) }
+                        }
+                        sep()
+                        section(T("Окно «Пуска»")) {
+                            HStack { Spacer(); Button(T("Вернуть размер и положение окна по умолчанию…")) { confirmReset = true }.frame(width: 340); Spacer() }
+                            if confirmReset {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text(T("Вернуть размер и положение окна?")).font(.system(size: 13, weight: .semibold))
+                                    Text(T("Окно «StartForMac» станет стандартного размера и встанет у Dock."))
+                                        .font(.caption).foregroundColor(.secondary)
+                                    HStack {
+                                        Button(T("Отмена")) { confirmReset = false }
+                                        Button(T("Вернуть")) { confirmReset = false; resetPlacement() }
+                                    }
+                                }
+                                .padding(10)
+                                .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.06)))
+                                .id("confirmReset")
+                            }
+                            HStack { Spacer(); Button(T("Закрепить в Dock первым (справа от Finder)…")) { confirmPin = true }.frame(width: 340); Spacer() }
+                            if confirmPin {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text(T("Закрепить «StartForMac» в Dock?")).font(.system(size: 13, weight: .semibold))
+                                    Text(T("Иконка встанет первой справа от Finder. Dock на секунду перезапустится. Делайте это, когда «StartForMac» лежит на своём постоянном месте."))
+                                        .font(.caption).foregroundColor(.secondary)
+                                    HStack {
+                                        Button(T("Отмена")) { confirmPin = false }
+                                        Button(T("Закрепить")) { confirmPin = false; mc.pinToDock() }
+                                    }
+                                }
+                                .padding(10)
+                                .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.06)))
+                                .id("confirmPin")
+                            }
+                        }
+                        sep()
+                        section(T("Конвертер валют в поиске")) {
+                            Text(T("Если в поиске указана одна валюта без «в …», например «100 долларов», она переводится в основную, а основная — во вторую."))
+                                .font(.caption).foregroundColor(.secondary)
+                            HStack {
+                                Text(T("Основная валюта"))
+                                Spacer()
+                                currencyPicker(Binding(get: { quickBase },
+                                                       set: { v in if v == quickAlt { quickAlt = quickBase }; quickBase = v }))
+                            }
+                            HStack {
+                                Text(T("Вторая валюта"))
+                                Spacer()
+                                currencyPicker(Binding(get: { quickAlt },
+                                                       set: { v in if v == quickBase { quickBase = quickAlt }; quickAlt = v }))
+                            }
+                        }
+        }
+    }
+
+    private var controlTab: some View {
+        VStack(alignment: .leading, spacing: 18) {
                         section(T("Горячие клавиши")) {
                             hotkeyRow(T("Открыть или скрыть «StartForMac»"), combo: mc.startComboTitle, forStart: true)
                             hotkeyRow(T("Свернуть все окна"), combo: mc.minimizeComboTitle, forStart: false)
@@ -6481,6 +6556,34 @@ struct SettingsOverlay: View {
                             }
                         }
                         sep()
+                        section(T("Буфер обмена")) {
+                            toggleRow(T("Умный буфер обмена — ⇧⌘V"), mc.clipOn) { mc.setClip($0) }
+                            Text(T("История последних копирований (текст, картинки, файлы). ⇧⌘V открывает список у курсора: выбор стрелками или цифрами, Enter вставляет, P закрепляет запись, ⌫ убирает. Значок буфера на верхней панели «Пуска» открывает тот же список — клик копирует запись. Закреплённые записи не вытесняются и не считаются в лимите. Пароли не сохраняются (скрытые копии и менеджеры паролей пропускаются), по умолчанию история хранится только в памяти; запоминать её между запусками можно отдельной настройкой (хранится на диске без шифрования). Для автоматической вставки нужен доступ «Управление устройством и доступ к данным» (в ранних версиях macOS: «Универсальный доступ»)."))
+                                .font(.caption).foregroundColor(.secondary)
+                            if mc.clipOn {
+                                toggleRow(T("Запоминать историю между запусками"), clipRemember) {
+                                    clipRemember = $0
+                                    ClipboardHistory.shared.setRemember($0)
+                                }
+                                Text(T("Выключено: история живёт только в памяти и исчезает при выходе. Включено: она сохраняется на диске без шифрования (текст, картинки, пути файлов) и возвращается после запуска; пароли по-прежнему не сохраняются. Если выключить, сохранённая копия стирается."))
+                                    .font(.caption).foregroundColor(.secondary)
+                                HStack {
+                                    Text(T("Сколько записей хранить"))
+                                    Spacer()
+                                    Picker("", selection: Binding(get: { mc.clipLimit }, set: { mc.setClipLimit($0) })) {
+                                        Text("3").tag(3)
+                                        Text("5").tag(5)
+                                        Text("10").tag(10)
+                                    }
+                                    .pickerStyle(.segmented).labelsHidden().frame(width: 150)
+                                }
+                            }
+                        }
+        }
+    }
+
+    private var windowsTab: some View {
+        VStack(alignment: .leading, spacing: 18) {
                         section(T("Свернуть всё")) {
                             toggleRow(T("Возвращать окна, если экран пуст"), mc.restoreOn) { mc.setRestore($0) }
                             toggleRow(T("Сворачивать по клику в Dock"), mc.dockOn) { mc.setDock($0) }
@@ -6489,31 +6592,29 @@ struct SettingsOverlay: View {
                                 .font(.caption).foregroundColor(.secondary)
                         }
                         sep()
-                        section(T("Конвертер валют в поиске")) {
-                            Text(T("Если в поиске указана одна валюта без «в …», например «100 долларов», она переводится в основную, а основная — во вторую."))
-                                .font(.caption).foregroundColor(.secondary)
-                            HStack {
-                                Text(T("Основная валюта"))
-                                Spacer()
-                                currencyPicker(Binding(get: { quickBase },
-                                                       set: { v in if v == quickAlt { quickAlt = quickBase }; quickBase = v }))
-                            }
-                            HStack {
-                                Text(T("Вторая валюта"))
-                                Spacer()
-                                currencyPicker(Binding(get: { quickAlt },
-                                                       set: { v in if v == quickBase { quickBase = quickAlt }; quickAlt = v }))
-                            }
-                        }
-                        sep()
-                        section(T("Система")) {
-                            toggleRow(T("Запускать при входе в систему"), mc.loginOn) { mc.setLogin($0) }
-                            toggleRow(T("Значок в верхней панели"), mc.trayOn) { mc.setTray($0) }
-                            sep()
+                        section(T("Окна")) {
                             toggleRow(T("Окна по ⌃⌥ + стрелки"), mc.snapOn) { mc.setSnap($0) }
                             Text(T("Активное окно любого приложения: ⌃⌥← и ⌃⌥→ — в левую или правую половину экрана (если размер окна не меняется, окно просто сдвигается до края), ⌃⌥↑ — на весь экран, ⌃⌥↓ — свернуть в Dock. Нужен доступ «Управление устройством и доступ к данным» (в ранних версиях macOS: «Универсальный доступ»)."))
                                 .font(.caption).foregroundColor(.secondary)
                             sep()
+                            toggleRow(T("Переключение окон по ⌥Tab"), mc.switcherOn) { mc.setSwitcher($0) }
+                            Text(T("Option + Tab показывает окна (а не приложения целиком) с миниатюрами. Пока Option зажат: Tab или ⇧Tab, стрелки — выбор окна; можно печатать название окна или программы — список сужается (⌫ стирает); Enter или отпустить Option — выбранное окно выходит вперёд, Esc — отмена; на плитке под курсором есть кнопки «закрыть», «свернуть» и «на весь экран». Нужен доступ «Управление устройством и доступ к данным» (в ранних версиях macOS: «Универсальный доступ»)."))
+                                .font(.caption).foregroundColor(.secondary)
+                            sep()
+                            toggleRow(T("Миниатюры окон"), mc.thumbsOn) { mc.setThumbs($0) }
+                            Text(T("Запись экрана и системного звука запрашивается только для того, чтобы сделать снимок каждого окна и показать его миниатюрой в ⌥Tab и при наведении на значок в Dock. Звук не записывается, снимки нигде не сохраняются и никуда не передаются. Разрешение можно не давать: тогда вместо миниатюр показываются значки приложений."))
+                                .font(.caption).foregroundColor(.secondary)
+                            sep()
+                            toggleRow(T("Окна при наведении на значок в Dock"), mc.dockPreviewOn) { mc.setDockPreview($0) }
+                            Text(T("Если задержать курсор на значке запущенного приложения в Dock (около 0,3 с), над значком появятся его окна (в том числе свёрнутые). Клик по окну выводит его вперёд, на плитке есть кнопки «закрыть», «свернуть» и «на весь экран». Нужен доступ «Управление устройством и доступ к данным» (в ранних версиях macOS: «Универсальный доступ»). Миниатюры включаются выключателем выше."))
+                                .font(.caption).foregroundColor(.secondary)
+                        }
+        }
+    }
+
+    private var finderTab: some View {
+        VStack(alignment: .leading, spacing: 18) {
+                        section(T("Finder и рабочий стол")) {
                             toggleRow(T("Кнопка «+» — новый чистый рабочий стол"), mc.cleanDeskOn) { mc.setCleanDesk($0) }
                             Text(T("Справа от замка на верхней панели появляется «+»: он создаёт новый рабочий стол macOS и переходит на него. Новый стол совершенно чистый: на нём своё окно со своими значками (файлы лежат в папке «Рабочие столы» в домашней папке, не в iCloud), файлы основного стола не затрагиваются и ничего не перекачивается. Файлы можно перетащить на новый стол из Finder и обратно, работают ⌘C, ⌘V и (если включено) ⌘X, двойной щелчок открывает файл. Если новый стол удалить (в Mission Control), программа спросит, что сделать с его файлами: в Корзину, на основной стол или оставить папку; то же при запуске, если стола уже нет."))
                                 .font(.caption).foregroundColor(.secondary)
@@ -6546,19 +6647,13 @@ struct SettingsOverlay: View {
                                         .font(.caption).foregroundColor(.secondary)
                                 }
                             }
-                            sep()
-                            toggleRow(T("Переключение окон по ⌥Tab"), mc.switcherOn) { mc.setSwitcher($0) }
-                            Text(T("Option + Tab показывает окна (а не приложения целиком) с миниатюрами. Пока Option зажат: Tab или ⇧Tab, стрелки — выбор окна; можно печатать название окна или программы — список сужается (⌫ стирает); Enter или отпустить Option — выбранное окно выходит вперёд, Esc — отмена; на плитке под курсором есть кнопки «закрыть», «свернуть» и «на весь экран». Нужен доступ «Управление устройством и доступ к данным» (в ранних версиях macOS: «Универсальный доступ»)."))
-                                .font(.caption).foregroundColor(.secondary)
-                            sep()
-                            toggleRow(T("Миниатюры окон"), mc.thumbsOn) { mc.setThumbs($0) }
-                            Text(T("Запись экрана и системного звука запрашивается только для того, чтобы сделать снимок каждого окна и показать его миниатюрой в ⌥Tab и при наведении на значок в Dock. Звук не записывается, снимки нигде не сохраняются и никуда не передаются. Разрешение можно не давать: тогда вместо миниатюр показываются значки приложений."))
-                                .font(.caption).foregroundColor(.secondary)
-                            sep()
-                            toggleRow(T("Окна при наведении на значок в Dock"), mc.dockPreviewOn) { mc.setDockPreview($0) }
-                            Text(T("Если задержать курсор на значке запущенного приложения в Dock (около 0,3 с), над значком появятся его окна (в том числе свёрнутые). Клик по окну выводит его вперёд, на плитке есть кнопки «закрыть», «свернуть» и «на весь экран». Нужен доступ «Управление устройством и доступ к данным» (в ранних версиях macOS: «Универсальный доступ»). Миниатюры включаются выключателем выше."))
-                                .font(.caption).foregroundColor(.secondary)
-                            sep()
+                        }
+        }
+    }
+
+    private var layoutTab: some View {
+        VStack(alignment: .leading, spacing: 18) {
+                        section(T("Раскладка")) {
                             toggleRow(T("Автоматический переключатель раскладки"), mc.layoutOn) { mc.setLayout($0) }
                             Text(T("Слово, набранное не в той раскладке («ghbdtn»), после пробела, Tab или Enter заменяется на правильное («привет»), и раскладка переключается. Решает системная проверка орфографии (нужны русский и английский словари в macOS); всё считается на этом Mac, набранный текст нигде не сохраняется и никуда не передаётся. Сочетание ниже исправляет слово, которое набираете сейчас, выделенный текст или последнее слово. Нужен доступ «Управление устройством и доступ к данным» (в ранних версиях macOS: «Универсальный доступ»): программа запросит его при включении."))
                                 .font(.caption).foregroundColor(.secondary)
@@ -6598,77 +6693,111 @@ struct SettingsOverlay: View {
                             toggleRow(T("Флаг раскладки на экране"), mc.layoutFlagOn) { mc.setLayoutFlag($0) }
                             Text(T("Маленький флаг поверх окон показывает текущую раскладку. Клик по флагу — следующая раскладка, перетаскивание — двигает флаг, правая кнопка — размер и возврат в угол экрана. Разрешений не требует."))
                                 .font(.caption).foregroundColor(.secondary)
-                            sep()
-                            toggleRow(T("Умный буфер обмена — ⇧⌘V"), mc.clipOn) { mc.setClip($0) }
-                            Text(T("История последних копирований (текст, картинки, файлы). ⇧⌘V открывает список у курсора: выбор стрелками или цифрами, Enter вставляет, P закрепляет запись, ⌫ убирает. Значок буфера на верхней панели «Пуска» открывает тот же список — клик копирует запись. Закреплённые записи не вытесняются и не считаются в лимите. Пароли не сохраняются (скрытые копии и менеджеры паролей пропускаются), история хранится только в памяти и исчезает при выходе из программы. Для автоматической вставки нужен доступ «Управление устройством и доступ к данным» (в ранних версиях macOS: «Универсальный доступ»)."))
-                                .font(.caption).foregroundColor(.secondary)
-                            if mc.clipOn {
-                                HStack {
-                                    Text(T("Сколько записей хранить"))
-                                    Spacer()
-                                    Picker("", selection: Binding(get: { mc.clipLimit }, set: { mc.setClipLimit($0) })) {
-                                        Text("3").tag(3)
-                                        Text("5").tag(5)
-                                        Text("10").tag(10)
-                                    }
-                                    .pickerStyle(.segmented).labelsHidden().frame(width: 150)
-                                }
-                            }
-                            HStack { Spacer(); Button(T("Вернуть размер и положение окна по умолчанию…")) { confirmReset = true }.frame(width: 340); Spacer() }
-                            if confirmReset {
-                                VStack(alignment: .leading, spacing: 8) {
-                                    Text(T("Вернуть размер и положение окна?")).font(.system(size: 13, weight: .semibold))
-                                    Text(T("Окно «StartForMac» станет стандартного размера и встанет у Dock."))
-                                        .font(.caption).foregroundColor(.secondary)
-                                    HStack {
-                                        Button(T("Отмена")) { confirmReset = false }
-                                        Button(T("Вернуть")) { confirmReset = false; resetPlacement() }
-                                    }
-                                }
-                                .padding(10)
-                                .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.06)))
-                                .id("confirmReset")
-                            }
-                            HStack { Spacer(); Button(T("Закрепить в Dock первым (справа от Finder)…")) { confirmPin = true }.frame(width: 340); Spacer() }
-                            if confirmPin {
-                                VStack(alignment: .leading, spacing: 8) {
-                                    Text(T("Закрепить «StartForMac» в Dock?")).font(.system(size: 13, weight: .semibold))
-                                    Text(T("Иконка встанет первой справа от Finder. Dock на секунду перезапустится. Делайте это, когда «StartForMac» лежит на своём постоянном месте."))
-                                        .font(.caption).foregroundColor(.secondary)
-                                    HStack {
-                                        Button(T("Отмена")) { confirmPin = false }
-                                        Button(T("Закрепить")) { confirmPin = false; mc.pinToDock() }
-                                    }
-                                }
-                                .padding(10)
-                                .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.06)))
-                                .id("confirmPin")
-                            }
                         }
+        }
+    }
+
+    @ViewBuilder private var currentTab: some View {
+        switch tab {
+        case .interface: interfaceTab
+        case .control: controlTab
+        case .windows: windowsTab
+        case .finder: finderTab
+        case .layout: layoutTab
+        }
+    }
+
+    var body: some View {
+        ZStack {
+            VStack(spacing: 0) {
+                HStack(spacing: 0) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(Tab.allCases) { t in
+                            Button { mc.cancelRecording(); tab = t } label: {
+                                HStack(spacing: 8) {
+                                    Image(systemName: t.symbol).frame(width: 20)
+                                    Text(t.title).lineLimit(2)
+                                    Spacer(minLength: 0)
+                                }
+                                .padding(.horizontal, 10).padding(.vertical, 8)
+                                .background(RoundedRectangle(cornerRadius: 7).fill(tab == t ? Color.accentColor.opacity(0.22) : Color.clear))
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        Spacer()
+                        Button(T("Разрешения…")) { store.showPermissions = true }
                     }
-                    .padding(16)
-                }
-                // плашка подтверждения появляется внизу списка — прокручиваем к ней, чтобы она была сразу видна
-                .onChange(of: confirmReset) { on in if on { scrollTo(proxy, "confirmReset") } }
-                .onChange(of: confirmPin) { on in if on { scrollTo(proxy, "confirmPin") } }
-                .onChange(of: confirmPinch) { on in if on { scrollTo(proxy, "confirmPinch") } }
+                    .padding(12)
+                    .frame(width: 210)
+                    Divider()
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            currentTab
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(20)
+                        }
+                        // плашка подтверждения появляется внизу списка — прокручиваем к ней, чтобы она была сразу видна
+                        .onChange(of: confirmReset) { on in if on { scrollTo(proxy, "confirmReset") } }
+                        .onChange(of: confirmPin) { on in if on { scrollTo(proxy, "confirmPin") } }
+                        .onChange(of: confirmPinch) { on in if on { scrollTo(proxy, "confirmPinch") } }
+                    }
                 }
                 Divider()
                 HStack {
                     Spacer()
-                    Button(T("Готово")) { mc.cancelRecording(); store.showSettings = false }
+                    Button(T("Готово")) { mc.cancelRecording(); SettingsWindowController.shared.close() }
                         .keyboardShortcut(.defaultAction)
                 }
                 .padding(12)
             }
-            .frame(width: 440)
-            .frame(maxHeight: 520)
-            .background(RoundedRectangle(cornerRadius: 12).fill(Color(NSColor.windowBackgroundColor)))
-            .shadow(radius: 20)
-            .padding(20)
+            if store.showPermissions { PermissionsOverlay(store: store) }
         }
         .onAppear { mc.syncSettings() }
     }
+}
+
+struct SettingsWindowRoot: View {
+    @ObservedObject var store: Store
+    @ObservedObject var mc: MinimizeController
+    let resetPlacement: () -> Void
+    var body: some View {
+        SettingsView(store: store, mc: mc, resetPlacement: resetPlacement).id(store.language)
+    }
+}
+
+final class SettingsWindowController: NSObject, NSWindowDelegate {
+    static let shared = SettingsWindowController()
+    private var window: NSWindow?
+    private var mc: MinimizeController?
+
+    /// Настройки — отдельное окно с вкладками (раньше были плашкой внутри «Пуска»)
+    func show(store: Store, mc: MinimizeController, resetPlacement: @escaping () -> Void) {
+        self.mc = mc
+        if window == nil {
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 640),
+                             styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                             backing: .buffered, defer: false)
+            w.isReleasedWhenClosed = false
+            w.minSize = NSSize(width: 700, height: 480)
+            w.contentView = NSHostingView(rootView: SettingsWindowRoot(store: store, mc: mc, resetPlacement: resetPlacement))
+            w.delegate = self
+            if !w.setFrameUsingName("SettingsWindow") { w.center() }
+            w.setFrameAutosaveName("SettingsWindow")
+            window = w
+            NotificationCenter.default.addObserver(self, selector: #selector(languageChanged), name: .languageChanged, object: nil)
+        }
+        window?.title = T("Настройки StartForMac")
+        NSApp.windows.compactMap { $0 as? PopupWindow }.forEach { $0.orderOut(nil) }
+        NSApp.activate(ignoringOtherApps: true)
+        window?.makeKeyAndOrderFront(nil)
+    }
+
+    func close() { window?.close() }
+
+    @objc private func languageChanged() { window?.title = T("Настройки StartForMac") }
+
+    func windowWillClose(_ notification: Notification) { mc?.cancelRecording() }
 }
 
 struct RootView: View {
@@ -6937,7 +7066,7 @@ struct RootView: View {
                         Text(T("Не давать компьютеру уснуть"))
                             .font(.caption).foregroundColor(.accentColor).lineLimit(1)
                     }
-                    Button { store.showSettings = true } label: {
+                    Button { (NSApp.delegate as? AppDelegate)?.openSettings() } label: {
                         Image(systemName: "gearshape.2")
                             .padding(5).contentShape(Rectangle())
                     }
@@ -7061,7 +7190,6 @@ struct RootView: View {
         .overlay {
             if let m = store.uninstall { UninstallOverlay(model: m, store: store) }
             if let q = store.quitAll { QuitAllOverlay(model: q, store: store) }
-            if store.showSettings, let mc = store.minimize { SettingsOverlay(store: store, mc: mc, resetPlacement: resetPlacement) }
             if let d = store.folderDraft { FolderEditorOverlay(draft: d, store: store).id(d.key) }
             if let n = store.styleEditing { CategoryStyleOverlay(name: n, store: store).id(n) }
             if let d = store.linkDraft { LinkEditorOverlay(draft: d, store: store).id(d.key) }
@@ -7806,10 +7934,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// «Настройки…» из меню программы: открывает окно «Пуска» сразу на настройках
     @objc func openSettings() {
-        show()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-            self?.store.showSettings = true
-        }
+        SettingsWindowController.shared.show(store: store, mc: minimize, resetPlacement: { [weak self] in self?.resetPlacement() })
     }
 
     private func setupMenu() {

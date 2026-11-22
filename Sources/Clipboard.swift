@@ -4,7 +4,8 @@ import Carbon.HIToolbox
 
 // MARK: - Умный буфер обмена
 //
-// История последних копирований (текст, картинки, файлы) — только в памяти, после выхода из программы она пуста.
+// История последних копирований (текст, картинки, файлы) при включённой настройке «Запоминать» сохраняется на диск (~/Library/Application Support/StartMenu/Clipboard)
+// и восстанавливается при запуске; по умолчанию — только в памяти. Выключение умного буфера стирает и сохранённую копию.
 // Закреплённые записи не вытесняются новыми и не считаются в лимите. Пароли не сохраняются: пропускаются копии,
 // помеченные менеджерами паролей как скрытые, и всё, что скопировано из самих менеджеров паролей.
 // Вход: ⇧⌘V (панель у курсора, выбор стрелками / цифрами, Enter вставляет) и значок на верхней панели «Пуска»
@@ -12,7 +13,7 @@ import Carbon.HIToolbox
 
 struct ClipItem: Identifiable {
     enum Kind { case text, image, files }
-    let id = UUID()
+    var id = UUID()
     var kind: Kind
     var text = ""
     var data: Data?
@@ -38,6 +39,11 @@ final class ClipboardHistory: ObservableObject {
         get { UserDefaults.standard.object(forKey: "clip.enabled") as? Bool ?? false }
         set { UserDefaults.standard.set(newValue, forKey: "clip.enabled") }
     }
+    /// Запоминать историю между запусками (по умолчанию выключено)
+    static var remember: Bool {
+        get { UserDefaults.standard.object(forKey: "clip.remember") as? Bool ?? false }
+        set { UserDefaults.standard.set(newValue, forKey: "clip.remember") }
+    }
     static var limit: Int {
         get {
             let v = UserDefaults.standard.integer(forKey: "clip.limit")
@@ -46,7 +52,11 @@ final class ClipboardHistory: ObservableObject {
         set { UserDefaults.standard.set(newValue, forKey: "clip.limit") }
     }
 
-    @Published private(set) var items: [ClipItem] = []
+    @Published private(set) var items: [ClipItem] = [] {
+        didSet { scheduleSave() }
+    }
+    private var loaded = false
+    private var saveWork: DispatchWorkItem?
     @Published var enabled = ClipboardHistory.enabled
 
     private var timer: Timer?
@@ -77,12 +87,26 @@ final class ClipboardHistory: ObservableObject {
         } else {
             stop()
             items.removeAll()
+            saveWork?.cancel()
+            try? FileManager.default.removeItem(at: ClipboardHistory.storeDir)
+            loaded = false
         }
     }
 
     func start() {
         guard ClipboardHistory.enabled, timer == nil else { return }
         enabled = true
+        if !loaded {
+            loaded = true
+            if ClipboardHistory.remember {
+                let old = items
+                load()
+                if !old.isEmpty { items = old + items; trim() }
+            }
+            NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
+                self?.saveNow()
+            }
+        }
         lastCount = NSPasteboard.general.changeCount
         let t = Timer(timeInterval: 0.4, repeats: true) { [weak self] _ in self?.poll() }
         RunLoop.main.add(t, forMode: .common)
@@ -99,10 +123,104 @@ final class ClipboardHistory: ObservableObject {
         ClipPanelController.shared.close()
     }
 
+    func setRemember(_ on: Bool) {
+        ClipboardHistory.remember = on
+        if on {
+            saveNow()
+        } else {
+            saveWork?.cancel()
+            try? FileManager.default.removeItem(at: ClipboardHistory.storeDir)
+        }
+    }
+
     func setLimit(_ n: Int) {
         ClipboardHistory.limit = n
         trim()
         objectWillChange.send()
+    }
+
+    // MARK: сохранение между запусками
+
+    private struct Stored: Codable {
+        var kind: String
+        var text: String
+        var label: String
+        var paths: [String]
+        var pinned: Bool
+        var key: String
+        var file: String?
+    }
+
+    private static var storeDir: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("StartMenu/Clipboard", isDirectory: true)
+    }
+
+    private func scheduleSave() {
+        guard loaded, ClipboardHistory.enabled, ClipboardHistory.remember else { return }
+        saveWork?.cancel()
+        let w = DispatchWorkItem { [weak self] in self?.saveNow() }
+        saveWork = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: w)
+    }
+
+    private func saveNow() {
+        guard loaded, ClipboardHistory.enabled, ClipboardHistory.remember else { return }
+        let fm = FileManager.default
+        let dir = ClipboardHistory.storeDir
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        var out: [Stored] = []
+        var keep: Set<String> = ["index.json"]
+        for it in items {
+            var st = Stored(kind: "", text: it.text, label: it.label, paths: it.urls.map { $0.path }, pinned: it.pinned, key: it.key, file: nil)
+            switch it.kind {
+            case .text: st.kind = "t"
+            case .files: st.kind = "f"
+            case .image:
+                st.kind = "i"
+                let name = it.id.uuidString + ".img"
+                st.file = name
+                keep.insert(name)
+                let u = dir.appendingPathComponent(name)
+                if !fm.fileExists(atPath: u.path), let d = it.data { try? d.write(to: u, options: .atomic) }
+            }
+            out.append(st)
+        }
+        if let d = try? JSONEncoder().encode(out) {
+            try? d.write(to: dir.appendingPathComponent("index.json"), options: .atomic)
+        }
+        for f in (try? fm.contentsOfDirectory(atPath: dir.path)) ?? [] where !keep.contains(f) {
+            try? fm.removeItem(at: dir.appendingPathComponent(f))
+        }
+    }
+
+    private func load() {
+        let dir = ClipboardHistory.storeDir
+        guard let d = try? Data(contentsOf: dir.appendingPathComponent("index.json")),
+              let list = try? JSONDecoder().decode([Stored].self, from: d) else { return }
+        var res: [ClipItem] = []
+        for st in list {
+            switch st.kind {
+            case "t":
+                var it = ClipItem(kind: .text, key: st.key); it.text = st.text; it.pinned = st.pinned
+                res.append(it)
+            case "f":
+                let urls = st.paths.map { URL(fileURLWithPath: $0) }
+                guard !urls.isEmpty else { continue }
+                var it = ClipItem(kind: .files, key: st.key); it.urls = urls; it.pinned = st.pinned
+                res.append(it)
+            case "i":
+                guard let name = st.file, let data = try? Data(contentsOf: dir.appendingPathComponent(name)),
+                      let img = NSImage(data: data) else { continue }
+                var it = ClipItem(kind: .image, key: st.key)
+                if let base = UUID(uuidString: (name as NSString).deletingPathExtension) { it.id = base }
+                it.data = data; it.label = st.label; it.pinned = st.pinned
+                it.thumb = ClipboardHistory.thumbnail(img, height: 72)
+                res.append(it)
+            default: break
+            }
+        }
+        items = res
     }
 
     // MARK: слежение за буфером
