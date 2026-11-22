@@ -16,6 +16,11 @@
 - Автоматический переключатель раскладки стал умнее: короткие слова перед исправленным («И вот», «А кто это?») теперь исправляются вместе с ним, а не остаются в неверной раскладке; слова с дефисом («что-то», «кто-нибудь») исправляются по частям; знаки после слова («привет.», «привет?», «привет!») набираются правильно; адреса сайтов («github.com») не трогаются; при смене программы набираемое слово и память об исправлении сбрасываются.
 - Повторные нажатия сочетания переключают слово туда и обратно: после автоисправления, после исправления набираемого или последнего слова и после исправления выделенного текста (он остаётся выделенным) каждое следующее нажатие меняет раскладку слова, сколько раз ни нажми, пока не набран следующий символ. Слово, которое вернули к набранному виду после автоисправления, больше автоматически не исправляется (до 500 слов); вернули снова — оно опять исправляется.
 - «Lode Runner»: короткое нажатие в сторону, противоположную бегу, только разворачивает бегуна без шага, а удержание — разворачивает и сразу бежит без паузы; копание стало быстрее на 50%.
+- Диспетчер задач: при открытии список процессов иногда оставался пустым, пока не переключишь вкладку; теперь содержимое обновляется, как только приходят первые данные.
+- Красные пояснения в настройках и в окне разрешений (про запись экрана и системного звука) теперь обычного серого цвета, как остальные.
+- «Свернуть всё»: в настройках новый переключатель «Сворачивать и «Пуск» с его окнами». Выключен — как раньше, «Пуск» и его программы не сворачиваются; включён — сворачиваются вместе с остальными окнами и возвращаются так же.
+- «Свернуть всё» с включённым «Сворачивать и «Пуск» с его окнами» больше не вылетает: свои окна сворачиваются средствами самой программы, а само окно «Пуска» закрывается.
+- Настройки открываются и из меню программы на верхней панели («Настройки…», ⌘,): появляется окно «Пуска» сразу на настройках. Такой же пункт есть в меню значка «Свернуть всё» в строке меню.
 - Версия 8.0.
 
 ### Версия 7.0 — 2026-11-21
@@ -178,6 +183,11 @@
 - The automatic layout switcher got smarter: short words before a corrected one (“И вот”, “А кто это?”) are now fixed together with it instead of staying in the wrong layout; hyphenated words (“что-то”, “кто-нибудь”) are fixed part by part; punctuation after a word (“привет.”, “привет?”, “привет!”) is typed correctly; website addresses (“github.com”) are left alone; switching to another app resets the word being typed and the undo memory.
 - Pressing the shortcut again toggles the word back and forth: after an auto-fix, after fixing the word being typed or the last word, and after fixing selected text (it stays selected), every further press switches the word’s layout as many times as you press, until the next character is typed. A word you return to its typed form after an auto-fix is no longer fixed automatically (up to 500 words); switch it again and it is fixed again.
 - “Lode Runner”: a short tap in the direction opposite to the run only turns the runner around without a step, while holding the key turns and runs at once with no pause; digging is 50% faster.
+- Task Manager: the process list sometimes stayed empty on opening until you switched tabs; it now refreshes as soon as the first data arrives.
+- The red notes in Settings and in the permissions window (about Screen & System Audio Recording) now use the regular grey colour like the rest.
+- “Minimize All”: a new Settings switch “Also minimize Start and its windows”. Off — as before, Start and its tools are left alone; on — they are minimized with the other windows and restored the same way.
+- “Minimize All” with “Also minimize Start and its windows” on no longer crashes: the app’s own windows are minimized by the app itself, and the Start window itself is closed.
+- Settings also open from the app menu in the menu bar (“Settings…”, ⌘,): the Start window appears right on the settings. The same item is in the menu of the “Minimize All” menu-bar icon.
 - Version 8.0.
 
 ### Version 7.0 — 2026-11-21

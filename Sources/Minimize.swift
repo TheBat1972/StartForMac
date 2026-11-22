@@ -165,11 +165,7 @@ final class Minimizer {
 
     /// Есть ли на экране хоть одно видимое окно обычных приложений (кроме нашего)
     private func screenHasWindows() -> Bool {
-        let me = ProcessInfo.processInfo.processIdentifier
-        let pids = Set(NSWorkspace.shared.runningApplications.filter {
-            ($0.activationPolicy == .regular || $0.bundleIdentifier == "com.apple.finder")
-                && $0.processIdentifier != me
-        }.map { $0.processIdentifier })
+        let pids = Set(appPids())
         let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
             as? [[String: Any]] ?? []
         return list.contains { w in
@@ -180,6 +176,24 @@ final class Minimizer {
                   (b["Width"] ?? 0) > 50, (b["Height"] ?? 0) > 50 else { return false }
             return true
         }
+    }
+
+    /// Сворачивать ли и сам «Пуск» с его окнами (по умолчанию нет)
+    static var includeSelf: Bool {
+        get { UserDefaults.standard.bool(forKey: "minimizeSelf") }
+        set { UserDefaults.standard.set(newValue, forKey: "minimizeSelf") }
+    }
+
+    /// Программы, чьи окна сворачиваем
+    private func appPids() -> [pid_t] {
+        let me = ProcessInfo.processInfo.processIdentifier
+        let inc = Minimizer.includeSelf
+        var a = NSWorkspace.shared.runningApplications.filter {
+            ($0.activationPolicy == .regular || $0.bundleIdentifier == "com.apple.finder")
+                && (inc || $0.processIdentifier != me)
+        }.map { $0.processIdentifier }
+        if inc && !a.contains(me) { a.append(me) }
+        return a
     }
 
     static var restoreEnabled: Bool {
@@ -193,16 +207,15 @@ final class Minimizer {
     }
 
     func minimizeAll() {
-        let me = ProcessInfo.processInfo.processIdentifier
-        let pids = NSWorkspace.shared.runningApplications.filter {
-            ($0.activationPolicy == .regular || $0.bundleIdentifier == "com.apple.finder")
-                && $0.processIdentifier != me
-        }.map { $0.processIdentifier }
-        minimize(pids: pids)
+        minimize(pids: appPids())
     }
 
     /// remember: запомнить окна для «вернуть» (заменяет прошлый список). Клик по Dock ничего не запоминает.
-    func minimize(pids: [pid_t], remember: Bool = true) {
+    func minimize(pids allPids: [pid_t], remember: Bool = true) {
+        // Свои окна сворачиваем средствами AppKit в главном потоке: через Accessibility из фонового потока AppKit падает
+        let me = ProcessInfo.processInfo.processIdentifier
+        let pids = allPids.filter { $0 != me }
+        if allPids.contains(me) { minimizeOwn(remember: remember) }
         DispatchQueue.global(qos: .userInteractive).async {
             let lock = NSLock()
             let key = kAXMinimizedAttribute as CFString
@@ -241,9 +254,25 @@ final class Minimizer {
         }
     }
 
+    private var ownMinimized: [NSWindow] = []
+
+    private func minimizeOwn(remember: Bool) {
+        DispatchQueue.main.async {
+            let ws = NSApp.windows.filter {
+                $0.isVisible && !$0.isMiniaturized && $0.styleMask.contains(.miniaturizable) && !($0 is PopupWindow)
+            }
+            ws.forEach { $0.miniaturize(nil) }
+            NSApp.windows.compactMap { $0 as? PopupWindow }.forEach { $0.orderOut(nil) }     // само окно «Пуска» просто закрывается
+            if remember { self.ownMinimized = ws }
+        }
+    }
+
     func restore() {
         let list = minimized
         minimized = []
+        let own = ownMinimized
+        ownMinimized = []
+        DispatchQueue.main.async { own.forEach { $0.deminiaturize(nil) } }
         DispatchQueue.global(qos: .userInteractive).async {
             DispatchQueue.concurrentPerform(iterations: list.count) { i in
                 AXUIElementSetAttributeValue(list[i], kAXMinimizedAttribute as CFString, kCFBooleanFalse)
@@ -456,6 +485,7 @@ final class MinimizeController: NSObject, ObservableObject {
     @Published var minimizeComboTitle = ""
     @Published var pinchOn = false
     @Published var restoreOn = true
+    @Published var selfOn = false
     @Published var dockOn = false
     @Published var loginOn = false
     /// Значок в верхней панели (строке меню); по умолчанию есть
@@ -693,6 +723,7 @@ final class MinimizeController: NSObject, ObservableObject {
         minimizeComboTitle = combo.title
         pinchOn = pinch.enabled
         restoreOn = Minimizer.restoreEnabled
+        selfOn = Minimizer.includeSelf
         dockOn = dockWatcher.enabled
         loginOn = LoginItem.isEnabled
     }
@@ -723,10 +754,11 @@ final class MinimizeController: NSObject, ObservableObject {
         }
     }
 
-    /// В строке меню остаются только «Открыть «Пуск»» и «Выход»; все настройки — внутри «Пуска»
+    /// В строке меню: «Открыть «Пуск»», «Настройки…», «Не давать уснуть» и «Выход»; остальные настройки — внутри «Пуска»
     func showMenu() {
         let m = NSMenu()
         m.addItem(withTitle: T("Открыть «StartForMac»"), action: #selector(openStartMenu), keyEquivalent: "").target = self
+        m.addItem(withTitle: T("Настройки…"), action: #selector(openSettingsItem), keyEquivalent: "").target = self
         let awake = m.addItem(withTitle: T("Не давать компьютеру уснуть"), action: #selector(toggleAwakeItem), keyEquivalent: "")
         awake.target = self
         awake.state = awakeOn ? .on : .off
@@ -738,6 +770,7 @@ final class MinimizeController: NSObject, ObservableObject {
     }
 
     @objc func openStartMenu() { openStart?() }
+    @objc func openSettingsItem() { (NSApp.delegate as? AppDelegate)?.openSettings() }
     @objc func toggleAwakeItem() { toggleAwake?() }
     @objc func quit() { NSApp.terminate(nil) }
 
@@ -746,6 +779,7 @@ final class MinimizeController: NSObject, ObservableObject {
     func setPinch(_ on: Bool) { pinch.enabled = on; pinchOn = pinch.enabled; if on { pinch.restart() } }
     func pinchDiagnostic() -> String { pinch.diagnostic() }
     func setRestore(_ on: Bool) { Minimizer.restoreEnabled = on; restoreOn = on }
+    func setSelf(_ on: Bool) { Minimizer.includeSelf = on; selfOn = on }
     func setDock(_ on: Bool) { dockWatcher.enabled = on; dockOn = dockWatcher.enabled }
     func setLogin(_ on: Bool) {
         if !LoginItem.set(on) { NSSound.beep() }

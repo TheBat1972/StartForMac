@@ -1553,7 +1553,7 @@ struct PermissionsOverlay: View {
                 Spacer()
                 Text(granted == nil ? T("Статус недоступен") : (granted! ? T("Выдан") : T("Не выдан"))).font(.caption).foregroundColor(.secondary)
             }
-            Text(text).font(.caption).foregroundColor(red ? .red : .secondary)
+            Text(text).font(.caption).foregroundColor(.secondary)
             HStack {
                 if granted != true { Button(T("Запросить")) { request() } }
                 Button(T("Открыть настройки")) { open() }
@@ -6476,6 +6476,9 @@ struct SettingsOverlay: View {
                         section(T("Свернуть всё")) {
                             toggleRow(T("Возвращать окна, если экран пуст"), mc.restoreOn) { mc.setRestore($0) }
                             toggleRow(T("Сворачивать по клику в Dock"), mc.dockOn) { mc.setDock($0) }
+                            toggleRow(T("Сворачивать и «Пуск» с его окнами"), mc.selfOn) { mc.setSelf($0) }
+                            Text(T("Выключено: «Свернуть всё» не трогает «Пуск» и его программы (калькулятор, диспетчер задач, файловый менеджер, игры и другие окна). Включено: они сворачиваются вместе с остальными окнами и так же возвращаются, если включено «Возвращать окна, если экран пуст»."))
+                                .font(.caption).foregroundColor(.secondary)
                         }
                         sep()
                         section(T("Конвертер валют в поиске")) {
@@ -6507,7 +6510,7 @@ struct SettingsOverlay: View {
                             Text(T("Справа от замка на верхней панели появляется «+»: он создаёт новый рабочий стол macOS и переходит на него. Новый стол совершенно чистый: на нём своё окно со своими значками (файлы лежат в папке «Рабочие столы» в домашней папке, не в iCloud), файлы основного стола не затрагиваются и ничего не перекачивается. Файлы можно перетащить на новый стол из Finder и обратно, работают ⌘C, ⌘V и (если включено) ⌘X, двойной щелчок открывает файл. Если новый стол удалить (в Mission Control), программа спросит, что сделать с его файлами: в Корзину, на основной стол или оставить папку; то же при запуске, если стола уже нет."))
                                 .font(.caption).foregroundColor(.secondary)
                             Text(T("Нужно разрешение «Управление устройством и доступ к данным» (в ранних версиях macOS: «Универсальный доступ»; программа сама нажимает «+» в Mission Control). Запись экрана и системного звука нужна только для точной копии обоев нового стола (разовый снимок экрана; звук не записывается); без неё берётся файл обоев."))
-                                .font(.caption).foregroundColor(.red)
+                                .font(.caption).foregroundColor(.secondary)
                             sep()
                             toggleRow(T("⌘X в Finder — вырезать"), mc.finderCutOn) { mc.setFinderCut($0) }
                             Text(T("⌘X в Finder копирует выделенные файлы и помечает их вырезанными: следующая вставка ⌘V в Finder переместит их, а не скопирует. ⌘C отменяет вырезание. В полях ввода ⌘X работает как обычно. Нужен доступ «Управление устройством и доступ к данным» (в ранних версиях macOS: «Универсальный доступ»)."))
@@ -6519,7 +6522,7 @@ struct SettingsOverlay: View {
                             sep()
                             toggleRow(T("Миниатюры окон"), mc.thumbsOn) { mc.setThumbs($0) }
                             Text(T("Запись экрана и системного звука запрашивается только для того, чтобы сделать снимок каждого окна и показать его миниатюрой в ⌥Tab и при наведении на значок в Dock. Звук не записывается, снимки нигде не сохраняются и никуда не передаются. Разрешение можно не давать: тогда вместо миниатюр показываются значки приложений."))
-                                .font(.caption).foregroundColor(.red)
+                                .font(.caption).foregroundColor(.secondary)
                             sep()
                             toggleRow(T("Окна при наведении на значок в Dock"), mc.dockPreviewOn) { mc.setDockPreview($0) }
                             Text(T("Если задержать курсор на значке запущенного приложения в Dock (около 0,3 с), над значком появятся его окна (в том числе свёрнутые). Клик по окну выводит его вперёд, на плитке есть кнопки «закрыть», «свернуть» и «на весь экран». Нужен доступ «Управление устройством и доступ к данным» (в ранних версиях macOS: «Универсальный доступ»). Миниатюры включаются выключателем выше."))
@@ -7749,11 +7752,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.orderOut(nil)
     }
 
+    /// «Настройки…» из меню программы: открывает окно «Пуска» сразу на настройках
+    @objc func openSettings() {
+        show()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+            self?.store.showSettings = true
+        }
+    }
+
     private func setupMenu() {
         let main = NSMenu()
         let appItem = NSMenuItem(); main.addItem(appItem)
         let appMenu = NSMenu(); appItem.submenu = appMenu
         appMenu.addItem(withTitle: T("О программе «StartForMac»"), action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(.separator())
+        let prefs = NSMenuItem(title: T("Настройки…"), action: #selector(openSettings), keyEquivalent: ",")
+        prefs.target = self
+        appMenu.addItem(prefs)
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: T("Завершить StartForMac"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
 

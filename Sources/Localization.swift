@@ -969,4 +969,7 @@ private let translations: [String: String] = [
     "Выше обычного": "Above normal",
     "Ниже обычного": "Below normal",
     "Низкий": "Low",
+    "Сворачивать и «Пуск» с его окнами": "Also minimize Start and its windows",
+    "Выключено: «Свернуть всё» не трогает «Пуск» и его программы (калькулятор, диспетчер задач, файловый менеджер, игры и другие окна). Включено: они сворачиваются вместе с остальными окнами и так же возвращаются, если включено «Возвращать окна, если экран пуст».": "Off: “Minimize All” leaves Start and its tools alone (calculator, Task Manager, file manager, games and other windows). On: they are minimized together with the other windows and restored the same way if “Restore windows when the screen is empty” is on.",
+    "Настройки…": "Settings…",
 ]

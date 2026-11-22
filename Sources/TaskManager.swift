@@ -783,15 +783,18 @@ struct TMRootView: View {
             }
             .padding(.horizontal, 8)
             Divider()
-            switch tab {
-            case 0: TMProcessesView(s: s)
-            case 1: TMPerformanceView(s: s)
-            case 2: TMStartupView()
-            case 5: TMJournalView()
-            case 6: TMUsersView(s: s)
-            case 7: TMServicesView(s: s)
-            default: TMDetailsView(s: s)
+            Group {
+                switch tab {
+                case 0: TMProcessesView(s: s)
+                case 1: TMPerformanceView(s: s)
+                case 2: TMStartupView()
+                case 5: TMJournalView()
+                case 6: TMUsersView(s: s)
+                case 7: TMServicesView(s: s)
+                default: TMDetailsView(s: s)
+                }
             }
+            .id(s.processCount > 0)      // когда пришли первые данные, содержимое пересоздаётся (иначе иногда пусто до смены вкладки)
         }
         .frame(minWidth: 700, minHeight: 440)
     }
