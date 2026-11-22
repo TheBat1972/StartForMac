@@ -246,6 +246,8 @@ final class Store: ObservableObject, @unchecked Sendable {
     @Published var accessibility = true
     @Published var screenRecording = true
     @Published var inputMonitoring: Bool? = nil
+    /// Расширение Finder («Создать» в контекстном меню): true — включено, false — выключено, nil — система его не знает
+    @Published var finderExtension: Bool? = nil
     static var suppressAutoHide = false
 
     private var iconCache: [String: NSImage] = [:]
@@ -279,6 +281,7 @@ final class Store: ObservableObject, @unchecked Sendable {
         accessibility = Permissions.hasAccessibility()
         screenRecording = CGPreflightScreenCaptureAccess()
         inputMonitoring = Permissions.inputMonitoringState()
+        finderExtension = FinderNew.extensionState()
     }
 
     var permissionsOK: Bool { fullDiskAccess && accessibility }
@@ -1471,6 +1474,11 @@ struct PermissionsOverlay: View {
                                       red: false,
                                       request: { Permissions.requestInputMonitoring() },
                                       open: { Permissions.openInputMonitoringPane() })
+                        permissionRow(T("Расширение Finder"), store.finderExtension,
+                                      T("Нужно только для пункта «Создать» в контекстном меню Finder (настройка «Создать» в меню Finder). Расширение включается в «Системные настройки → Расширения → Расширения Finder»: поставьте галочку у «StartForMac». Оно работает в песочнице и только сообщает приложению, в какой папке вы щёлкнули; файл создаёт «Пуск». Если статус недоступен, включите настройку и нажмите «Проверить снова»."),
+                                      red: false,
+                                      request: { FinderNew.shared.requestEnable() },
+                                      open: { FinderNew.openManagement() })
                         linkInfo("square.stack.3d.up", T("Управление приложениями"),
                                  T("Статус программа прочитать не может. Нужно, чтобы удалять и менять другие программы: полное удаление приложения вместе с ним самим, переименование и перенос. Если macOS спросит или удаление не получается — включите «StartForMac» в списке."),
                                  "Privacy_AppBundles")
@@ -6516,6 +6524,29 @@ struct SettingsOverlay: View {
                             Text(T("⌘X в Finder копирует выделенные файлы и помечает их вырезанными: следующая вставка ⌘V в Finder переместит их, а не скопирует. ⌘C отменяет вырезание. В полях ввода ⌘X работает как обычно. Нужен доступ «Управление устройством и доступ к данным» (в ранних версиях macOS: «Универсальный доступ»)."))
                                 .font(.caption).foregroundColor(.secondary)
                             sep()
+                            toggleRow(T("Enter в Finder — открыть файл"), mc.finderEnterOn) { mc.setFinderEnter($0) }
+                            Text(T("В Finder Enter запускает выделенные файлы и открывает папки (как в Windows), а не включает переименование. Переименовать можно по ⇧Enter, через контекстное меню или щелчком по имени. В полях ввода, в диалогах и листах («Заменить?», «Подключение к серверу») Enter остаётся обычным. Нужен доступ «Управление устройством и доступ к данным» (в ранних версиях macOS: «Универсальный доступ»): программа запросит его при включении."))
+                                .font(.caption).foregroundColor(.secondary)
+                            sep()
+                            toggleRow(T("«Создать» в контекстном меню Finder"), mc.finderNewOn) { mc.setFinderNew($0) }
+                            Text(T("Правый клик по пустому месту окна Finder показывает пункт «Создать»: текстовый документ, Markdown, пустой файл, HTML, JSON, CSV, RTF, а также документ, таблица и презентация для установленных офисных программ (Word, Excel, PowerPoint, Pages, Numbers, Keynote, LibreOffice…). Новый файл сразу выделяется в Finder. Так работает на рабочем столе, только если у вас выключена синхронизация «Рабочий стол и документы» в iCloud: внутри iCloud Drive Finder не показывает такие пункты. Поэтому то же меню есть по сочетанию клавиш ниже и в меню значка «Пуска» (строка меню и Dock, правая кнопка): оно создаёт файл в папке активного окна Finder, а если окна нет, на рабочем столе. Расширение Finder нужно включить в «Системных настройках → Расширения»: программа попросит об этом при включении, статус виден на вкладке «Разрешения»."))
+                                .font(.caption).foregroundColor(.secondary)
+                            if mc.finderNewOn {
+                                HStack {
+                                    Text(T("Меню «Создать» по сочетанию"))
+                                    Spacer()
+                                    Button {
+                                        if mc.recordingFor == 4 { mc.cancelRecording() } else { mc.record(slot: 4) }
+                                    } label: {
+                                        Text(mc.recordingFor == 4 ? T("Нажмите сочетание…") : mc.finderNewComboTitle).frame(minWidth: 110)
+                                    }
+                                }
+                                if mc.recordingFor == 4 {
+                                    Text(T("Нужен хотя бы один модификатор (⌃ ⌥ ⌘ ⇧). Esc — отмена."))
+                                        .font(.caption).foregroundColor(.secondary)
+                                }
+                            }
+                            sep()
                             toggleRow(T("Переключение окон по ⌥Tab"), mc.switcherOn) { mc.setSwitcher($0) }
                             Text(T("Option + Tab показывает окна (а не приложения целиком) с миниатюрами. Пока Option зажат: Tab или ⇧Tab, стрелки — выбор окна; можно печатать название окна или программы — список сужается (⌫ стирает); Enter или отпустить Option — выбранное окно выходит вперёд, Esc — отмена; на плитке под курсором есть кнопки «закрыть», «свернуть» и «на весь экран». Нужен доступ «Управление устройством и доступ к данным» (в ранних версиях macOS: «Универсальный доступ»)."))
                                 .font(.caption).foregroundColor(.secondary)
@@ -7353,6 +7384,26 @@ struct RootView: View {
                     LodeWindowController.shared.show()
                 }
                 .padding(.leading, 22)
+                ToolRow(title: "Snake", symbol: "scribble.variable") {
+                    showTools = false; restOpen = false
+                    SnakeWindowController.shared.show()
+                }
+                .padding(.leading, 22)
+                ToolRow(title: "Arcan", symbol: "rectangle.grid.3x2") {
+                    showTools = false; restOpen = false
+                    ArcanWindowController.shared.show()
+                }
+                .padding(.leading, 22)
+                ToolRow(title: "Diam", symbol: "diamond") {
+                    showTools = false; restOpen = false
+                    DiamWindowController.shared.show()
+                }
+                .padding(.leading, 22)
+                ToolRow(title: "Pacman", symbol: "circle.lefthalf.filled") {
+                    showTools = false; restOpen = false
+                    PacmanWindowController.shared.show()
+                }
+                .padding(.leading, 22)
             }
             ToolRow(title: T("Файл менеджер"), symbol: "rectangle.split.2x1") {
                 showTools = false
@@ -7596,6 +7647,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let b = m.addItem(withTitle: T("Не давать компьютеру уснуть"), action: #selector(dockToggleAwake), keyEquivalent: "")
         b.target = self
         b.state = minimize.awakeOn ? .on : .off
+        if let c = FinderNew.shared.createMenuItem() { m.addItem(.separator()); m.addItem(c) }
         return m
     }
     @objc private func dockMinimizeAll() { minimize.minimizeOnly() }

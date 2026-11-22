@@ -27,10 +27,30 @@ lipo -create "$TMP/arm64" "$TMP/x86_64" -output "$STAGE/Contents/MacOS/StartForM
 
 cp Info.plist "$STAGE/Contents/Info.plist"
 [ -d Cards ] && cp -R Cards "$STAGE/Contents/Resources/Cards"     # картинки и звуки карт для «Косынки»
+[ -d SnakeRes ] && cp -R SnakeRes "$STAGE/Contents/Resources/SnakeRes"   # картинки и звуки для Snake
+[ -d ArcanRes ] && cp -R ArcanRes "$STAGE/Contents/Resources/ArcanRes"   # картинки и звуки для Arcan
+[ -d DiamRes ] && cp -R DiamRes "$STAGE/Contents/Resources/DiamRes"       # картинки и звуки для Diam
+[ -d FinderTemplates ] && cp -R FinderTemplates "$STAGE/Contents/Resources/FinderTemplates"   # пустые документы для «Создать» в Finder
+[ -d PacmanRes ] && cp -R PacmanRes "$STAGE/Contents/Resources/PacmanRes"   # картинки и звуки для Pacman
 
 swiftc -O Tools/make_icon.swift -o "$TMP/make_icon"
 "$TMP/make_icon" "$TMP"
 iconutil -c icns "$TMP/AppIcon.iconset" -o "$STAGE/Contents/Resources/AppIcon.icns"
+
+# Расширение Finder («Создать» в контекстном меню): отдельный модуль внутри приложения, обязательно в песочнице
+APPEX="$STAGE/Contents/PlugIns/StartFinderExt.appex"
+mkdir -p "$APPEX/Contents/MacOS"
+for A in arm64 x86_64; do
+  swiftc -O -target "$A-apple-macos12.0" -application-extension -module-name StartFinderExt FinderExt/*.swift \
+    -Xlinker -e -Xlinker _NSExtensionMain -o "$TMP/ext_$A"
+done
+lipo -create "$TMP/ext_arm64" "$TMP/ext_x86_64" -output "$APPEX/Contents/MacOS/StartFinderExt"
+cp FinderExt/Info.plist "$APPEX/Contents/Info.plist"
+if [ -n "$SIGN_ID" ]; then
+  codesign --force --options runtime --timestamp --entitlements FinderExt/FinderExt.entitlements --sign "$SIGN_ID" "$APPEX"
+else
+  codesign --force --entitlements FinderExt/FinderExt.entitlements --sign - "$APPEX"
+fi
 
 if [ -n "$SIGN_ID" ]; then
   codesign --force --options runtime --timestamp --sign "$SIGN_ID" "$STAGE"

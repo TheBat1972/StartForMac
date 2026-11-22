@@ -24,6 +24,8 @@ struct Combo {
 
     static let fallback = Combo(keyCode: 46, mods: UInt32(controlKey | optionKey), keyTitle: "M") // ⌃⌥M
 
+    static let finderNewFallback = Combo(keyCode: 45, mods: UInt32(controlKey | optionKey), keyTitle: "N") // ⌃⌥N
+
     static let startFallback = Combo(keyCode: 35, mods: UInt32(controlKey | optionKey), keyTitle: "P") // ⌃⌥P
 
     static func load(prefix: String = "hk", fallback: Combo = Combo.fallback) -> Combo {
@@ -498,6 +500,11 @@ final class MinimizeController: NSObject, ObservableObject {
     @Published var cleanDeskOn = CleanDesktop.shared.enabled
     /// ⌘X в Finder как «вырезать» (по умолчанию выключено)
     @Published var finderCutOn = FinderCut.enabled
+    /// Enter в Finder открывает файл, ⇧Enter — переименование (по умолчанию выключено)
+    @Published var finderEnterOn = FinderEnter.enabled
+    /// «Создать» в контекстном меню Finder (по умолчанию выключено)
+    @Published var finderNewOn = FinderNew.enabled
+    @Published var finderNewComboTitle = Combo.load(prefix: "finder.new.hk", fallback: Combo.finderNewFallback).title
     /// Переключение окон по ⌥Tab и миниатюры (по умолчанию оба выключены)
     @Published var switcherOn = WindowSwitcher.enabled
     @Published var thumbsOn = WindowSwitcher.thumbsEnabled
@@ -676,6 +683,39 @@ final class MinimizeController: NSObject, ObservableObject {
         FinderCut.shared.setEnabled(on)
     }
 
+    func setFinderEnter(_ on: Bool) {
+        FinderEnter.enabled = on
+        finderEnterOn = on
+        FinderEnter.shared.setEnabled(on)           // при включении сам просит «Управление устройством и доступ к данным»
+    }
+
+    func setFinderNew(_ on: Bool) {
+        FinderNew.enabled = on
+        finderNewOn = on
+        FinderNew.shared.setEnabled(on)
+        registerFinderNewHotkey()
+        guard on else { return }
+        // если система ещё не включила расширение — показываем «Разрешения» и список расширений Finder
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            Store.current?.refreshPermissions()
+            if Store.current?.finderExtension != true {
+                Store.current?.showPermissions = true
+                FinderNew.openManagement()
+            }
+        }
+    }
+
+    /// Сочетание для меню «Создать» работает, только пока включена настройка
+    func registerFinderNewHotkey() {
+        if FinderNew.enabled {
+            HotKeyCenter.shared.register(Combo.load(prefix: "finder.new.hk", fallback: Combo.finderNewFallback), id: 40) {
+                FinderNew.shared.showPopup()
+            }
+        } else {
+            HotKeyCenter.shared.unregister(id: 40)
+        }
+    }
+
     func setTray(_ on: Bool) {
         UserDefaults.standard.set(on, forKey: "ui.trayIcon")
         trayOn = on
@@ -697,6 +737,10 @@ final class MinimizeController: NSObject, ObservableObject {
         WindowSnap.registerAll(WindowSnap.enabled)
         CleanDesktop.shared.launch()
         if FinderCut.enabled { FinderCut.shared.start() }
+        if FinderEnter.enabled { FinderEnter.shared.start() }
+        FinderNew.shared.registerURLHandler()
+        registerFinderNewHotkey()
+        if FinderNew.enabled { FinderNew.shared.start() }
         if ClipboardHistory.enabled { ClipboardHistory.shared.start() }
         if WindowSwitcher.enabled { WindowSwitcher.shared.start() }
         if DockPreview.enabled { DockPreview.shared.start() }
@@ -765,6 +809,7 @@ final class MinimizeController: NSObject, ObservableObject {
         let awake = m.addItem(withTitle: T("Не давать компьютеру уснуть"), action: #selector(toggleAwakeItem), keyEquivalent: "")
         awake.target = self
         awake.state = awakeOn ? .on : .off
+        if let c = FinderNew.shared.createMenuItem() { m.addItem(.separator()); m.addItem(c) }
         m.addItem(.separator())
         m.addItem(withTitle: T("Выход"), action: #selector(quit), keyEquivalent: "q").target = self
         statusItem.menu = m
@@ -802,7 +847,7 @@ final class MinimizeController: NSObject, ObservableObject {
     /// Записывает новое сочетание прямо в окне «Пуск» (без системных окон). Esc — отмена.
     func record(forStart: Bool) { record(slot: forStart ? 2 : 1) }
 
-    /// slot: 1 — «Свернуть всё», 2 — «Пуск», 3 — исправление раскладки
+    /// slot: 1 — «Свернуть всё», 2 — «Пуск», 3 — исправление раскладки, 4 — меню «Создать»
     func record(slot: Int) {
         let forStart = slot == 2
         cancelRecording()
@@ -817,7 +862,11 @@ final class MinimizeController: NSObject, ObservableObject {
                 t = e.keyCode == 49 ? "Space" : "#\(e.keyCode)"
             }
             let newCombo = Combo(keyCode: UInt32(e.keyCode), mods: mods, keyTitle: t)
-            if slot == 3 {
+            if slot == 4 {
+                newCombo.save(prefix: "finder.new.hk")
+                self.finderNewComboTitle = newCombo.title
+                self.registerFinderNewHotkey()
+            } else if slot == 3 {
                 newCombo.save(prefix: "layout.hk")
                 self.layoutComboTitle = newCombo.title
                 LayoutSwitcher.shared.reregisterHotkey()

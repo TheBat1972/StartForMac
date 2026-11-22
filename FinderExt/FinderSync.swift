@@ -1,0 +1,89 @@
+import Cocoa
+import FinderSync
+
+// Расширение Finder: пункт «Создать» в меню правого клика по пустому месту. Работает в песочнице, поэтому файлы
+// не создаёт, а сообщает приложению «StartForMac» (папка и вид файла), и оно их создаёт.
+
+@objc(StartFinderSync)
+final class StartFinderSync: FIFinderSync {
+    /// Что показывать в меню сейчас (вид файла по номеру пункта); офисные типы — только если в системе есть подходящая программа
+    private var kinds: [String] = []
+
+    private struct Office {
+        let kind: String
+        let apps: [String]           // программы, которые умеют открывать файл
+        let nativeApp: String        // «родная» программа Microsoft: от неё название пункта
+        let ruNative: String, enNative: String, ruPlain: String, enPlain: String
+    }
+
+    private static let suites = ["org.libreoffice.script", "org.onlyoffice.desktopeditors", "com.kingsoft.wpsoffice.mac"]
+    private let offices: [Office] = [
+        Office(kind: "docx", apps: ["com.microsoft.Word", "com.apple.iWork.Pages"] + StartFinderSync.suites, nativeApp: "com.microsoft.Word",
+               ruNative: "Документ Word (.docx)", enNative: "Word document (.docx)", ruPlain: "Документ (.docx)", enPlain: "Document (.docx)"),
+        Office(kind: "xlsx", apps: ["com.microsoft.Excel", "com.apple.iWork.Numbers"] + StartFinderSync.suites, nativeApp: "com.microsoft.Excel",
+               ruNative: "Таблица Excel (.xlsx)", enNative: "Excel workbook (.xlsx)", ruPlain: "Таблица (.xlsx)", enPlain: "Spreadsheet (.xlsx)"),
+        Office(kind: "pptx", apps: ["com.microsoft.Powerpoint", "com.apple.iWork.Keynote"] + StartFinderSync.suites, nativeApp: "com.microsoft.Powerpoint",
+               ruNative: "Презентация PowerPoint (.pptx)", enNative: "PowerPoint presentation (.pptx)", ruPlain: "Презентация (.pptx)", enPlain: "Presentation (.pptx)"),
+        Office(kind: "odt", apps: ["org.libreoffice.script"], nativeApp: "org.libreoffice.script",
+               ruNative: "Документ LibreOffice (.odt)", enNative: "LibreOffice document (.odt)", ruPlain: "", enPlain: ""),
+        Office(kind: "ods", apps: ["org.libreoffice.script"], nativeApp: "org.libreoffice.script",
+               ruNative: "Таблица LibreOffice (.ods)", enNative: "LibreOffice spreadsheet (.ods)", ruPlain: "", enPlain: ""),
+        Office(kind: "odp", apps: ["org.libreoffice.script"], nativeApp: "org.libreoffice.script",
+               ruNative: "Презентация LibreOffice (.odp)", enNative: "LibreOffice presentation (.odp)", ruPlain: "", enPlain: "")
+    ]
+
+    private func installed(_ id: String) -> Bool {
+        return NSWorkspace.shared.urlForApplication(withBundleIdentifier: id) != nil
+    }
+
+    override init() {
+        super.init()
+        // следим за всем диском и отдельно за настоящей домашней папкой (в песочнице NSHomeDirectory() — не она)
+        var dirs: Set<URL> = [URL(fileURLWithPath: "/")]
+        if let pw = getpwuid(getuid()), let h = pw.pointee.pw_dir {
+            let home = URL(fileURLWithPath: String(cString: h))
+            dirs.insert(home)
+            for sub in ["Desktop", "Documents", "Downloads"] { dirs.insert(home.appendingPathComponent(sub)) }
+        }
+        dirs.insert(URL(fileURLWithPath: "/Volumes"))
+        FIFinderSyncController.default().directoryURLs = dirs
+    }
+
+    private var russian: Bool { return Locale.preferredLanguages.first?.hasPrefix("ru") ?? false }
+
+    override func menu(for menuKind: FIMenuKind) -> NSMenu {
+        let menu = NSMenu(title: "")
+        guard menuKind == .contextualMenuForContainer else { return menu }
+        var titles = russian ? ["Текстовый документ", "Документ Markdown", "Пустой файл", "Страница HTML", "Файл JSON", "Таблица CSV", "Документ RTF"]
+                             : ["Text document", "Markdown document", "Empty file", "HTML page", "JSON file", "CSV table", "RTF document"]
+        kinds = ["txt", "md", "file", "html", "json", "csv", "rtf"]
+        for o in offices where o.apps.contains(where: installed) {
+            kinds.append(o.kind)
+            titles.append(installed(o.nativeApp) ? (russian ? o.ruNative : o.enNative) : (russian ? o.ruPlain : o.enPlain))
+        }
+        let sub = NSMenu(title: "")
+        for (i, t) in titles.enumerated() {
+            let item = NSMenuItem(title: t, action: #selector(create(_:)), keyEquivalent: "")
+            item.tag = i
+            sub.addItem(item)
+        }
+        let top = NSMenuItem(title: russian ? "Создать" : "Create", action: nil, keyEquivalent: "")
+        top.submenu = sub
+        menu.addItem(top)
+        return menu
+    }
+
+    @objc func create(_ sender: AnyObject?) {
+        guard let item = sender as? NSMenuItem, item.tag >= 0, item.tag < kinds.count,
+              let dir = FIFinderSyncController.default().targetedURL() else { return }
+        // команда приложению — через ссылку startformac://create?... (рассылки между процессами в песочнице ненадёжны)
+        var c = URLComponents()
+        c.scheme = "startformac"
+        c.host = "create"
+        c.queryItems = [URLQueryItem(name: "dir", value: dir.path), URLQueryItem(name: "kind", value: kinds[item.tag])]
+        guard let url = c.url else { return }
+        let cfg = NSWorkspace.OpenConfiguration()
+        cfg.activates = false
+        NSWorkspace.shared.open(url, configuration: cfg, completionHandler: nil)
+    }
+}

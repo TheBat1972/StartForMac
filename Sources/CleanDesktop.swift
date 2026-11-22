@@ -1160,6 +1160,8 @@ final class DeskView: NSView, NSDraggingSource {
         } else {
             add(m, T("Вставить"), #selector(pasteSel))
             add(m, T("Новая папка"), #selector(newFolder))
+            // «Создать» — тот же список типов, что в меню Finder (включается настройкой «Создать» в контекстном меню Finder)
+            if let c = FinderNew.shared.createMenuItem(dir: folder, target: self, action: #selector(newFileSel(_:))) { m.addItem(c) }
             add(m, T("Показать папку стола в Finder"), #selector(revealFolder))
             m.addItem(.separator())
             add(m, T("Обновить фон"), #selector(refreshWallpaper))
@@ -1188,6 +1190,13 @@ final class DeskView: NSView, NSDraggingSource {
                   "x-apple.systempreferences:com.apple.preference.desktopscreeneffect"] {
             if let u = URL(string: s), NSWorkspace.shared.open(u) { break }
         }
+    }
+
+    @objc private func newFileSel(_ sender: NSMenuItem) {
+        guard let d = sender.representedObject as? [String: String],
+              let u = FinderNew.shared.createFile(dir: d["dir"], kind: d["kind"]) else { return }
+        selection = [u]
+        reload()
     }
 
     @objc private func newFolder() {
