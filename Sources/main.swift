@@ -6813,6 +6813,7 @@ struct RootView: View {
     @State private var draft = ""
     @State private var dropTarget: String? = nil
     @State private var showTools = false
+    @State private var toolsSize = CGSize(width: 260, height: 2000)   // размер списка инструментов (для прокрутки)
     @State private var toolsMon: Any?
     @State private var toolsBox = FrameBox()
     @State private var toolsBtnBox = FrameBox()
@@ -7160,15 +7161,17 @@ struct RootView: View {
         .overlay(alignment: .bottomLeading) {
             // меню инструментов: клик в любом месте окна мимо меню закрывает его
             if showTools {
-                ZStack(alignment: .bottomLeading) {
-                    Color.clear.contentShape(Rectangle()).onTapGesture { showTools = false; restOpen = false }
-                    // меню над кнопкой «Инструменты»: левый край на уровне рамки быстрых вызовов (отступ 12 от края колонки шириной 236)
-                    toolsMenu
-                        .fixedSize()
-                        .background(FrameReader(box: toolsBox))
-                        .padding(.leading, 12)
-                        .frame(width: 236, alignment: .leading)
-                        .padding(.bottom, 82)
+                GeometryReader { geo in
+                    ZStack(alignment: .bottomLeading) {
+                        Color.clear.contentShape(Rectangle()).onTapGesture { showTools = false; restOpen = false }
+                        // меню над кнопкой «Инструменты»: левый край на уровне рамки быстрых вызовов (отступ 12 от края колонки шириной 236);
+                        // сверху оставляем столько же свободного места, сколько снизу (82), а длинный список прокручивается
+                        toolsMenu(maxHeight: max(120, geo.size.height - 82 - 82))
+                            .background(FrameReader(box: toolsBox))
+                            .padding(.leading, 12)
+                            .frame(width: 236, alignment: .leading)
+                            .padding(.bottom, 82)
+                    }
                 }
             }
         }
@@ -7481,7 +7484,28 @@ struct RootView: View {
     }
 
     /// Меню инструментов: появляется над кнопкой. Новые инструменты добавляем сюда.
-    private var toolsMenu: some View {
+    private func toolsMenu(maxHeight: CGFloat) -> some View {
+        ScrollView(.vertical, showsIndicators: true) {
+            toolsList
+                .background(GeometryReader { g in
+                    Color.clear
+                        .onAppear { setToolsSize(g.size) }
+                        .onChange(of: g.size) { setToolsSize($0) }
+                })
+        }
+        .frame(width: toolsSize.width, height: min(toolsSize.height, maxHeight))
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color(NSColor.windowBackgroundColor)))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.12), lineWidth: 1))
+        .shadow(color: .black.opacity(0.25), radius: 8, y: 2)
+    }
+
+    private func setToolsSize(_ sz: CGSize) {
+        guard sz.width > 0, sz.height > 0, sz != toolsSize else { return }
+        DispatchQueue.main.async { toolsSize = sz }
+    }
+
+    private var toolsList: some View {
         VStack(alignment: .leading, spacing: 2) {
             ToolRow(title: T("Передохни"), symbol: restOpen ? "chevron.down" : "gamecontroller") {
                 restOpen.toggle()
@@ -7580,9 +7604,7 @@ struct RootView: View {
         }
         .padding(6)
         .frame(minWidth: 190, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color(NSColor.windowBackgroundColor)))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.12), lineWidth: 1))
-        .shadow(color: .black.opacity(0.25), radius: 8, y: 2)
+        .fixedSize()
     }
 
     private var nameField: some View {

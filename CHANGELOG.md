@@ -38,6 +38,7 @@
 - Новый чистый рабочий стол снимает обои иначе: всё, что система рисует под значками рабочего стола, одним снимком (раньше искалось одно окно обоев, а у новых обоев macOS такого окна может не быть). Что нашлось, пишется в «wallpaper-debug.txt» в папке настроек «Пуска».
 - Умный буфер обмена умеет запоминать историю между запусками (Настройки → «Управление», по умолчанию выключено): текст, картинки, файлы и закрепления восстанавливаются после перезапуска (хранится на диске в Application Support без шифрования, пароли по-прежнему пропускаются; при выключении настройки сохранённая история стирается).
 - «Создать»: подменю «Изображение» → PNG, JPEG, SVG (всегда), а также Photoshop (.psd), GIMP (.xcf) и Krita (.kra), если есть подходящая программа → размер 1920×1080, 1024×1024, 512×512 или «Свой размер…» (вводится, запоминается последний); меню и в Finder, и по горячей клавише, и в меню значка, и на новом чистом столе.
+- Меню «Инструменты» больше не вылезает за окно «Пуска»: сверху остаётся столько же места, сколько снизу, а длинный список (например, при раскрытых играх «Передохни») прокручивается.
 - Версия 8.0.
 
 ### Версия 7.0 — 2026-11-21
@@ -222,6 +223,7 @@
 - The new clean desktop captures the wallpaper differently: everything the system draws under the desktop icons in one shot (before, a single wallpaper window was looked up, which new macOS wallpapers may not have). What was found is written to “wallpaper-debug.txt” in Start’s settings folder.
 - The smart clipboard can remember its history between launches (Settings → Control, off by default): text, images, files and pins are restored after a restart (stored unencrypted in Application Support, passwords are still skipped; turning the setting off erases the saved history).
 - “Create”: an “Image” submenu → PNG, JPEG, SVG (always), plus Photoshop (.psd), GIMP (.xcf) and Krita (.kra) when a suitable app is installed → 1920×1080, 1024×1024, 512×512 or “Custom size…” (typed in, the last one is remembered); in Finder, the shortcut menu, the Start icon menu and the new clean desktop.
+- The Tools menu no longer overflows the Start window: it leaves the same gap at the top as at the bottom, and a long list (for example with the “Take a break” games expanded) scrolls.
 - Version 8.0.
 
 ### Version 7.0 — 2026-11-21
