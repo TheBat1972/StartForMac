@@ -45,7 +45,7 @@ Personal project, built with SwiftUI + AppKit, no third-party dependencies. Univ
 - **⌘X in Finder:** cut files; the next ⌘V moves them.
 - **Quick launch:** five slots at the bottom of the panel for favourite apps (the fifth is empty by default, with a plus).
 - **Updates:** once a day the app checks the latest GitHub release (the repository must be public); if a newer version is out, Settings shows a message and an “Update” button (downloads `StartForMac.zip`, verifies the signature, replaces itself and restarts). Settings → Interface → Updates, plus “Check for updates…” in the app menu. To ship an update: create a release tagged `8.2` (`v8.2` works too), attach the `StartForMac.zip` from `build.sh`, put the notes in the description.
-- **About:** version 8.1 and copyright in the app menu; the “About” tab in Settings shows the “Features” and “Privacy and security” sections of this README in a scrollable field (by app language).
+- **About:** version 8.2 and copyright in the app menu; the “About” tab in Settings shows the “Features” and “Privacy and security” sections of this README in a scrollable field (by app language).
 - **Settings** (a separate window with tabs: Interface, Controls, Windows, Finder and desktop, Keyboard layout, About, plus a “Permissions…” button): language (system / Russian / English), theme (system / light / dark), hotkeys, gesture, launch at login, pin to the Dock first (right of Finder).
 - **Permissions:** the Permissions tab explains and opens the right System Settings panes: Full Disk Access (protected folders; also removes macOS prompts about other apps’ data), Accessibility (hotkeys, Minimize All, layout switcher), **Screen & System Audio Recording** — only needed for window thumbnails in ⌥Tab and on Dock hover, Input Monitoring (usually not needed; its status is readable only with Full Disk Access, otherwise “Status unavailable”), App Management (app removal) and Files & Folders. Every item has an “Open Settings” button.
 
@@ -113,6 +113,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the list of changes.
 | `Sources/Solitaire.swift` | “Take a Break”: Klondike Solitaire |
 | `Sources/LodeRunner.swift` | “Take a Break”: Lode Runner (15 levels, guard pathfinding, holes, window) |
 | `Sources/FinderImages.swift` | blank images for “Create” (PNG, JPEG, SVG, PSD, XCF, KRA; presets and custom size) |
+| `Sources/ScreenLock.swift` | “Lock screen” button under “Minimize all windows” |
 | `Sources/ReadmeView.swift` | scrollable README on the “About” tab (Russian or English by app language) |
 | `Sources/Updater.swift` | daily check and installation of updates from GitHub releases |
 | `Sources/FinderEnter.swift` | Enter in Finder opens the file (⇧Enter renames) — off by default |

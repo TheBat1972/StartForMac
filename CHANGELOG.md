@@ -4,6 +4,13 @@
 
 ## Русский
 
+### Версия 8.2 — 2026-11-23
+
+**Новое**
+- Кнопка «Заблокировать экран» на главном экране под «Свернуть все окна» (окно «Пуска» закрывается и экран блокируется, как по ⌃⌘Q).
+- Телефоны по MTP: если телефон в первые секунды отдаёт пустой список хранилищ (бывает у Samsung), «Пуск» спрашивает ещё до пяти раз с паузой; в журнал `Pusk-MTP.log` пишется, сколько хранилищ ответил телефон; сообщение «Телефон не отдал хранилища» подсказывает про пункт Samsung, блокирующий подключение USB при заблокированном телефоне.
+- Версия 8.2.
+
 ### Версия 8.1 — 2026-11-23
 
 **Новое**
@@ -196,6 +203,13 @@
 ---
 
 ## English
+
+### Version 8.2 — 2026-11-23
+
+**New**
+- A “Lock screen” button on the main screen under “Minimize all windows” (the Start window closes and the screen locks, like ⌃⌘Q).
+- Phones over MTP: if a phone returns an empty storage list in the first seconds (seen on Samsung), Start asks up to five more times with a pause; `Pusk-MTP.log` now records how many storages the phone reported; the “The phone gave no storages” message also mentions the Samsung option that blocks USB connections while the phone is locked.
+- Version 8.2.
 
 ### Version 8.1 — 2026-11-23
 

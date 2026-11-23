@@ -67,7 +67,7 @@ enum MTPError: LocalizedError {
         switch self {
         case .usb(let s): return s
         case .noStorage:
-            return T("Телефон не отдал хранилища. Разблокируйте экран и разрешите доступ к данным на телефоне.")
+            return T("Телефон не отдал хранилища. Разблокируйте экран и разрешите доступ к данным на телефоне. На Samsung также выключите пункт, блокирующий подключение USB, когда телефон заблокирован.")
         case .protocolError(let s): return s
         case .response(let c):
             switch c {
@@ -513,13 +513,21 @@ final class MTPSession {
 
     func storages() throws -> [MTPStorageInfo] {
         lock.lock(); defer { lock.unlock() }
-        var d = Data()
-        try run(0x1004, sink: { d.append($0) })
-        var r = MTPReader(d)
-        let ids = r.u32Array()
+        // некоторые телефоны (Samsung) в первые секунды после открытия сеанса отдают пустой список хранилищ: спрашиваем несколько раз
+        var ids: [UInt32] = []
+        for attempt in 1...6 {
+            var d = Data()
+            try run(0x1004, sink: { d.append($0) })
+            var r = MTPReader(d)
+            ids = r.u32Array()
+            MTPLog.log("хранилища: попытка \(attempt), получено \(d.count) байт, найдено \(ids.count)")
+            if !ids.isEmpty { break }
+            Thread.sleep(forTimeInterval: 0.8)
+        }
         var out: [MTPStorageInfo] = []
         for sid in ids {
-            if let s = try? storageInfo(sid) { out.append(s) }
+            do { out.append(try storageInfo(sid)) }
+            catch { MTPLog.log("хранилище \(sid): ошибка \(error.localizedDescription)") }
         }
         if out.isEmpty { throw MTPError.noStorage }
         return out

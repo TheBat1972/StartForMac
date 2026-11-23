@@ -7345,6 +7345,20 @@ struct RootView: View {
                 .buttonStyle(.plain)
                 .hoverHighlight(7)
                 .help(T("Свернуть окна всех программ. Повторное нажатие их не разворачивает"))
+
+                Button {
+                    close()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { ScreenLock.lock() }
+                } label: {
+                    Label(T("Заблокировать экран"), systemImage: "lock")
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 8).padding(.vertical, 6)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .hoverHighlight(7)
+                .help(T("Заблокировать экран Mac (как ⌃⌘Q)"))
                 }
 
                 // быстрые вызовы программ слева (в рамке, их можно заменить), «Инструменты» — справа у края
