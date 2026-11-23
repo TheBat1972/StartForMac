@@ -6390,6 +6390,8 @@ struct SettingsView: View {
     }
 
     @State private var clipRemember = ClipboardHistory.remember
+    @State private var updateAuto = AppUpdater.auto
+    @ObservedObject private var updater = AppUpdater.shared
 
     private func toggleRow(_ title: String, _ on: Bool, disabled: Bool = false, _ set: @escaping (Bool) -> Void) -> some View {
         HStack(alignment: .center, spacing: 12) {
@@ -6411,7 +6413,7 @@ struct SettingsView: View {
     }
 
     private enum Tab: String, CaseIterable, Identifiable {
-        case interface, control, windows, finder, layout
+        case interface, control, windows, finder, layout, about
         var id: String { rawValue }
         var title: String {
             switch self {
@@ -6420,6 +6422,7 @@ struct SettingsView: View {
             case .windows: return T("Окна")
             case .finder: return T("Finder и рабочий стол")
             case .layout: return T("Раскладка")
+            case .about: return T("О программе")
             }
         }
         var symbol: String {
@@ -6429,6 +6432,7 @@ struct SettingsView: View {
             case .windows: return "macwindow.on.rectangle"
             case .finder: return "folder"
             case .layout: return "globe"
+            case .about: return "info.circle"
             }
         }
     }
@@ -6460,6 +6464,43 @@ struct SettingsView: View {
                             }
                             .pickerStyle(.segmented)
                             .labelsHidden()
+                        }
+                        sep()
+                        section(T("Обновления")) {
+                            toggleRow(T("Проверять обновления раз в день"), updateAuto) {
+                                updateAuto = $0
+                                AppUpdater.shared.setAuto($0)
+                            }
+                            if let v = updater.availableVersion {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    HStack {
+                                        Image(systemName: "arrow.down.circle.fill").foregroundColor(.orange)
+                                        Text(Tf("Доступна новая версия %@ (у вас %@)", v, AppUpdater.currentVersion)).fontWeight(.semibold)
+                                        Spacer()
+                                        Button(T("Обновить")) { AppUpdater.shared.installAvailable() }
+                                            .disabled(updater.busy)
+                                    }
+                                    if !updater.availableNotes.isEmpty {
+                                        ScrollView {
+                                            Text(updater.availableNotes)
+                                                .font(.caption).foregroundColor(.secondary)
+                                                .frame(maxWidth: .infinity, alignment: .leading)
+                                                .textSelection(.enabled)
+                                        }
+                                        .frame(maxHeight: 180)
+                                    }
+                                    if updater.busy { Text(updater.status).font(.caption).foregroundColor(.secondary) }
+                                }
+                                .padding(10)
+                                .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.12)))
+                            }
+                            HStack {
+                                Text(updater.status.isEmpty ? Tf("Версия %@", AppUpdater.currentVersion) : updater.status)
+                                    .font(.caption).foregroundColor(.secondary)
+                                Spacer()
+                                Button(T("Проверить сейчас")) { AppUpdater.shared.check(manual: true) }
+                                    .disabled(updater.busy)
+                            }
                         }
                         sep()
                         section(T("Запуск")) {
@@ -6651,6 +6692,23 @@ struct SettingsView: View {
         }
     }
 
+    private var aboutTab: some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 14) {
+                Image(nsImage: NSApp.applicationIconImage)
+                    .resizable().frame(width: 64, height: 64)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("StartForMac").font(.title2).fontWeight(.semibold)
+                    Text(Tf("Версия %@", AppUpdater.currentVersion)).foregroundColor(.secondary)
+                    Text((Bundle.main.object(forInfoDictionaryKey: "NSHumanReadableCopyright") as? String) ?? "")
+                        .font(.caption).foregroundColor(.secondary)
+                }
+                Spacer()
+            }
+            ReadmeView().frame(height: 420)
+        }
+    }
+
     private var layoutTab: some View {
         VStack(alignment: .leading, spacing: 18) {
                         section(T("Раскладка")) {
@@ -6704,6 +6762,7 @@ struct SettingsView: View {
         case .windows: windowsTab
         case .finder: finderTab
         case .layout: layoutTab
+        case .about: aboutTab
         }
     }
 
@@ -6819,6 +6878,7 @@ struct RootView: View {
     @State private var toolsBtnBox = FrameBox()
     @State private var showClip = false
     @ObservedObject private var clipHist = ClipboardHistory.shared
+    @ObservedObject private var updater = AppUpdater.shared
     @ObservedObject private var cleanDesk = CleanDesktop.shared
     @StateObject private var clipUI = ClipUI()
     @State private var restOpen = false      // «Передохни» раскрыто: Тетрис / Косынка
@@ -7070,6 +7130,9 @@ struct RootView: View {
                     Button { (NSApp.delegate as? AppDelegate)?.openSettings() } label: {
                         Image(systemName: "gearshape.2")
                             .padding(5).contentShape(Rectangle())
+                            .overlay(alignment: .topTrailing) {
+                                if updater.availableVersion != nil { Circle().fill(Color.orange).frame(width: 8, height: 8) }
+                            }
                     }
                     .buttonStyle(.plain)
                     .hoverHighlight(6)
@@ -7823,6 +7886,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.global(qos: .utility).async { cleanDropTemp() }
         setupMenu()
         TMExtras.bootstrap()
+        AppUpdater.shared.start()
         NotificationCenter.default.addObserver(forName: .languageChanged, object: nil, queue: .main) { [weak self] _ in
             self?.setupMenu()
         }
@@ -7959,11 +8023,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         SettingsWindowController.shared.show(store: store, mc: minimize, resetPlacement: { [weak self] in self?.resetPlacement() })
     }
 
+    /// Стандартное окно «О программе» без второго номера в скобках («Version 8.1 (8.1)»)
+    @objc private func showAbout() {
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.orderFrontStandardAboutPanel(options: [NSApplication.AboutPanelOptionKey.version: ""])
+    }
+
+    @objc private func checkUpdates() { AppUpdater.shared.check(manual: true) }   // найдена новая — откроются настройки с кнопкой «Обновить»
+
     private func setupMenu() {
         let main = NSMenu()
         let appItem = NSMenuItem(); main.addItem(appItem)
         let appMenu = NSMenu(); appItem.submenu = appMenu
-        appMenu.addItem(withTitle: T("О программе «StartForMac»"), action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        let about = NSMenuItem(title: T("О программе «StartForMac»"), action: #selector(showAbout), keyEquivalent: "")
+        about.target = self
+        appMenu.addItem(about)
+        let upd = NSMenuItem(title: T("Проверить обновления…"), action: #selector(checkUpdates), keyEquivalent: "")
+        upd.target = self
+        appMenu.addItem(upd)
         appMenu.addItem(.separator())
         let prefs = NSMenuItem(title: T("Настройки…"), action: #selector(openSettings), keyEquivalent: ",")
         prefs.target = self

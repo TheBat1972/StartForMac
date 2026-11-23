@@ -7,8 +7,8 @@
     <key>CFBundleIdentifier</key><string>ru.local.StartMenu.FinderExt</string>
     <key>CFBundleExecutable</key><string>StartFinderExt</string>
     <key>CFBundlePackageType</key><string>XPC!</string>
-    <key>CFBundleShortVersionString</key><string>8.0</string>
-    <key>CFBundleVersion</key><string>8.0</string>
+    <key>CFBundleShortVersionString</key><string>8.1</string>
+    <key>CFBundleVersion</key><string>8.1</string>
     <key>LSMinimumSystemVersion</key><string>12.0</string>
     <key>NSExtension</key>
     <dict>

@@ -4,6 +4,14 @@
 
 ## Русский
 
+### Версия 8.1 — 2026-11-23
+
+**Новое**
+- **Автообновление.** Раз в сутки «Пуск» проверяет последний релиз на GitHub (TheBat1972/StartForMac); если вышла новая версия, в настройках появляется сообщение с описанием из релиза и кнопка «Обновить» (на значке настроек в «Пуске» загорается оранжевая точка; всплывающих окон нет). Обновление: скачивание StartForMac.zip из релиза, проверка подписи и идентификатора, замена программы в её папке и перезапуск. Включается и выключается в Настройки → «Интерфейс» → «Обновления» (по умолчанию включено), там же кнопка «Проверить сейчас»; есть пункт «Проверить обновления…» в меню программы. Релиз: тег вида `8.2` (подойдёт и `v8.2`), в файлах `StartForMac.zip`, в описании — что нового. Репозиторий должен быть открытым, иначе релизы не видны.
+- Окно «О программе» показывает версию без второго номера в скобках; в настройках появилась вкладка «О программе» (значок, версия, авторские права) после вкладки «Раскладка».
+- Вкладка «О программе» в настройках содержит прокручиваемое описание программы: разделы «Возможности» и «Приватность и безопасность» текущего README, русский или английский в зависимости от языка программы (при сборке `build.sh` кладёт README.md и README.ru.md в программу).
+- Версия 8.1.
+
 ### Версия 8.0 — 2026-11-22
 
 **Новое**
@@ -188,6 +196,14 @@
 ---
 
 ## English
+
+### Version 8.1 — 2026-11-23
+
+**New**
+- **Automatic updates.** Once a day Start checks the latest GitHub release (TheBat1972/StartForMac); if a newer version is out a message with the release notes and an “Update” button appears in Settings (the settings icon in Start gets an orange dot; no pop-up windows). Updating downloads StartForMac.zip from the release, verifies the signature and identifier, replaces the app in its folder and restarts it. Toggle it in Settings → Interface → Updates (on by default), with a “Check now” button there and a “Check for updates…” item in the app menu. Release: a tag like `8.2` (`v8.2` works too), `StartForMac.zip` in the files, the notes in the description. The repository must be public, otherwise releases are not visible.
+- The About window shows the version without the second number in parentheses; Settings has a new “About” tab (icon, version, copyright) after “Keyboard layout”.
+- The “About” tab in Settings has a scrollable description of the app: the “Features” and “Privacy and security” sections of the current README, Russian or English depending on the app language (`build.sh` bundles README.md and README.ru.md into the app).
+- Version 8.1.
 
 ### Version 8.0 — 2026-11-22
 

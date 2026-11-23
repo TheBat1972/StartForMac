@@ -30,6 +30,7 @@ cp Info.plist "$STAGE/Contents/Info.plist"
 [ -d SnakeRes ] && cp -R SnakeRes "$STAGE/Contents/Resources/SnakeRes"   # картинки и звуки для Snake
 [ -d ArcanRes ] && cp -R ArcanRes "$STAGE/Contents/Resources/ArcanRes"   # картинки и звуки для Arcan
 [ -d DiamRes ] && cp -R DiamRes "$STAGE/Contents/Resources/DiamRes"       # картинки и звуки для Diam
+cp README.md README.ru.md "$STAGE/Contents/Resources/"   # описание для вкладки «О программе» в настройках
 [ -d FinderTemplates ] && cp -R FinderTemplates "$STAGE/Contents/Resources/FinderTemplates"   # пустые документы для «Создать» в Finder
 [ -d PacmanRes ] && cp -R PacmanRes "$STAGE/Contents/Resources/PacmanRes"   # картинки и звуки для Pacman
 
