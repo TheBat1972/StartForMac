@@ -8,7 +8,7 @@ import UniformTypeIdentifiers
 //
 // Дубликаты: файлы с одинаковым размером сравниваются по хешу SHA-256 (сначала первый мегабайт, потом весь файл).
 // Похожие фото: уменьшенная копия 9×8 в градациях серого → 64-битный «отпечаток» (dHash); близкие отпечатки
-// и близкие пропорции дают группу. В Корзину уходит только отмеченное, в каждой группе одна копия остаётся всегда.
+// и близкие пропорции дают группу. В Корзину уходит только отмеченное; «Выбрать лишние» оставляет по одной копии, но при желании можно отметить и все.
 
 struct DupFile: Identifiable {
     let url: URL
@@ -249,8 +249,19 @@ enum DupScanner {
 
 // MARK: - Модель
 
+/// Строка дерева папок для окна исключений
+struct DupFolderRow: Identifiable {
+    let id: String          // полный путь
+    let name: String
+    let depth: Int
+    let count: Int          // сколько файлов из результатов лежит в папке и глубже
+    let hasChildren: Bool
+}
+
 final class DupModel: ObservableObject {
     static let shared = DupModel()
+
+    init() { excluded = Set(UserDefaults.standard.stringArray(forKey: "dup.excluded") ?? []) }
 
     enum Stage { case choose, scanning, result }
     enum Tab { case dups, similar }
@@ -265,6 +276,16 @@ final class DupModel: ObservableObject {
     @Published var message: String?
     @Published var confirm = false
     @Published var includeSimilar = true
+    /// Папки, исключённые из результатов (с подпапками); запоминаются между поисками
+    @Published var excluded = Set<String>() {
+        didSet {
+            UserDefaults.standard.set(excluded.sorted(), forKey: "dup.excluded")
+            applyExclusions()
+        }
+    }
+    private var rawDup: [DupGroup] = []
+    private var rawSim: [DupGroup] = []
+    private var scanRoot = URL(fileURLWithPath: "/")
     private var all: [String: DupFile] = [:]
     private var state: DupState?
     private var timer: Timer?
@@ -284,6 +305,9 @@ final class DupModel: ObservableObject {
         selected = []
         dupGroups = []
         similarGroups = []
+        rawDup = []
+        rawSim = []
+        scanRoot = root.standardizedFileURL
         phase = T("Поиск файлов…")
         progress = 0
         let st = DupState()
@@ -306,15 +330,71 @@ final class DupModel: ObservableObject {
             DispatchQueue.main.async {
                 guard let self = self, gen == self.generation else { return }
                 self.timer?.invalidate()
-                self.dupGroups = dups
-                self.similarGroups = sim
+                self.rawDup = dups
+                self.rawSim = sim
+                self.applyExclusions()
                 var map: [String: DupFile] = [:]
                 for g in dups + sim { for f in g.files { map[f.id] = f } }
                 self.all = map
-                self.tab = dups.isEmpty && !sim.isEmpty ? .similar : .dups
+                self.tab = self.dupGroups.isEmpty && !self.similarGroups.isEmpty ? .similar : .dups
                 self.stage = .result
             }
         }
+    }
+
+    // MARK: Исключение папок
+
+    func isExcluded(_ path: String) -> Bool {
+        excluded.contains { path == $0 || path.hasPrefix($0 + "/") }
+    }
+
+    /// Файлы исключённых папок не участвуют в результатах; группы, где осталась одна копия, пропадают
+    private func applyExclusions() {
+        func filtered(_ gs: [DupGroup]) -> [DupGroup] {
+            gs.compactMap { g in
+                var x = g
+                x.files.removeAll { isExcluded($0.url.path) }
+                return x.files.count > 1 ? x : nil
+            }
+        }
+        dupGroups = filtered(rawDup)
+        similarGroups = filtered(rawSim)
+        selected = selected.filter { !isExcluded($0) }
+        message = nil
+    }
+
+    func excludeFolder(_ path: String) { excluded.insert(path) }
+    func includeFolder(_ path: String) { excluded.remove(path) }
+    func resetExclusions() { excluded = [] }
+
+    /// Дерево папок, в которых есть файлы из результатов (до корня поиска), развёрнутое по `expanded`
+    func folderRows(expanded: Set<String>) -> [DupFolderRow] {
+        let root = scanRoot.path
+        var counts: [String: Int] = [:]
+        var children: [String: Set<String>] = [:]
+        var seen = Set<String>()
+        for g in rawDup + rawSim {
+            for f in g.files where seen.insert(f.id).inserted {
+                var dir = f.url.deletingLastPathComponent().standardizedFileURL.path
+                while true {
+                    counts[dir, default: 0] += 1
+                    if dir == root || dir == "/" || dir.isEmpty { break }
+                    let parent = (dir as NSString).deletingLastPathComponent
+                    if parent == dir { break }
+                    children[parent, default: []].insert(dir)
+                    dir = parent
+                }
+            }
+        }
+        var rows: [DupFolderRow] = []
+        func walk(_ path: String, _ depth: Int) {
+            let kids = (children[path] ?? []).sorted { ($0 as NSString).lastPathComponent.localizedCaseInsensitiveCompare(($1 as NSString).lastPathComponent) == .orderedAscending }
+            let name = path == root ? (path == NSHomeDirectory() ? "~" : (path as NSString).lastPathComponent) : (path as NSString).lastPathComponent
+            rows.append(DupFolderRow(id: path, name: name.isEmpty ? "/" : name, depth: depth, count: counts[path] ?? 0, hasChildren: !kids.isEmpty))
+            if expanded.contains(path) { for k in kids { walk(k, depth + 1) } }
+        }
+        if counts[root] != nil { walk(root, 0) }
+        return rows
     }
 
     func cancel() {
@@ -326,24 +406,17 @@ final class DupModel: ObservableObject {
 
     // MARK: Выбор
 
-    /// Нельзя отметить файл, если после этого в какой-нибудь группе не останется ни одной неотмеченной копии
-    func canSelect(_ f: DupFile) -> Bool {
-        for g in dupGroups + similarGroups where g.files.contains(where: { $0.id == f.id }) {
-            if !g.files.contains(where: { $0.id != f.id && !selected.contains($0.id) }) { return false }
-        }
-        return true
-    }
+    /// Отметить можно любой файл, в том числе все копии группы (перед удалением будет предупреждение)
+    func canSelect(_ f: DupFile) -> Bool { true }
 
     func toggle(_ f: DupFile) {
-        if selected.contains(f.id) {
-            selected.remove(f.id)
-            message = nil
-        } else if canSelect(f) {
-            selected.insert(f.id)
-            message = nil
-        } else {
-            message = T("Нельзя отметить все копии: одна должна остаться")
-        }
+        if selected.contains(f.id) { selected.remove(f.id) } else { selected.insert(f.id) }
+        message = nil
+    }
+
+    /// В скольких группах отмечены все копии: после удаления не останется ни одной
+    var fullyMarkedGroups: Int {
+        (dupGroups + similarGroups).filter { g in g.files.allSatisfy { selected.contains($0.id) } }.count
     }
 
     /// В каждой группе оставляем одну копию: у дубликатов — самую старую, у фото — с наибольшим разрешением
@@ -371,8 +444,9 @@ final class DupModel: ObservableObject {
                         return x.files.count > 1 ? x : nil
                     }
                 }
-                self.dupGroups = clean(self.dupGroups)
-                self.similarGroups = clean(self.similarGroups)
+                self.rawDup = clean(self.rawDup)
+                self.rawSim = clean(self.rawSim)
+                self.applyExclusions()
                 let failed = urls.filter { FileManager.default.fileExists(atPath: $0.path) }
                 self.selected = Set(failed.map { $0.path })
                 self.message = failed.isEmpty ? nil : Tf("Не удалось переместить в Корзину: %@", "\(failed.count)")
@@ -427,6 +501,7 @@ struct DupThumb: View {
 struct DupPanel: View {
     @ObservedObject var model: DupModel
     @State private var dropTargeted = false
+    @State private var showFolders = false
 
     private func fmt(_ b: Int64) -> String { ByteCountFormatter.string(fromByteCount: b, countStyle: .file) }
     private static let dateFmt: DateFormatter = {
@@ -461,6 +536,7 @@ struct DupPanel: View {
             }
         }
         .overlay { if model.confirm { confirmView } }
+        .sheet(isPresented: $showFolders) { DupFoldersSheet(model: model) { showFolders = false } }
     }
 
     private func dropFolder(_ providers: [NSItemProvider]) -> Bool {
@@ -586,6 +662,10 @@ struct DupPanel: View {
                 Text((f.width > 0 ? "\(f.width)×\(f.height) · " : "") + DupPanel.dateFmt.string(from: f.date))
                     .font(.caption).foregroundColor(.secondary)
             }
+            Button { model.excludeFolder(f.url.deletingLastPathComponent().path) } label: {
+                Image(systemName: "folder.badge.minus").foregroundColor(.secondary)
+            }
+            .buttonStyle(.plain).help(T("Исключить эту папку из поиска"))
             Button { DiskPreview.show(f.url) } label: { Image(systemName: "eye").foregroundColor(.secondary) }
                 .buttonStyle(.plain).help(T("Предпросмотр"))
             Button { NSWorkspace.shared.activateFileViewerSelecting([f.url]) } label: {
@@ -608,6 +688,7 @@ struct DupPanel: View {
             Spacer()
             Button(T("Выбрать лишние")) { model.selectExtras() }
             Button(T("Снять выбор")) { model.clearSelection() }.disabled(model.selected.isEmpty)
+            Button(model.excluded.isEmpty ? T("Исключить папки…") : Tf("Исключить папки: %@", "\(model.excluded.count)")) { showFolders = true }
             Button(T("Новый поиск")) { model.stage = .choose }
             Button(T("В Корзину…")) { model.confirm = true }.disabled(model.selected.isEmpty)
             Button(T("Закрыть")) { DupWindowController.shared.close() }
@@ -622,6 +703,10 @@ struct DupPanel: View {
                 Image(systemName: "trash.circle.fill").font(.system(size: 34)).foregroundColor(.orange)
                 Text(Tf("Переместить в Корзину файлов: %@?", "\(model.selected.count)")).font(.title3.bold())
                 Text(Tf("Освободится: %@", "\(fmt(model.selectedSize))")).font(.callout)
+                if model.fullyMarkedGroups > 0 {
+                    Text(Tf("Внимание: в группах, где отмечены все копии, не останется ни одной: %@", "\(model.fullyMarkedGroups)"))
+                        .font(.callout).foregroundColor(.red).multilineTextAlignment(.center)
+                }
                 Text(T("Вернуть можно из Корзины, пока вы её не очистили.")).font(.caption).foregroundColor(.secondary)
                 HStack {
                     Button(T("Нет, вернуться")) { model.confirm = false }
@@ -633,6 +718,69 @@ struct DupPanel: View {
             .background(RoundedRectangle(cornerRadius: 12).fill(Color(NSColor.windowBackgroundColor)))
             .shadow(radius: 20)
         }
+    }
+}
+
+/// Дерево папок с галочками: снятая галочка исключает папку (и всё внутри) из результатов
+struct DupFoldersSheet: View {
+    @ObservedObject var model: DupModel
+    let close: () -> Void
+    @State private var expanded = Set<String>()
+    @State private var started = false
+
+    var body: some View {
+        let rows = model.folderRows(expanded: expanded)
+        return VStack(alignment: .leading, spacing: 10) {
+            Text(T("Исключить папки")).font(.headline)
+            Text(T("Снимите галочку с папки: её файлы исчезнут из результатов, а группы, где не осталось повторов, пропадут. Выбор запоминается для следующих поисков."))
+                .font(.caption).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(rows) { r in rowView(r) }
+                }
+                .padding(4)
+            }
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.07)))
+            HStack {
+                Button(T("Включить все")) { model.resetExclusions() }.disabled(model.excluded.isEmpty)
+                Spacer()
+                Button(T("Готово"), action: close).keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(16)
+        .frame(width: 520, height: 460)
+        .onAppear {
+            if !started, let first = model.folderRows(expanded: []).first { expanded = [first.id]; started = true }
+        }
+    }
+
+    private func rowView(_ r: DupFolderRow) -> some View {
+        let byParent = model.isExcluded(r.id) && !model.excluded.contains(r.id)   // исключена родительская папка
+        let off = model.isExcluded(r.id)
+        return HStack(spacing: 6) {
+            Color.clear.frame(width: CGFloat(r.depth) * 16, height: 1)
+            Button {
+                if expanded.contains(r.id) { expanded.remove(r.id) } else { expanded.insert(r.id) }
+            } label: {
+                Image(systemName: expanded.contains(r.id) ? "chevron.down" : "chevron.right")
+                    .font(.system(size: 10, weight: .semibold)).frame(width: 14)
+                    .opacity(r.hasChildren ? 1 : 0)
+            }
+            .buttonStyle(.plain).disabled(!r.hasChildren)
+            Button {
+                if model.excluded.contains(r.id) { model.includeFolder(r.id) } else if !byParent { model.excludeFolder(r.id) }
+            } label: {
+                Image(systemName: off ? "square" : "checkmark.square.fill")
+                    .font(.system(size: 16)).foregroundColor(off ? .secondary : .accentColor)
+            }
+            .buttonStyle(.plain).disabled(byParent)
+            Image(systemName: "folder").foregroundColor(off ? .secondary : .accentColor)
+            Text(r.name).lineLimit(1).truncationMode(.middle).foregroundColor(off ? .secondary : .primary)
+            Spacer(minLength: 8)
+            Text(Tf("Файлов: %@", "\(r.count)")).font(.caption).foregroundColor(.secondary)
+        }
+        .padding(.vertical, 3).padding(.horizontal, 4)
+        .contentShape(Rectangle())
     }
 }
 

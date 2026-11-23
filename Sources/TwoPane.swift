@@ -91,6 +91,8 @@ final class TPPane: ObservableObject {
     @Published var error: String?
     @Published var mtp: MTPLoc?
     let search = FileSearch()      // поиск, как в «Пуске»
+    var searchActive = false       // поверх списка показаны результаты поиска
+    var hitURL: URL?               // выбранная строка результатов поиска
     @Published var displayPath = ""
 
     // выделение диапазоном (Shift)
@@ -120,6 +122,12 @@ final class TPPane: ObservableObject {
 
     /// Над чем работают команды: отмеченные, а если ничего не отмечено — файл под курсором
     func targets() -> [TPItem] {
+        if searchActive {                     // в режиме поиска работаем с выбранным результатом, а не со списком под ним
+            guard let u = hitURL else { return [] }
+            let v = try? u.resourceValues(forKeys: [.isDirectoryKey, .isPackageKey, .fileSizeKey, .contentModificationDateKey])
+            return [TPItem(url: u, name: u.lastPathComponent, isDir: v?.isDirectory ?? false, isPackage: v?.isPackage ?? false,
+                           size: Int64(v?.fileSize ?? 0), modified: v?.contentModificationDate)]
+        }
         let m = items.filter { !$0.isParent && !$0.isStorage && marked.contains($0.id) }
         if !m.isEmpty { return m }
         if let c = current, !c.isParent, !c.isStorage { return [c] }
@@ -1415,6 +1423,16 @@ struct TPPaneView: View {
         }
     }
 
+    /// Передаёт панели, что выбрано в результатах поиска: F5/F6/F8 работают именно с этим
+    private func syncHit() {
+        pane.searchActive = searching
+        if searching, let id = hitSel, search.hits.contains(where: { $0.id == id }) {
+            pane.hitURL = URL(fileURLWithPath: id)
+        } else {
+            pane.hitURL = nil
+        }
+    }
+
     private func reveal(_ h: FileHit) {
         let u = URL(fileURLWithPath: h.id)
         query = ""
@@ -1583,7 +1601,9 @@ struct TPPaneView: View {
             Button(T("Обновить")) { pane.reload() }
         }
         .onAppear { pathText = pane.displayPath }
-        .onChange(of: query) { search.update($0) }
+        .onChange(of: query) { search.update($0); syncHit() }
+        .onChange(of: hitSel) { _ in syncHit() }
+        .onChange(of: search.hits.count) { _ in syncHit() }
         .onChange(of: pane.displayPath) { pathText = $0 }
         .simultaneousGesture(TapGesture().onEnded { st.active = index })
     }

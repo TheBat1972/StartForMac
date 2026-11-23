@@ -125,6 +125,14 @@ func defaultOutputDir(for input: URL) -> URL {
     return input.deletingLastPathComponent()
 }
 
+/// Что показать за кнопкой «Папка…»: выбранная папка, а если не выбрана — реальная целевая папка очереди
+/// (для перетащенных из других программ файлов это «Загрузки»). nil — очередь пуста или папки разные.
+func outputFolderLabel(explicit: URL?, inputs: [URL]) -> String? {
+    if let e = explicit { return e.path }
+    let dirs = Set(inputs.map { defaultOutputDir(for: $0).path })
+    return dirs.count == 1 ? dirs.first : nil
+}
+
 /// Удаляет временные копии перетащенных файлов (dc-drop-…), оставшиеся с прошлых запусков
 func cleanDropTemp() {
     let fm = FileManager.default
@@ -174,19 +182,42 @@ func loadDroppedFile(_ p: NSItemProvider, _ done: @escaping (URL) -> Void) {
 }
 
 private func loadDroppedFileURL(_ p: NSItemProvider, fallback: @escaping () -> Void, done: @escaping (URL) -> Void) {
-    guard p.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) else { fallback(); return }
+    /// Настоящий путь: ссылки вида file:///.file/id=… превращаем в обычные
+    func real(_ u: URL) -> URL? {
+        guard u.isFileURL else { return nil }
+        let r = (u as NSURL).filePathURL ?? u
+        return FileManager.default.fileExists(atPath: r.path) ? r : nil
+    }
+    // запасной путь: объект-ссылка (Finder отдаёт её и там, где fileURL недоступен) — тогда копия не нужна
+    func viaObject() {
+        if p.canLoadObject(ofClass: NSURL.self) {
+            _ = p.loadObject(ofClass: NSURL.self) { obj, _ in
+                if let u = obj as? NSURL, let r = real(u as URL) { done(r) } else { fallback() }
+            }
+        } else { fallback() }
+    }
+    guard p.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) else { viaObject(); return }
     p.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
         var url: URL?
         if let d = item as? Data { url = URL(dataRepresentation: d, relativeTo: nil) }
         else if let u = item as? URL { url = u }
         else if let u = item as? NSURL { url = u as URL }
-        if let u = url, u.isFileURL { done(u) } else { fallback() }
+        if let u = url, let r = real(u) { done(r) } else { viaObject() }
     }
 }
 
 extension View {
     func fileDrop(targeted: Binding<Bool>, _ handler: @escaping ([URL]) -> Void) -> some View {
         onDrop(of: [UTType.fileURL, UTType.item], isTargeted: targeted) { providers in
+            // Сначала настоящие пути прямо из буфера перетаскивания: так Finder отдаёт сами файлы, а не их копии
+            let real = (NSPasteboard(name: .drag).readObjects(forClasses: [NSURL.self],
+                        options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? [])
+                .map { ($0 as NSURL).filePathURL ?? $0 }
+                .filter { FileManager.default.fileExists(atPath: $0.path) }
+            if !real.isEmpty {
+                DispatchQueue.main.async { handler(real) }
+                return true
+            }
             for p in providers {
                 loadDroppedFile(p) { url in DispatchQueue.main.async { handler([url]) } }
             }

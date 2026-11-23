@@ -799,19 +799,28 @@ final class Store: ObservableObject, @unchecked Sendable {
             let adminIDs = ids.filter { Maintenance.adminCommand($0) != nil }
             if !adminIDs.isEmpty {
                 DispatchQueue.main.async { m.note = T("Введите пароль администратора в окне системы…") }
-                let script = adminIDs.map { "\(Maintenance.adminCommand($0)!); echo \"@@\($0):$?\"" }
+                // вывод каждой команды складываем между метками, чтобы показать причину сбоя
+                let script = adminIDs.map { "echo \"@@B:\($0)\"; { \(Maintenance.adminCommand($0)!); } 2>&1; echo \"@@\($0):$?\"" }
                     .joined(separator: "\n")
                 let res = Admin.run(tool: "/bin/sh", args: ["-c", script])
                 var codes: [String: String] = [:]
-                for line in res.output.split(separator: "\n") where line.hasPrefix("@@") {
-                    let parts = line.dropFirst(2).split(separator: ":")
-                    if parts.count == 2 { codes[String(parts[0])] = String(parts[1]) }
+                var outputs: [String: String] = [:]
+                var current: String?
+                for line in res.output.split(separator: "\n", omittingEmptySubsequences: false) {
+                    if line.hasPrefix("@@B:") { current = String(line.dropFirst(4)); continue }
+                    if line.hasPrefix("@@") {
+                        let parts = line.dropFirst(2).split(separator: ":")
+                        if parts.count == 2 { codes[String(parts[0])] = String(parts[1]) }
+                        current = nil
+                        continue
+                    }
+                    if let c = current { outputs[c, default: ""] += line + "\n" }
                 }
                 DispatchQueue.main.async {
                     for id in adminIDs {
                         if !res.ok { m.set(id, .failed(Tf("Нет прав администратора: %@", "\(res.detail)"))) }
                         else if codes[id] == "0" { m.set(id, .ok(T("Готово"))) }
-                        else { m.set(id, .failed(Tf("Не удалось (код %@)", "\(codes[id] ?? "?")"))) }
+                        else { m.set(id, .failed(Maintenance.failure(code: codes[id] ?? "?", output: outputs[id] ?? ""))) }
                     }
                 }
             }
@@ -2161,6 +2170,7 @@ struct MaintTask: Identifiable {
     let title: String
     let symbol: String
     let info: String
+    let command: String        // что именно будет выполнено (показываем пользователю)
     let needsAdmin: Bool
     var selected = false
     var status: MaintStatus = .idle
@@ -2182,32 +2192,67 @@ enum Maintenance {
     static let allTasks: [MaintTask] = [
         MaintTask(id: "ram", title: T("Освободить оперативную память"), symbol: "memorychip",
                   info: T("Выгружает неиспользуемые данные из памяти, чтобы программы открывались быстрее."),
+                  command: "sudo purge",
                   needsAdmin: true),
-        MaintTask(id: "scripts", title: T("Запустить скрипты обслуживания"), symbol: "checklist",
-                  info: T("Ежедневные, еженедельные и ежемесячные задачи macOS: ротация логов и очистка временных данных."),
+        MaintTask(id: "ls", title: T("Пересобрать список «Открыть с помощью»"), symbol: "list.bullet.rectangle",
+                  info: T("Лечит дубли программ в меню «Открыть с помощью», неверные программы по умолчанию и пропавшие значки файлов. Ничего не удаляет: macOS заново собирает список приложений. Может занять до минуты."),
+                  command: "lsregister -kill -r -domain local -domain system -domain user",
+                  needsAdmin: false),
+        MaintTask(id: "ql", title: T("Очистить кэш просмотра и миниатюр"), symbol: "eye",
+                  info: T("Помогает, если пробел в Finder показывает пустой или старый просмотр файла, а миниатюры не обновляются. Кэш создастся заново сам."),
+                  command: "qlmanage -r cache; qlmanage -r",
+                  needsAdmin: false),
+        MaintTask(id: "ui", title: T("Перезапустить Dock, Finder и строку меню"), symbol: "arrow.clockwise",
+                  info: T("Лечит зависший Dock, значки, которые не обновляются, и «залипшую» строку меню. Экран на секунду мигнёт, окна Finder закроются и откроются заново; открытые программы и файлы не затрагиваются."),
+                  command: "killall Dock; killall Finder; killall SystemUIServer",
+                  needsAdmin: false),
+        MaintTask(id: "audio", title: T("Перезапустить звуковую службу"), symbol: "speaker.wave.2",
+                  info: T("Помогает, если пропал звук, он трещит или не переключается на наушники. Звук на пару секунд пропадёт. Перезагружать Мак не нужно."),
+                  command: "sudo killall coreaudiod",
+                  needsAdmin: true),
+        MaintTask(id: "bt", title: T("Перезапустить Bluetooth"), symbol: "dot.radiowaves.left.and.right",
+                  info: T("Помогает, если наушники, мышь или клавиатура не подключаются или «не видны». Bluetooth-устройства на несколько секунд отключатся и подключатся снова."),
+                  command: "sudo killall bluetoothd",
                   needsAdmin: true),
         MaintTask(id: "dns", title: T("Сбросить кэш DNS"), symbol: "network",
                   info: T("Помогает, если сайты не открываются или открываются по старым адресам."),
+                  command: "dscacheutil -flushcache; killall -HUP mDNSResponder",
                   needsAdmin: true),
         MaintTask(id: "mail", title: T("Ускорить Почту"), symbol: "envelope",
                   info: T("Оптимизирует базу писем в «Почте». Почта должна быть закрыта, нужен «Полный доступ к диску»."),
+                  command: "sqlite3 ~/Library/Mail/V*/MailData/\"Envelope Index\" \"VACUUM;\"",
                   needsAdmin: false),
         MaintTask(id: "spotlight", title: T("Переиндексировать Spotlight"), symbol: "magnifyingglass",
                   info: T("Пересоздаёт поисковый индекс, если Spotlight не находит файлы. Индексация займёт какое-то время."),
+                  command: "sudo mdutil -E /",
                   needsAdmin: true),
         MaintTask(id: "perms", title: T("Восстановить права доступа"), symbol: "lock.rotation",
                   info: T("Сбрасывает права на файлы вашей домашней папки к стандартным."),
+                  command: "diskutil resetUserPermissions / $(id -u)",
                   needsAdmin: false),
         MaintTask(id: "tm", title: T("Прореживание снимков Time Machine"), symbol: "clock.arrow.circlepath",
                   info: T("Удаляет локальные снимки Time Machine и освобождает занятое ими место."),
+                  command: "sudo tmutil thinlocalsnapshots / 99999999999 4",
                   needsAdmin: true),
     ]
+
+    /// Понятное объяснение неудачи: код, причина по выводу команды
+    static func failure(code: String, output: String) -> String {
+        var s = Tf("Не удалось (код %@)", code)
+        if code == "127" {
+            s += ". " + T("Команда не найдена — на этой версии macOS её нет.")
+        } else if let last = output.split(separator: "\n").map({ $0.trimmingCharacters(in: .whitespaces) }).last(where: { !$0.isEmpty }) {
+            s += ". " + Tf("Причина: %@", String(last.prefix(140)))
+        }
+        return s
+    }
 
     /// Команды, которым нужен администратор (выполняются все вместе, пароль спрашивается один раз)
     static func adminCommand(_ id: String) -> String? {
         switch id {
         case "ram": return "/usr/sbin/purge"
-        case "scripts": return "/usr/sbin/periodic daily weekly monthly"
+        case "audio": return "/usr/bin/killall coreaudiod"
+        case "bt": return "/usr/bin/killall bluetoothd"
         case "dns": return "/usr/bin/dscacheutil -flushcache && /usr/bin/killall -HUP mDNSResponder"
         case "spotlight": return "/usr/bin/mdutil -E /"
         case "tm": return "/usr/bin/tmutil thinlocalsnapshots / 99999999999 4"
@@ -2218,6 +2263,9 @@ enum Maintenance {
     /// Задачи, которые выполняются от имени пользователя
     static func runUser(_ id: String) -> MaintStatus? {
         switch id {
+        case "ls": return rebuildLaunchServices()
+        case "ql": return clearQuickLook()
+        case "ui": return restartUI()
         case "mail": return speedUpMail()
         case "perms": return resetPermissions()
         default: return nil
@@ -2252,6 +2300,25 @@ enum Maintenance {
             if fm.fileExists(atPath: db), shell("/usr/bin/sqlite3", [db, "VACUUM;"]).0 == 0 { done += 1 }
         }
         return done > 0 ? .ok(Tf("Оптимизировано баз: %@", "\(done)")) : .failed(T("База «Почты» не найдена или нет доступа"))
+    }
+
+    private static func rebuildLaunchServices() -> MaintStatus {
+        let ls = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+        guard FileManager.default.isExecutableFile(atPath: ls) else { return .failed(T("Утилита lsregister не найдена на этой версии macOS")) }
+        let r = shell(ls, ["-kill", "-r", "-domain", "local", "-domain", "system", "-domain", "user"])
+        return r.0 == 0 ? .ok(T("Список приложений пересобран")) : .failed(failure(code: "\(r.0)", output: r.1))
+    }
+
+    private static func clearQuickLook() -> MaintStatus {
+        let a = shell("/usr/bin/qlmanage", ["-r", "cache"])
+        let b = shell("/usr/bin/qlmanage", ["-r"])
+        return a.0 == 0 && b.0 == 0 ? .ok(T("Кэш очищен")) : .failed(failure(code: "\(a.0 != 0 ? a.0 : b.0)", output: a.0 != 0 ? a.1 : b.1))
+    }
+
+    private static func restartUI() -> MaintStatus {
+        var bad: [String] = []
+        for name in ["Dock", "Finder", "SystemUIServer"] where shell("/usr/bin/killall", [name]).0 != 0 { bad.append(name) }
+        return bad.isEmpty ? .ok(T("Перезапущено")) : .failed(Tf("Не удалось перезапустить: %@", bad.joined(separator: ", ")))
     }
 
     private static func resetPermissions() -> MaintStatus {
@@ -4752,6 +4819,9 @@ struct MaintenanceOverlay: View {
                     }
                 }
                 Text(task.info).font(.caption).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text(T("Команда:") + " " + task.command)
+                    .font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary)
+                    .lineLimit(2).truncationMode(.middle).textSelection(.enabled)
                 switch task.status {
                 case .ok(let m): Text(m).font(.caption).foregroundColor(.green)
                 case .failed(let m): Text(m).font(.caption).foregroundColor(.orange)
@@ -7650,7 +7720,7 @@ struct RootView: View {
                 showTools = false
                 store.beginDups()
             }
-            ToolRow(title: T("UnRar — распаковка архивов"), symbol: "doc.zipper") {
+            ToolRow(title: T("UnRAR, UnZip, 7z, GZ…"), symbol: "doc.zipper") {
                 showTools = false
                 store.beginUnrar()
             }

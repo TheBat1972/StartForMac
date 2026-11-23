@@ -201,6 +201,12 @@ final class Downloader: ObservableObject {
         }
     }
 
+    /// Очищает окно: ссылку, журнал и статус (во время загрузки не работает)
+    func clearWindow() {
+        guard !running else { return }
+        urlText = ""; log = ""; status = ""; progress = nil; lastFile = nil
+    }
+
     func cancel() {
         cancelled = true
         process?.terminate()
@@ -336,6 +342,8 @@ struct DownloadView: View {
                         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: f)])
                     }
                 }
+                Button(L("common.clearAll")) { d.clearWindow() }
+                    .disabled(d.running || (d.urlText.isEmpty && d.log.isEmpty && d.lastFile == nil))
                 if tm.ytDlpPath == nil {
                     Button(L("yt.install")) { tm.installYtDlp() }.disabled(tm.ytDlpBusy)
                 }

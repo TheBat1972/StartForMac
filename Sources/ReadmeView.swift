@@ -3,8 +3,8 @@ import AppKit
 
 // MARK: - README внутри программы
 //
-// build.sh кладёт README.md и README.ru.md в Resources; вкладка «О программе» в настройках показывает тот,
-// что соответствует языку программы, в прокручиваемом поле (только разделы «Возможности» и «Приватность и безопасность»). Разметка простая: заголовки, списки, таблицы, код, ссылки.
+// build.sh кладёт AppReadme.md и AppReadme.ru.md (текст для пользователя, а не README для разработчика) в Resources;
+// вкладка «О программе» в настройках показывает тот, что соответствует языку программы, в прокручиваемом поле. Разметка простая: заголовки, списки, таблицы, код, ссылки.
 
 struct ReadmeView: View {
     private struct Row: Identifiable {
@@ -15,19 +15,10 @@ struct ReadmeView: View {
     }
 
     private static func load() -> String {
-        let name = Loc.english ? "README" : "README.ru"
+        let name = Loc.english ? "AppReadme" : "AppReadme.ru"
         guard let u = Bundle.main.url(forResource: name, withExtension: "md"),
               let s = try? String(contentsOf: u, encoding: .utf8) else { return "" }
-        // из README показываем только два раздела: возможности и приватность
-        let wanted: Set<String> = ["## Возможности", "## Приватность и безопасность", "## Features", "## Privacy and security"]
-        var keep = false
-        var out: [String] = []
-        for line in s.components(separatedBy: "\n") {
-            if line.hasPrefix("# ") && !line.hasPrefix("## ") { keep = false; continue }
-            if line.hasPrefix("## ") { keep = wanted.contains(line.trimmingCharacters(in: .whitespaces)) }
-            if keep { out.append(line) }
-        }
-        return out.joined(separator: "\n")
+        return s
     }
 
     private static func parse(_ text: String) -> [Row] {

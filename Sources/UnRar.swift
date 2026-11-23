@@ -1,7 +1,7 @@
 import SwiftUI
 import AppKit
 
-// MARK: - UnRar (распаковка архивов)
+// MARK: - UnRAR, UnZip, 7z, GZ… (распаковка и упаковка архивов)
 //
 // Движок — консольный 7-Zip (7zz): RAR/RAR5, 7z, ZIP (в т. ч. AES), TAR, GZ, BZ2, XZ, ISO, DMG, CAB и др.
 // Пароль и многотомные архивы (.part1.rar, .r00, .7z.001, .zip.001) поддерживаются самим 7-Zip.
@@ -156,6 +156,7 @@ final class UnRarModel: ObservableObject {
     static let shared = UnRarModel()
 
     @Published var jobs: [UnJob] = []
+    @Published var packMode = false     // окно работает как упаковщик
     @Published var engine: URL?
     @Published var installing = false
     @Published var engineError = ""
@@ -368,6 +369,25 @@ struct UnRarPanel: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            Picker("", selection: $model.packMode) {
+                Text(T("Распаковка")).tag(false)
+                Text(T("Упаковка")).tag(true)
+            }
+            .pickerStyle(.segmented).labelsHidden().frame(width: 260)
+            .padding(.vertical, 8)
+            Divider()
+            if model.packMode {
+                PackView(engine: model, pack: PackModel.shared, footer: AnyView(footer))
+            } else {
+                unpackBody
+            }
+        }
+        .frame(minWidth: 560, minHeight: 380)
+        .onAppear { model.ensureEngine() }
+    }
+
+    private var unpackBody: some View {
+        VStack(spacing: 0) {
             header
             Divider()
             ZStack {
@@ -382,8 +402,6 @@ struct UnRarPanel: View {
             Divider()
             footer
         }
-        .frame(minWidth: 560, minHeight: 380)
-        .onAppear { model.ensureEngine() }
     }
 
     private var header: some View {
@@ -438,7 +456,7 @@ struct UnRarPanel: View {
         }
     }
 
-    private var footer: some View {
+    var footer: some View {
         HStack(spacing: 8) {
             if model.installing {
                 ProgressView().controlSize(.small)
@@ -460,6 +478,7 @@ struct UnRarPanel: View {
 struct UnJobRow: View {
     @ObservedObject var job: UnJob
     let model: UnRarModel
+    @FocusState private var pwFocus: Bool
 
     private var icon: String {
         switch job.state {
@@ -515,6 +534,9 @@ struct UnJobRow: View {
                 HStack {
                     SecureField(T("Пароль"), text: $job.password)
                         .textFieldStyle(.roundedBorder)
+                        .focused($pwFocus)
+                        .onChange(of: pwFocus) { f in if f { InputSourceSwitcher.switchToASCII() } else { InputSourceSwitcher.restore() } }
+                        .onDisappear { InputSourceSwitcher.restore() }
                         .onSubmit { model.retry(job) }
                     Button(T("Распаковать")) { model.retry(job) }
                         .disabled(job.password.isEmpty)
@@ -538,12 +560,12 @@ final class UnRarWindowController: NSObject, NSWindowDelegate {
 
     func show(store: Store) {
         if window == nil {
-            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 480),
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 660, height: 600),
                              styleMask: [.titled, .closable, .miniaturizable, .resizable],
                              backing: .buffered, defer: false)
-            w.title = T("UnRar")
+            w.title = T("UnRAR, UnZip, 7z, GZ…")
             w.isReleasedWhenClosed = false
-            w.minSize = NSSize(width: 560, height: 380)
+            w.minSize = NSSize(width: 600, height: 460)
             w.contentView = NSHostingView(rootView: UnRarWindowRoot(store: store, model: UnRarModel.shared))
             w.delegate = self
             if !w.setFrameUsingName("UnRarWindow") { w.center() }
@@ -559,8 +581,9 @@ final class UnRarWindowController: NSObject, NSWindowDelegate {
     /// Открыть окно сразу с готовыми файлами (например, перетащенными на значок)
     func show(store: Store, urls: [URL]) {
         show(store: store)
+        UnRarModel.shared.packMode = false
         UnRarModel.shared.add(urls)
     }
 
-    @objc private func languageChanged() { window?.title = T("UnRar") }
+    @objc private func languageChanged() { window?.title = T("UnRAR, UnZip, 7z, GZ…") }
 }

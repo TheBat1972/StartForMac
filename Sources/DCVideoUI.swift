@@ -63,12 +63,35 @@ struct VideoView: View {
                         }
                         .pickerStyle(.segmented).labelsHidden().fixedSize()
                     }
-                    OptionRow("") {
-                        Toggle(L("vid.limit1080"), isOn: $c.limit1080).disabled(c.format == .gif)
+                    OptionRow(L("vid.resize")) {
+                        Picker("", selection: $c.size) {
+                            ForEach(VideoSize.allCases) { Text($0.title).tag($0) }
+                        }
+                        .labelsHidden().fixedSize().disabled(c.format == .gif)
+                    }
+                    if c.size == .custom && c.format != .gif {
+                        OptionRow("") {
+                            HStack(spacing: 6) {
+                                TextField("1920", text: $c.resizeW).textFieldStyle(.roundedBorder).frame(width: 70)
+                                Text("×")
+                                TextField("1080", text: $c.resizeH).textFieldStyle(.roundedBorder).frame(width: 70)
+                                Text("px").foregroundColor(.secondary)
+                            }
+                        }
+                        OptionRow("") {
+                            if c.resizeBox == nil {
+                                Text(L("vid.resize.bad")).font(.caption).foregroundColor(.red)
+                            } else {
+                                HintText(L("vid.resize.hint"))
+                            }
+                        }
+                    } else if c.size != .original && c.format != .gif {
+                        OptionRow("") { HintText(L("vid.resize.hintSide")) }
                     }
                 }
                 OptionRow(L("common.saveTo")) {
-                    FolderRow(path: c.outputDir?.path, placeholder: L("common.nextToOriginal"),
+                    FolderRow(path: outputFolderLabel(explicit: c.outputDir, inputs: c.jobs.map { $0.input }),
+                              placeholder: L(c.jobs.isEmpty ? "common.nextToOriginal" : "common.nextToEach"),
                               onChoose: { if let u = chooseFolder() { c.outputDir = u } },
                               onReset: c.outputDir == nil ? nil : { c.outputDir = nil })
                 }
@@ -94,6 +117,7 @@ struct VideoView: View {
             HStack {
                 Button(L("common.add")) { c.add(chooseMediaFiles(prompt: L("common.add"))) }
                 Button(L("common.clearFinished")) { c.clearFinished() }.disabled(!c.hasFinished)
+                Button(L("common.clearAll")) { c.clearAll() }.disabled(!c.jobs.contains { !$0.state.isRunning })
                 Spacer()
                 Text(c.totalsText).font(.caption).foregroundColor(.secondary).lineLimit(1)
                 if c.isRunning {

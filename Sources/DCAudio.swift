@@ -109,6 +109,8 @@ final class AudioConverter: ObservableObject {
     func remove(_ id: UUID) { jobs.removeAll { $0.id == id && !$0.state.isRunning } }
     func retry(_ id: UUID) { if let i = jobs.firstIndex(where: { $0.id == id }), jobs[i].state.canRetry { jobs[i].state = .waiting } }
     func clearFinished() { jobs.removeAll { $0.state.isFinished } }
+    /// Очищает окно: убирает всё, кроме файла, который конвертируется прямо сейчас
+    func clearAll() { jobs.removeAll { !$0.state.isRunning } }
 
     private func probeMissing() {
         guard let t = ToolsManager.shared.tools else { return }
@@ -269,7 +271,8 @@ struct AudioView: View {
                     }
                 }
                 OptionRow(L("common.saveTo")) {
-                    FolderRow(path: c.outputDir?.path, placeholder: L("common.nextToOriginal"),
+                    FolderRow(path: outputFolderLabel(explicit: c.outputDir, inputs: c.jobs.map { $0.input }),
+                              placeholder: L(c.jobs.isEmpty ? "common.nextToOriginal" : "common.nextToEach"),
                               onChoose: { if let u = chooseFolder() { c.outputDir = u } },
                               onReset: c.outputDir == nil ? nil : { c.outputDir = nil })
                 }
@@ -291,6 +294,7 @@ struct AudioView: View {
             HStack {
                 Button(L("common.add")) { c.add(chooseMediaFiles(prompt: L("common.add"))) }
                 Button(L("common.clearFinished")) { c.clearFinished() }.disabled(!c.hasFinished)
+                Button(L("common.clearAll")) { c.clearAll() }.disabled(!c.jobs.contains { !$0.state.isRunning })
                 Spacer()
                 Text(c.totalsText).font(.caption).foregroundColor(.secondary).lineLimit(1)
                 if c.isRunning {

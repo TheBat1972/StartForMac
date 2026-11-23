@@ -97,11 +97,16 @@ final class DockPreview {
         let now = Date()
         guard !probing, now.timeIntervalSince(lastProbe) > 0.05 else { lastPoint = NSPoint(x: -1, y: -1); return }
         lastProbe = now
+        // Над собственными окнами AppKit обходит доступность внутри процесса — из фонового потока это падает
+        if NSApp.windows.contains(where: { $0.isVisible && $0.frame.contains(p) }) {
+            if panel != nil { hide() } else { cancelPending() }
+            return
+        }
         probing = true
         let gen = generation
         let h = NSScreen.screens.first?.frame.height ?? 0
         probeQueue.async { [weak self] in
-            let hit = DockPreview.dockApp(at: p, screenHeight: h)
+            let hit = autoreleasepool { DockPreview.dockApp(at: p, screenHeight: h) }
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 self.probing = false

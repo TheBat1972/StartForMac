@@ -56,6 +56,33 @@ enum VideoFormat: String, CaseIterable, Identifiable {
     var hint: String { L("vid.fmt." + rawValue) }
 }
 
+/// Размер кадра: готовые варианты по короткой стороне («720p») и свой размер в рамке
+enum VideoSize: String, CaseIterable, Identifiable {
+    case original, p2160, p1080, p720, p480, p360, custom
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .original: return L("vid.size.original")
+        case .p2160: return "4K (2160p)"
+        case .p1080: return "Full HD (1080p)"
+        case .p720: return "HD (720p)"
+        case .p480: return "480p"
+        case .p360: return "360p"
+        case .custom: return L("vid.size.custom")
+        }
+    }
+    var side: Int? {
+        switch self {
+        case .p2160: return 2160
+        case .p1080: return 1080
+        case .p720: return 720
+        case .p480: return 480
+        case .p360: return 360
+        default: return nil
+        }
+    }
+}
+
 enum VideoQuality: String, CaseIterable, Identifiable {
     case best, transparent, small
     var id: String { rawValue }
@@ -171,6 +198,16 @@ final class VideoConverter: ObservableObject {
     }
     @Published var codec: Codec { didSet { UserDefaults.standard.set(codec.rawValue, forKey: "vid.codec") } }
     @Published var quality: VideoQuality { didSet { UserDefaults.standard.set(quality.rawValue, forKey: "vid.quality") } }
+    /// Размер кадра: по умолчанию не меняем; если включено — вписываем в рамку «ширина × высота»
+    @Published var size: VideoSize { didSet { UserDefaults.standard.set(size.rawValue, forKey: "vid.size") } }
+    @Published var resizeW: String { didSet { UserDefaults.standard.set(resizeW, forKey: "vid.resizeW") } }
+    @Published var resizeH: String { didSet { UserDefaults.standard.set(resizeH, forKey: "vid.resizeH") } }
+    /// Введённый размер: оба числа целые и больше нуля
+    var resizeBox: (w: Int, h: Int)? {
+        guard let w = Int(resizeW.trimmingCharacters(in: .whitespaces)), let h = Int(resizeH.trimmingCharacters(in: .whitespaces)),
+              w > 0, h > 0, w <= 16384, h <= 16384 else { return nil }
+        return (w, h)
+    }
     @Published var limit1080: Bool { didSet { UserDefaults.standard.set(limit1080, forKey: "vid.limit1080") } }
     /// Настройки режима «Только звук»: звуковой формат и битрейт
     @Published var audioFormat: AudioFormat { didSet { UserDefaults.standard.set(audioFormat.rawValue, forKey: "vid.audioFormat") } }
@@ -195,6 +232,10 @@ final class VideoConverter: ObservableObject {
         codec = Codec(rawValue: d.string(forKey: "vid.codec") ?? "") ?? .hevc
         quality = VideoQuality(rawValue: d.string(forKey: "vid.quality") ?? "") ?? .transparent
         limit1080 = d.bool(forKey: "vid.limit1080")
+        // прежний чекбокс «Не больше Full HD» стал пунктом «1080p»
+        size = VideoSize(rawValue: d.string(forKey: "vid.size") ?? "") ?? (d.bool(forKey: "vid.limit1080") ? .p1080 : .original)
+        resizeW = d.string(forKey: "vid.resizeW") ?? "1920"
+        resizeH = d.string(forKey: "vid.resizeH") ?? "1080"
         audioFormat = AudioFormat(rawValue: d.string(forKey: "vid.audioFormat") ?? "") ?? .mp3
         let kb = d.integer(forKey: "vid.audioKbps")
         audioKbps = [128, 192, 256, 320].contains(kb) ? kb : 192
@@ -235,6 +276,8 @@ final class VideoConverter: ObservableObject {
     func remove(_ id: UUID) { jobs.removeAll { $0.id == id && !$0.state.isRunning } }
     func retry(_ id: UUID) { if let i = jobs.firstIndex(where: { $0.id == id }), jobs[i].state.canRetry { jobs[i].state = .waiting } }
     func clearFinished() { jobs.removeAll { $0.state.isFinished } }
+    /// Очищает окно: убирает всё, кроме файла, который конвертируется прямо сейчас
+    func clearAll() { jobs.removeAll { !$0.state.isRunning } }
 
     func setEdit(_ id: UUID, _ e: Edit) {
         guard let i = jobs.firstIndex(where: { $0.id == id }), !jobs[i].state.isRunning else { return }
@@ -274,7 +317,7 @@ final class VideoConverter: ObservableObject {
 
     private func setProcess(_ p: Process?) { lock.lock(); process = p; lock.unlock() }
 
-    private struct Settings { let format: VideoFormat; let codec: Codec; let quality: VideoQuality; let limit1080: Bool; let sound: SoundMode
+    private struct Settings { let format: VideoFormat; let codec: Codec; let quality: VideoQuality; let size: VideoSize; let box: (w: Int, h: Int)?; let resizeInvalid: Bool; let sound: SoundMode
                           let audioFormat: AudioFormat; let audioKbps: Int }
     private struct Plan { let args: [String]; let duration: Double? }
 
@@ -299,7 +342,8 @@ final class VideoConverter: ObservableObject {
             .appendingPathComponent("." + output.deletingPathExtension().lastPathComponent + ".partial." + ext)
         try? FileManager.default.removeItem(at: temp)
         currentTemp = temp
-        let s = Settings(format: fmt, codec: codec, quality: quality, limit1080: limit1080, sound: sound,
+        let s = Settings(format: fmt, codec: codec, quality: quality, size: size, box: size == .custom ? resizeBox : nil,
+                     resizeInvalid: size == .custom && resizeBox == nil, sound: sound,
                      audioFormat: audioFormat, audioKbps: audioKbps)
         let id = job.id
 
@@ -429,6 +473,7 @@ final class VideoConverter: ObservableObject {
         if audio && f == .avi {
             guard t.has(encoder: "libmp3lame") else { throw Failure(LF("common.noEncoder", "libmp3lame")) }
         }
+        if s.resizeInvalid { throw Failure(L("vid.resize.bad")) }
         let hevc = f.usesCodecChoice && s.codec == .hevc
         // перевод HDR в обычный цвет без «блёклости»
         let toneMap = "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p"
@@ -442,9 +487,12 @@ final class VideoConverter: ObservableObject {
             vf.append("scale=w=min(\(s.quality.gifWidth)\\,iw):h=-2:flags=lanczos")
             vf.append("split[s0][s1];[s0]palettegen=stats_mode=diff[p];[s1][p]paletteuse=dither=bayer:bayer_scale=5")
         } else {
-            if s.limit1080 {
-                // длинная сторона не больше 1920, пропорции сохраняются
-                vf.append("scale=w=if(gte(iw\\,ih)\\,min(1920\\,iw)\\,-2):h=if(gte(iw\\,ih)\\,-2\\,min(1920\\,ih))")
+            if let b = s.box {
+                // вписываем в рамку, пропорции сохраняются, увеличения нет
+                vf.append("scale=w=min(\(b.w)\\,iw):h=min(\(b.h)\\,ih):force_original_aspect_ratio=decrease:flags=lanczos")
+            } else if let n = s.size.side {
+                // «720p» — по короткой стороне, поэтому подходит и вертикальному видео; меньший кадр не увеличиваем
+                vf.append("scale=w=if(gte(iw\\,ih)\\,-2\\,min(\(n)\\,iw)):h=if(gte(iw\\,ih)\\,min(\(n)\\,ih)\\,-2):flags=lanczos")
             }
             vf.append("scale=trunc(iw/2)*2:trunc(ih/2)*2")
             if info.isHDR && hevc {
