@@ -738,15 +738,35 @@ final class Store: ObservableObject, @unchecked Sendable {
         m.stage = .working
         m.workText = T("Удаляю…")
         let items = m.selectedItems
+        // то, что уже лежит в Корзине, удаляется насовсем; всё остальное сначала уходит в Корзину, чтобы ошибку можно было отменить
+        let inTrash = Set(m.categories.filter { $0.id == "trash" }.flatMap { $0.items.map { $0.url.path } })
         DispatchQueue.global(qos: .userInitiated).async {
             let fm = FileManager.default
             var freed: Int64 = 0
             var removed = 0
             var failed: [JunkItem] = []
+            var toRecycle: [JunkItem] = []
             for it in items {
                 if it.needsAdmin { failed.append(it); continue }
-                do { try fm.removeItem(at: it.url); freed += it.size; removed += 1 }
-                catch { failed.append(it) }
+                if inTrash.contains(it.url.path) {
+                    do { try fm.removeItem(at: it.url); freed += it.size; removed += 1 }
+                    catch { failed.append(it) }
+                } else {
+                    toRecycle.append(it)
+                }
+            }
+            if !toRecycle.isEmpty {
+                let sem = DispatchSemaphore(value: 0)
+                var moved = Set<String>()
+                NSWorkspace.shared.recycle(toRecycle.map { $0.url }) { trashed, _ in
+                    moved = Set(trashed.keys.map { $0.path })
+                    sem.signal()
+                }
+                sem.wait()
+                for it in toRecycle {
+                    if moved.contains(it.url.path) || !fm.fileExists(atPath: it.url.path) { freed += it.size; removed += 1 }
+                    else { failed.append(it) }
+                }
             }
             // системные файлы удаляем с паролем администратора
             let admin = failed.filter { $0.needsAdmin }
@@ -1727,19 +1747,85 @@ enum Junk {
         // 7. Остатки удалённых приложений
         progress(T("Остатки удалённых приложений"))
         var orphans: [URL] = []
+        // Подробный список установленных программ: идентификаторы (в том числе вложенных помощников и расширений),
+        // названия, имена исполняемых файлов и «издатели» (первые две части идентификатора).
+        // Файл настроек считается остатком, только если не подходит ни под что из этого.
+        let idx = buildAppIndex(installedIDs: installedIDs)
+        func belongs(_ bid: String) -> Bool { idx.contains(bid) }
+        // Файлами других владельцев (root и т. д.) обычно управляет служба программы, которая сейчас установлена и работает:
+        // они не остатки, а чужие системные данные
+        func mine(_ u: URL) -> Bool {
+            guard let uid = (try? fm.attributesOfItem(atPath: u.path))?[.ownerAccountID] as? NSNumber else { return false }
+            return uid.uint32Value == getuid() && fm.isDeletableFile(atPath: u.path)
+        }
         for u in children(lib + "/Preferences") where u.pathExtension == "plist" && !u.lastPathComponent.hasPrefix(".") {
             let bid = u.deletingPathExtension().lastPathComponent
-            if isOrphanID(bid, ids: installedIDs) { orphans.append(u) }
+            if isOrphanID(bid, ids: installedIDs), !belongs(bid), mine(u) { orphans.append(u) }
         }
         for u in children(lib + "/Saved Application State") where u.pathExtension == "savedState" {
             let bid = u.deletingPathExtension().lastPathComponent
-            if isOrphanID(bid, ids: installedIDs) { orphans.append(u) }
+            if isOrphanID(bid, ids: installedIDs), !belongs(bid), mine(u) { orphans.append(u) }
         }
         make("orphans", T("Остатки удалённых приложений"), "puzzlepiece",
              T("Настройки и состояние окон программ, которых уже нет на Маке. Проверьте список перед удалением."),
              orphans, selected: false)
 
         return result
+    }
+
+    struct AppIndex {
+        var tokens = Set<String>()      // названия, исполняемые файлы, последние части идентификаторов (в нижнем регистре, без пробелов)
+        var vendors = Set<String>()     // «издатели»: первые две части идентификатора (com.google, org.amnezia…)
+
+        func contains(_ bid: String) -> Bool {
+            let low = bid.lowercased()
+            let parts = low.split(separator: ".").map(String.init)
+            if parts.count >= 2, vendors.contains(parts[0] + "." + parts[1]) { return true }
+            if let last = parts.last, tokens.contains(last) { return true }
+            return tokens.contains { ($0.count >= 4 && low.hasSuffix("." + $0)) || ($0.count >= 7 && low.contains($0)) }
+        }
+    }
+
+    static func buildAppIndex(installedIDs: Set<String>) -> AppIndex {
+        let fm = FileManager.default
+        var idx = AppIndex()
+        func addID(_ id: String) {
+            let parts = id.lowercased().split(separator: ".").map(String.init)
+            if parts.count >= 2, parts[0] + "." + parts[1] != "com.apple" { idx.vendors.insert(parts[0] + "." + parts[1]) }
+            if let l = parts.last { idx.tokens.insert(l) }
+        }
+        func addName(_ n: String) {
+            let t = n.lowercased().replacingOccurrences(of: " ", with: "")
+            if t.count >= 3 { idx.tokens.insert(t) }
+        }
+        for id in installedIDs { addID(id) }
+        var apps: [String] = []
+        func collect(_ dir: String, _ depth: Int) {
+            for n in (try? fm.contentsOfDirectory(atPath: dir)) ?? [] {
+                let p = dir + "/" + n
+                if n.hasSuffix(".app") { apps.append(p) }
+                else if depth > 0, !n.hasPrefix("."), (try? fm.contentsOfDirectory(atPath: p)) != nil { collect(p, depth - 1) }
+            }
+        }
+        collect("/Applications", 2)
+        collect("/System/Applications", 1)
+        collect(NSHomeDirectory() + "/Applications", 2)
+        func readInfo(_ bundle: String) {
+            guard let d = NSDictionary(contentsOfFile: bundle + "/Contents/Info.plist") else { return }
+            if let id = d["CFBundleIdentifier"] as? String { addID(id) }
+            for k in ["CFBundleName", "CFBundleDisplayName", "CFBundleExecutable"] {
+                if let v = d[k] as? String { addName(v) }
+            }
+        }
+        for app in apps {
+            addName(((app as NSString).lastPathComponent as NSString).deletingPathExtension)
+            readInfo(app)
+            // помощники и расширения внутри программы имеют свои идентификаторы
+            for sub in ["Contents/Library/LoginItems", "Contents/XPCServices", "Contents/PlugIns", "Contents/Library/LaunchServices"] {
+                for n in (try? fm.contentsOfDirectory(atPath: app + "/" + sub)) ?? [] { readInfo(app + "/" + sub + "/" + n) }
+            }
+        }
+        return idx
     }
 
     private static func isOrphanID(_ bid: String, ids: Set<String>) -> Bool {
@@ -1894,9 +1980,9 @@ struct CleanOverlay: View {
             Spacer()
             Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 36)).foregroundColor(.orange)
             Text(T("Вы уверены?")).font(.title3.bold())
-            Text(Tf("Будет удалено безвозвратно: %@ объектов (%@).\n", "\(model.selectedItems.count)", "\(fmt(model.selectedSize))")
-                 + T("Вернуть их из Корзины не получится.")
-                 + (needsPassword ? T("\nДля системных файлов система запросит пароль.") : ""))
+            Text(Tf("Будет убрано объектов: %@ (%@).\n", "\(model.selectedItems.count)", "\(fmt(model.selectedSize))")
+                 + T("Всё, что не требует пароля, уйдёт в Корзину: оттуда это можно вернуть, а место освободится после очистки Корзины. Содержимое самой Корзины удаляется безвозвратно.")
+                 + (needsPassword ? T("\nСистемные файлы удаляются сразу и безвозвратно, система запросит пароль.") : ""))
                 .multilineTextAlignment(.center)
                 .foregroundColor(.secondary)
                 .padding(.horizontal, 24)

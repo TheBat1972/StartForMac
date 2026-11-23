@@ -1,5 +1,15 @@
 # Что нового / What's new
 
+### Версия 9.1
+
+**Новое**
+- Версия 9.1.
+
+### Version 9.1
+
+**New**
+- Version 9.1.
+
 ### Версия 9.0
 
 **Новое**
@@ -14,6 +24,9 @@
 - Дубликаты и похожие фото: можно отметить и удалить все копии группы, а не только лишние (раньше одна копия оставалась всегда). Перед удалением окно подтверждения красным предупреждает, в скольких группах не останется ни одной копии; «Выбрать лишние» по-прежнему оставляет по одной.
 - Архиватор: при вводе пароля (упаковка и распаковка) раскладка сама переключается на английскую. ZIP принимает пароль только из латиницы, цифр и знаков (иначе 7-Zip отвечал «E_INVALIDARG»): теперь это проверяется заранее, русские буквы подсвечиваются красным предупреждением, а кнопка «Упаковать» неактивна. У 7z пароль может быть любым.
 - Вкладка «О программе» в настройках теперь показывает отдельный текст для пользователя (`AppReadme.ru.md` / `AppReadme.md`), а не README для разработчика: те же две части («Возможности» и «Приватность и безопасность»), но переписаны для человека, который просто установил программу.
+- Очистка мусора, «Остатки удалённых приложений»: файл настроек больше не считается «осиротевшим», если он подходит к любой установленной программе: по идентификатору (включая вложенные помощники и расширения), названию, имени исполняемого файла или издателю (у некоторых программ, например Amnezia, имя файла настроек не совпадает с идентификатором программы). Раньше такие настройки попадали в список на удаление и пропадали.
+- Очистка мусора: всё, что не требует пароля администратора, теперь перемещается в Корзину, а не удаляется насовсем, поэтому ошибочную очистку можно отменить. Содержимое самой Корзины и системные файлы по-прежнему удаляются безвозвратно; окно подтверждения объясняет это.
+- Очистка мусора, «Остатки удалённых приложений»: в список попадают только файлы, которыми владеет сам пользователь и которые можно удалить без пароля. Файлы других владельцев (root и т. д.) обычно принадлежат службе установленной программы, как у VPN-клиентов, и остатками не считаются.
 - Версия 9.0.
 
 ### Version 9.0
@@ -30,6 +43,9 @@
 - Duplicates and similar photos: you can mark and delete every copy of a group, not just the extras (one copy used to be always kept). The confirmation window warns in red how many groups will be left with no copy; “Select extras” still keeps one each.
 - Archiver: the keyboard layout switches to English by itself while a password is typed (packing and extracting). ZIP accepts a password of Latin letters, digits and symbols only (7-Zip otherwise answered “E_INVALIDARG”): this is now checked up front, Russian letters get a red warning and “Pack” is disabled. A 7z password can be anything.
 - The “About” tab in Settings now shows a separate end-user text (`AppReadme.md` / `AppReadme.ru.md`) instead of the developer README: the same two parts (“Features” and “Privacy and security”), rewritten for someone who just installed the app.
+- Junk cleanup, “Leftovers of deleted apps”: a preferences file is no longer treated as orphaned if it fits any installed app: by identifier (including nested helpers and extensions), name, executable name or publisher (for some apps, such as Amnezia, the preferences file name differs from the app's identifier). Such settings used to land in the delete list and get lost.
+- Junk cleanup: everything that does not need an administrator password is now moved to the Trash instead of being deleted permanently, so a wrong cleanup can be undone. The contents of the Trash itself and system files are still deleted permanently; the confirmation window explains this.
+- Junk cleanup, “Leftovers of deleted apps”: only files owned by the user and deletable without a password are listed. Files owned by others (root and so on) usually belong to the service of an installed app, as with VPN clients, and are not leftovers.
 - Version 9.0.
 
 ---
