@@ -665,7 +665,7 @@ final class TextConverter: ObservableObject {
         let d = UserDefaults.standard
         format = TextFormat(rawValue: d.string(forKey: "txt.format") ?? "") ?? .docx
         ocr = d.object(forKey: "txt.ocr") as? Bool ?? true
-        outputDir = d.string(forKey: "txt.outDir").map { URL(fileURLWithPath: $0) }
+        outputDir = nil; d.removeObject(forKey: "txt.outDir")
     }
 
     private var isStopped: Bool { lock.lock(); defer { lock.unlock() }; return stopRequested }
@@ -807,10 +807,7 @@ struct TextView: View {
                 }
                 OptionRow("") { HintText(L("txt.ocrHint")) }
                 OptionRow(L("common.saveTo")) {
-                    FolderRow(path: outputFolderLabel(explicit: c.outputDir, inputs: c.jobs.map { $0.input }),
-                              placeholder: L(c.jobs.isEmpty ? "common.nextToOriginal" : "common.nextToEach"),
-                              onChoose: { if let u = chooseFolder() { c.outputDir = u } },
-                              onReset: c.outputDir == nil ? nil : { c.outputDir = nil })
+                    Text(L("common.toDownloads"))
                 }
             }
             .disabled(c.isRunning)

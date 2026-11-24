@@ -241,7 +241,7 @@ final class VideoConverter: ObservableObject {
         audioKbps = [128, 192, 256, 320].contains(kb) ? kb : 192
         if let raw = d.string(forKey: "vid.sound"), let m = SoundMode(rawValue: raw) { sound = m }
         else { sound = d.bool(forKey: "vid.removeAudio") ? .muted : .both }
-        outputDir = d.string(forKey: "vid.outDir").map { URL(fileURLWithPath: $0) }
+        outputDir = nil; d.removeObject(forKey: "vid.outDir")
         NotificationCenter.default.addObserver(forName: .toolsReady, object: nil, queue: .main) { [weak self] _ in
             self?.probeMissing()
         }

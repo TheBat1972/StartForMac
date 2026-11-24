@@ -26,10 +26,10 @@ Each tool opens in its own window and works independently of the main window.
 - **Duplicates and similar photos.** Exact copies are found by content, similar pictures by a reduced fingerprint of the image. Only what you tick goes to the Trash, you can tick any number of copies, and before deleting you see a warning if some group would be left with none. Folders can be excluded from the results (a tree with checkboxes or a button in a file row), and your choice is remembered.
 - **Disk analyzer** in the style of DaisyDisk: a pie chart of used space, folder navigation, moving to the Trash. When reopened, only changed folders are rescanned.
 - **Download and convert.** A large window with four sections:
-  - *YouTube download:* paste a link, choose the quality and folder.
+  - *YouTube download:* paste a link, choose the quality; the file goes to Downloads.
   - *Audio converter:* any audio or video to MP3, M4A, FLAC, WAV, AIFF, OGG or Opus.
   - *Text and documents:* TXT, RTF, HTML, DOC, DOCX, ODT, Markdown, PDF, FB2 and EPUB into each other; pictures and scanned PDFs become text with the built-in macOS recognition, without the internet.
-  - *Video converter:* MP4, MOV, MKV, WebM, AVI or GIF; codec, quality, resolution (as in the original, 4K, 1080p, 720p, 480p, 360p or custom), sound mode, trimming. The result goes next to the original file or into the chosen folder, and the path is shown next to the “Folder…” button.
+  - *Video converter:* MP4, MOV, MKV, WebM, AVI or GIF; codec, quality, resolution (as in the original, 4K, 1080p, 720p, 480p, 360p or custom), sound mode, trimming. Results of all converters are saved to Downloads.
   - Every section has a “Clear window” button. Helper programs (ffmpeg and yt-dlp) are downloaded once on first use and can be updated with a button.
 - **External drives.** Format flash drives as FAT32, FAT16, exFAT, Mac OS Extended or APFS. The “Speed” tab measures reading and writing and compares the result with typical devices.
 - **Task manager.** Processes, a load log, details, performance graphs, services and startup items. You can end and suspend processes, change priority and set automatic rules based on CPU load.

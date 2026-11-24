@@ -86,7 +86,7 @@ final class AudioConverter: ObservableObject {
         let b = d.integer(forKey: "mp3.bitrate")
         bitrate = [128, 192, 256, 320].contains(b) ? b : 192
         format = AudioFormat(rawValue: d.string(forKey: "aud.format") ?? "") ?? .mp3
-        outputDir = d.string(forKey: "mp3.outDir").map { URL(fileURLWithPath: $0) }
+        outputDir = nil; d.removeObject(forKey: "mp3.outDir")
         NotificationCenter.default.addObserver(forName: .toolsReady, object: nil, queue: .main) { [weak self] _ in
             self?.probeMissing()
         }
@@ -271,10 +271,7 @@ struct AudioView: View {
                     }
                 }
                 OptionRow(L("common.saveTo")) {
-                    FolderRow(path: outputFolderLabel(explicit: c.outputDir, inputs: c.jobs.map { $0.input }),
-                              placeholder: L(c.jobs.isEmpty ? "common.nextToOriginal" : "common.nextToEach"),
-                              onChoose: { if let u = chooseFolder() { c.outputDir = u } },
-                              onReset: c.outputDir == nil ? nil : { c.outputDir = nil })
+                    Text(L("common.toDownloads"))
                 }
             }
             .disabled(c.isRunning)

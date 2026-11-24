@@ -117,12 +117,10 @@ func chooseMediaFiles(prompt: String) -> [URL] {
     return p.runModal() == .OK ? p.urls : []
 }
 
-/// Папка для результата, когда выбрано «рядом с оригиналом». Если файл — временная копия
-/// (перетащен из программы, которая отдала только копию), результат кладётся в «Загрузки», а не во временную папку.
+/// Результат конвертации всегда кладётся в «Загрузки»
 func defaultOutputDir(for input: URL) -> URL {
-    if input.path.contains("/dc-drop-"),
-       let d = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first { return d }
-    return input.deletingLastPathComponent()
+    FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+        ?? URL(fileURLWithPath: NSHomeDirectory() + "/Downloads")
 }
 
 /// Что показать за кнопкой «Папка…»: выбранная папка, а если не выбрана — реальная целевая папка очереди

@@ -90,10 +90,7 @@ struct VideoView: View {
                     }
                 }
                 OptionRow(L("common.saveTo")) {
-                    FolderRow(path: outputFolderLabel(explicit: c.outputDir, inputs: c.jobs.map { $0.input }),
-                              placeholder: L(c.jobs.isEmpty ? "common.nextToOriginal" : "common.nextToEach"),
-                              onChoose: { if let u = chooseFolder() { c.outputDir = u } },
-                              onReset: c.outputDir == nil ? nil : { c.outputDir = nil })
+                    Text(L("common.toDownloads"))
                 }
             }
             .disabled(c.isRunning)

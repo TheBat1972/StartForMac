@@ -53,6 +53,7 @@ enum Strings {
         // общие
         "common.quality": ("Качество", "Quality"),
         "common.saveTo": ("Сохранять", "Save to"),
+        "common.toDownloads": ("в папку «Загрузки»", "Downloads folder"),
         "common.nextToOriginal": ("рядом с исходным файлом", "next to the original file"),
         "common.nextToEach": ("рядом с каждым исходным файлом", "next to each original file"),
         "common.choose": ("Выбрать", "Choose"),

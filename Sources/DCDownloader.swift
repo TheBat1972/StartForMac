@@ -97,7 +97,7 @@ final class Downloader: ObservableObject {
             }
         }
     }
-    @Published var folder: String { didSet { UserDefaults.standard.set(folder, forKey: "yt.folder") } }
+    @Published var folder: String
 
     @Published var log = ""
     @Published var progress: Double?
@@ -113,7 +113,7 @@ final class Downloader: ObservableObject {
         quality = YTQuality(rawValue: d.string(forKey: "yt.quality") ?? "") ?? .best
         let saved = CookieSource(rawValue: d.string(forKey: "yt.cookies") ?? "safari") ?? .safari
         cookies = saved.isInstalled ? saved : .safari
-        folder = d.string(forKey: "yt.folder") ?? (NSHomeDirectory() + "/Downloads")
+        folder = NSHomeDirectory() + "/Downloads"; d.removeObject(forKey: "yt.folder")
     }
 
     var trimmedURL: String { urlText.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -267,9 +267,7 @@ struct DownloadView: View {
                     .pickerStyle(.segmented).labelsHidden().fixedSize()
                 }
                 OptionRow(L("common.saveTo")) {
-                    FolderRow(path: d.folder, placeholder: "") {
-                        if let u = chooseFolder() { d.folder = u.path }
-                    }
+                    Text(L("common.toDownloads"))
                 }
                 OptionRow(L("yt.cookies")) {
                     Picker("", selection: $d.cookies) {
