@@ -45,7 +45,29 @@ final class DockButton {
     static var gapPoints: CGFloat { CGFloat(minGap + gapFraction * (maxGap - minGap)) }
 
     /// macOS 26 и новее: кнопка делается из «жидкого стекла», прозрачность задаёт система
+    /// true — притворяемся старой системой, чтобы проверить на macOS 26+ вид кнопки как на macOS 12–25 (системный материал без своей подложки)
+    static let forceLegacy = false
+    /// ВРЕМЕННО, для подбора: defaults write ru.local.StartMenu dockButton.material menu (popover, menu, hud, sheet, header, titlebar, fullscreen, sidebar, window, content, under)
+    static var legacyMaterial: NSVisualEffectView.Material {
+        switch UserDefaults.standard.string(forKey: "dockButton.material") ?? "hud" {
+        case "menu": return .menu
+        case "hud": return .hudWindow
+        case "sheet": return .sheet
+        case "header": return .headerView
+        case "titlebar": return .titlebar
+        case "fullscreen": return .fullScreenUI
+        case "sidebar": return .sidebar
+        case "window": return .windowBackground
+        case "content": return .contentBackground
+        case "under": return .underWindowBackground
+        case "popover": return .popover
+        default: return .hudWindow
+        }
+    }
+    /// ВРЕМЕННО: затемнение поверх материала 0…0,6, defaults write ru.local.StartMenu dockButton.dim 0.15
+    static var legacyDim: CGFloat { CGFloat(min(max(UserDefaults.standard.double(forKey: "dockButton.dim"), 0), 0.6)) }
     static var usesGlass: Bool {
+        if forceLegacy { return false }
         if #available(macOS 26.0, *) { return true }
         return false
     }
@@ -362,8 +384,8 @@ private final class DockGlyphView: NSView {
         let s = min(bounds.width, bounds.height)
         // поверх размытия подложка непрозрачнее: кнопка читается на любом фоне
         let shape = NSBezierPath(roundedRect: bounds, xRadius: s * 0.3, yRadius: s * 0.3)
-        if !DockButton.usesGlass {          // у стекла своя подложка и прозрачность
-            NSColor.windowBackgroundColor.withAlphaComponent(DockButton.backgroundAlpha).setFill()
+        if !DockButton.usesGlass, DockButton.legacyDim > 0 {
+            NSColor(white: 0, alpha: DockButton.legacyDim).setFill()
             shape.fill()
         }
         if pressed {
@@ -410,7 +432,7 @@ private final class DockButtonView: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
-        if #available(macOS 26.0, *) {
+        if DockButton.usesGlass, #available(macOS 26.0, *) {
             // macOS 26: настоящее «жидкое стекло», как у Dock и системных контролов
             let g = NSGlassEffectView()
             // стиль стекла: .clear (по умолчанию: прозрачное стекло с затемнением, как у Dock) или .regular: defaults write ru.local.StartMenu dockButton.glassStyle regular
@@ -418,7 +440,7 @@ private final class DockButtonView: NSView {
             backdrop = g
         } else {
             let v = NSVisualEffectView()
-            v.material = .hudWindow
+            v.material = DockButton.legacyMaterial   // системный материал: сам светлеет/темнеет по теме и фону, без своей подложки
             v.blendingMode = .behindWindow
             v.state = .active
             backdrop = v

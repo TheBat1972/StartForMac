@@ -1,5 +1,16 @@
 # Что нового / What's new
 
+### Версия 11.2
+
+**Новое**
+- Кнопка «Пуска» на старых macOS: убрана своя подложка и ползунок «Прозрачность фона», остался только системный материал, который сам светлеет и темнеет по теме и фону. Материал — `.hudWindow`. Для проверки есть выключатель `DockButton.forceLegacy` (сейчас выключен).
+- Версия 11.2.
+
+### Version 11.2
+
+- The Start button on older macOS: the custom backing and the “Background transparency” slider are removed; only the system material remains, which lightens and darkens by itself with the theme and backdrop. The material is `.hudWindow`. A test switch `DockButton.forceLegacy` (currently off) makes macOS 26+ draw it the same way.
+- Version 11.2.
+
 ### Версия 11.1
 
 **Новое**

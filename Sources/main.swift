@@ -6825,15 +6825,6 @@ struct SettingsView: View {
                             Text(T("«В Dock» — обычный значок программы, как всегда. «Рядом с Dock» — «Пуск» рисует свою кнопку из четырёх квадратов вплотную к Dock (слева от него, а если Dock сбоку, то под ним) и двигает её вслед за Dock; для этого нужен доступ «Управление устройством и доступ к данным» (в ранних версиях macOS: «Универсальный доступ»), программа запросит его при выборе. «На экране» — та же кнопка стоит там, где её оставили, поверх всех окон, и за Dock не следит; её можно перетащить мышью. В двух последних режимах обычный значок «Пуска» убирается из Dock, а при возврате в режим «В Dock» возвращается на место. Клик по кнопке открывает и закрывает «Пуск», правый клик — меню. Прозрачность, размер и расстояние от Dock относятся только к кнопке."))
                                 .font(.caption).foregroundColor(.secondary)
                             if mc.dockButtonOn {
-                                if !DockButton.usesGlass {          // у стекла (macOS 26+) прозрачность и яркость подстраивает система; ползунок нужен только на старых macOS
-                                    HStack {
-                                        Text(T("Прозрачность фона"))
-                                        Slider(value: Binding(get: { mc.dockButtonTransparency }, set: { mc.setDockButtonTransparency($0) }), in: 0...0.9)
-                                            .frame(width: 180)
-                                        Text("\(Int((mc.dockButtonTransparency * 100).rounded())) %")
-                                            .monospacedDigit().foregroundColor(.secondary).frame(width: 44, alignment: .trailing)
-                                    }
-                                }
                                 if mc.dockButtonMode == 0 {
                                     HStack {
                                         Text(T("Расстояние от Dock"))
