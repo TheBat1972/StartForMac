@@ -97,7 +97,7 @@ final class AudioConverter: ObservableObject {
     var totalsText: String { queueTotals(jobs.map { ($0.inputSize, $0.state) }) }
 
     func add(_ urls: [URL]) {
-        let files = collectFiles(urls, accept: isMediaFile)
+        let files = collectFiles(urls, accept: isMediaFile).filter(isMediaFile)
         for f in files {
             let same = f.standardizedFileURL
             if jobs.contains(where: { $0.input.standardizedFileURL == same && !$0.state.isFinished }) { continue }

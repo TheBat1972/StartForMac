@@ -265,7 +265,7 @@ final class VideoConverter: ObservableObject {
     // MARK: очередь
 
     func add(_ urls: [URL]) {
-        for f in collectFiles(urls, accept: isVideoFile) {
+        for f in collectFiles(urls, accept: isVideoFile).filter(isVideoFile) {
             let same = f.standardizedFileURL
             if jobs.contains(where: { $0.input.standardizedFileURL == same && !$0.state.isFinished }) { continue }
             jobs.append(VideoJob(input: f, inputSize: fileSize(f)))

@@ -214,7 +214,12 @@ extension View {
                         options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? [])
                 .map { ($0 as NSURL).filePathURL ?? $0 }
                 .filter { FileManager.default.fileExists(atPath: $0.path) }
-            if !real.isEmpty {
+            // Буфер .drag может хранить путь от прошлого перетаскивания (так бывает при дропе из стопки Dock):
+            // берём его, только если имя файла совпадает с тем, что отдают providers этого дропа
+            let names = Set(providers.compactMap { $0.suggestedName }.map { ($0 as NSString).deletingPathExtension })
+            let current = real.filter { names.contains($0.deletingPathExtension().lastPathComponent) }
+            let useBoard = !names.isEmpty && current.count == real.count && current.count >= providers.count
+            if !real.isEmpty && useBoard {
                 DispatchQueue.main.async { handler(real) }
                 return true
             }
