@@ -152,6 +152,16 @@ final class AppUpdater: ObservableObject {
         let a = NSAlert()
         a.messageText = text
         NSApp.activate(ignoringOtherApps: true)
+        // если открыты настройки, сообщение по центру окна настроек (по умолчанию оно выскакивало правее и выше)
+        if let host = SettingsWindowController.shared.visibleWindow {
+            a.layout()
+            let place = {
+                let f = a.window.frame
+                a.window.setFrameOrigin(NSPoint(x: host.frame.midX - f.width / 2, y: host.frame.midY - f.height / 2))
+            }
+            place()
+            RunLoop.main.perform(inModes: [.modalPanel, .common]) { place() }      // runModal ставит окно по-своему: поправляем в начале модального цикла
+        }
         a.runModal()
     }
 

@@ -1,34 +1,27 @@
 # Что нового / What's new
 
-### Версия 11.3
+### Версия 11.4
 
 **Новое**
-- Кнопка «Пуска» увеличивается вместе с Dock (режим «Рядом с Dock»): когда в системе включено «Увеличение» и курсор над Dock, кнопка раздвигается вдоль Dock (по горизонтали от стороны Dock, у бокового Dock вверх и вниз поровну), а значок внутри растёт и поднимается, как значки Dock (может выходить за границы кнопки); на самой кнопке он максимальный.
-- Внутри кнопки «Пуска» вместо голых синих квадратов теперь значок: белый скруглённый квадрат (непрозрачность 10%) с тончайшей серой окантовкой и четырьмя синими окнами, чуть меньше значка Finder в Dock; при размере 100% значок на 10% меньше значка Finder, ползунок меняет кнопку и значок пропорционально, а увеличение Dock умножает уже этот размер.
-- При нажатии на кнопку «Пуска» темнеют синие окна значка, а не сама кнопка.
-- Фон значка внутри кнопки «Пуска» настраивается: цвет (белый, чёрный и цвета радуги: красный, оранжевый, жёлтый, зелёный, голубой, синий, фиолетовый), прозрачность и насыщенность (у белого и чёрного не действует); тонкую серую окантовку можно выключить. По умолчанию белый, прозрачность 90%.
-- Версия 11.3.
+- Внутри кнопки «Пуска» вместо голых синих квадратов значок: скруглённый квадрат с фоном и тончайшей серой окантовкой и четырьмя синими окнами, чуть меньше значка Finder в Dock. При нажатии темнеют синие окна, а не сама кнопка.
+- Настройки фона значка (Настройки → «Окна»): цвет (белый, чёрный и цвета радуги: красный, оранжевый, жёлтый, зелёный, голубой, синий, фиолетовый), прозрачность и насыщенность (у белого и чёрного не действует), выключатель окантовки. По умолчанию белый фон, прозрачность 90%, окантовка включена.
+- Кнопка увеличивается вместе с Dock (режим «Рядом с Dock»): когда в системе включено «Увеличение» и курсор над Dock, кнопка раздвигается вдоль Dock (по горизонтали от стороны Dock, у бокового Dock вверх и вниз поровну), а значок внутри растёт и поднимается, как значки Dock (может выходить за границы кнопки); на самой кнопке он максимальный.
+- Размер кнопки пересчитан: прежние 135% теперь 100% (по умолчанию), диапазон 60–160%; ползунок меняет кнопку и значок пропорционально, увеличение Dock умножает уже этот размер. Сохранённый ранее размер сбрасывается на 100%.
+- Кнопка «Пуска» на старых macOS: убраны своя подложка и ползунок «Прозрачность фона», остался только системный материал `.hudWindow`, который сам светлеет и темнеет по теме и фону.
+- Версия 11.4.
 
-### Version 11.3
+**Исправлено**
+- Сообщение «Установлена последняя версия» после проверки обновлений в настройках теперь по центру окна настроек, а не правее и выше.
 
-- The Start button magnifies with the Dock (“Next to Dock” mode): when Dock magnification is on and the pointer is over the Dock, the button widens along the Dock (horizontally away from the Dock side, or up and down equally beside a side Dock) and the icon inside grows and rises like the Dock icons (it may extend beyond the button); on the button itself it is at maximum.
-- Inside the Start button, instead of bare blue squares there is now an icon: a white rounded square (10% opacity) with a hairline gray outline and four blue windows, slightly smaller than the Finder icon in the Dock; at 100% the icon is 10% smaller than the Finder icon, the size slider scales the button and the icon proportionally, and Dock magnification multiplies that size.
-- On press, the blue windows of the icon darken instead of the button itself.
-- The background of the icon inside the Start button is adjustable: a color (white, black and the rainbow: red, orange, yellow, green, light blue, blue, violet), transparency and saturation (no effect for white and black); the hairline gray outline can be turned off. Default: white, 90% transparency.
-- Version 11.3.
+### Version 11.4
 
-### Версия 11.2
-
-**Новое**
-- Кнопка «Пуска» на старых macOS: убрана своя подложка и ползунок «Прозрачность фона», остался только системный материал, который сам светлеет и темнеет по теме и фону. Материал — `.hudWindow`.
-- Размер кнопки «Пуска» пересчитан: прежние 135% теперь 100% (по умолчанию), диапазон в настройках 60–160%. Сохранённый ранее размер сбрасывается на 100%.
-- Версия 11.2.
-
-### Version 11.2
-
-- The Start button on older macOS: the custom backing and the “Background transparency” slider are removed; only the system material remains, which lightens and darkens by itself with the theme and backdrop. The material is `.hudWindow`.
-- The Start button size is rescaled: the former 135% is now 100% (default), the Settings range is 60–160%. A previously saved size resets to 100%.
-- Version 11.2.
+- Inside the Start button, instead of bare blue squares there is now an icon: a rounded square with a background and a hairline gray outline and four blue windows, slightly smaller than the Finder icon in the Dock. On press the blue windows darken instead of the button itself.
+- Icon background settings (Settings → “Windows”): color (white, black and the rainbow: red, orange, yellow, green, light blue, blue, violet), transparency and saturation (no effect for white and black), an outline switch. Default: white background, 90% transparency, outline on.
+- The button magnifies with the Dock (“Next to Dock” mode): when Dock magnification is on and the pointer is over the Dock, the button widens along the Dock (horizontally away from the Dock side, or up and down equally beside a side Dock) and the icon inside grows and rises like the Dock icons (it may extend beyond the button); on the button itself it is at maximum.
+- The button size is rescaled: the former 135% is now 100% (default), range 60–160%; the slider scales the button and the icon proportionally, and Dock magnification multiplies that size. A previously saved size resets to 100%.
+- The Start button on older macOS: the custom backing and the “Background transparency” slider are removed; only the system material `.hudWindow` remains, which lightens and darkens by itself with the theme and backdrop.
+- The “You have the latest version” message after an update check in Settings is now centered over the Settings window instead of appearing to the right and higher.
+- Version 11.4.
 
 ### Версия 11.1
 

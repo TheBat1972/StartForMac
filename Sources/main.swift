@@ -7073,6 +7073,9 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 
     func close() { window?.close() }
 
+    /// Окно настроек, если оно сейчас открыто: над ним по центру показываем сообщения программы
+    var visibleWindow: NSWindow? { window?.isVisible == true ? window : nil }
+
     @objc private func languageChanged() { window?.title = T("Настройки StartForMac") }
 
     func windowWillClose(_ notification: Notification) { mc?.cancelRecording() }
