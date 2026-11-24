@@ -722,15 +722,15 @@ final class MinimizeController: NSObject, ObservableObject {
         if m == 0 && dockButtonOn { _ = requestAccessibility(prompt: true) }
     }
 
-    func setDockButtonGap(_ v: Double) {
-        DockButton.gapFraction = v
-        dockButtonGap = v
-    }
-
     func setDockButtonTransparency(_ v: Double) {
         DockButton.transparency = v
         dockButtonTransparency = v
         DockButton.shared.refresh()
+    }
+
+    func setDockButtonGap(_ v: Double) {
+        DockButton.gapFraction = v
+        dockButtonGap = v
     }
 
     func setDockButtonSize(_ v: Double) {

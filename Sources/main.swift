@@ -6825,12 +6825,14 @@ struct SettingsView: View {
                             Text(T("«В Dock» — обычный значок программы, как всегда. «Рядом с Dock» — «Пуск» рисует свою кнопку из четырёх квадратов вплотную к Dock (слева от него, а если Dock сбоку, то под ним) и двигает её вслед за Dock; для этого нужен доступ «Управление устройством и доступ к данным» (в ранних версиях macOS: «Универсальный доступ»), программа запросит его при выборе. «На экране» — та же кнопка стоит там, где её оставили, поверх всех окон, и за Dock не следит; её можно перетащить мышью. В двух последних режимах обычный значок «Пуска» убирается из Dock, а при возврате в режим «В Dock» возвращается на место. Клик по кнопке открывает и закрывает «Пуск», правый клик — меню. Прозрачность, размер и расстояние от Dock относятся только к кнопке."))
                                 .font(.caption).foregroundColor(.secondary)
                             if mc.dockButtonOn {
-                                HStack {
-                                    Text(T("Прозрачность фона"))
-                                    Slider(value: Binding(get: { mc.dockButtonTransparency }, set: { mc.setDockButtonTransparency($0) }), in: 0...0.9)
-                                        .frame(width: 180)
-                                    Text("\(Int((mc.dockButtonTransparency * 100).rounded())) %")
-                                        .monospacedDigit().foregroundColor(.secondary).frame(width: 44, alignment: .trailing)
+                                if !DockButton.usesGlass {          // у стекла (macOS 26+) прозрачность и яркость подстраивает система; ползунок нужен только на старых macOS
+                                    HStack {
+                                        Text(T("Прозрачность фона"))
+                                        Slider(value: Binding(get: { mc.dockButtonTransparency }, set: { mc.setDockButtonTransparency($0) }), in: 0...0.9)
+                                            .frame(width: 180)
+                                        Text("\(Int((mc.dockButtonTransparency * 100).rounded())) %")
+                                            .monospacedDigit().foregroundColor(.secondary).frame(width: 44, alignment: .trailing)
+                                    }
                                 }
                                 if mc.dockButtonMode == 0 {
                                     HStack {
@@ -7600,7 +7602,7 @@ struct RootView: View {
         panel.allowedContentTypes = [UTType.application]
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
-        // окно «Пуск» стоит выше обычных окон (уровень popUpMenu) и закрыло бы панель выбора, поэтому на время выбора опускаем его
+        // окно «Пуск» стоит выше обычных окон (уровень floating) и закрыло бы панель выбора, поэтому на время выбора опускаем его
         let popups = NSApp.windows.compactMap { $0 as? PopupWindow }
         let saved = popups.map { $0.level }
         popups.forEach { $0.level = .normal }
@@ -8112,8 +8114,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.isOpaque = false
         window.backgroundColor = .clear
         window.hasShadow = true
-        window.level = .popUpMenu
-        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        window.level = .floating   // выше обычных окон, но ниже Dock: Dock и кнопка «Пуска» всегда поверх окна
+        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]   // .stationary: не уезжает при «Показывать Рабочий стол при нажатии на обои», как флаг раскладки
         window.isReleasedWhenClosed = false
         NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification,
                                                object: window, queue: .main) { [weak self] _ in self?.hide() }

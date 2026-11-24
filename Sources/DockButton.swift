@@ -44,6 +44,12 @@ final class DockButton {
     }
     static var gapPoints: CGFloat { CGFloat(minGap + gapFraction * (maxGap - minGap)) }
 
+    /// macOS 26 и новее: кнопка делается из «жидкого стекла», прозрачность задаёт система
+    static var usesGlass: Bool {
+        if #available(macOS 26.0, *) { return true }
+        return false
+    }
+
     /// Прозрачность фона кнопки, 0…0,9 (по умолчанию 0,28)
     static var transparency: Double {
         get { min(max(UserDefaults.standard.object(forKey: "dockButton.transparency") as? Double ?? 0.28, 0), 0.9) }
@@ -116,7 +122,7 @@ final class DockButton {
         }
         // у края экрана или сразу после сдвига Dock — часто (анимация), иначе редко
         var interval = 0.25
-        if Date().timeIntervalSince(lastChange) < 1.5 || mouseNearEdge() { interval = 1.0 / 60.0 }
+        if Date().timeIntervalSince(lastChange) < 2.5 || mouseNearEdge() { interval = 1.0 / 144.0 }   // Dock едет (автоскрытие): опрашиваем как можно чаще, чтобы кнопка успевала
         queue.asyncAfter(deadline: .now() + interval) { [weak self] in self?.tick(gen) }
     }
 
@@ -228,7 +234,10 @@ final class DockButton {
         if p.buttonSize != s {
             p.rebuild(size: s)
         }
-        if p.frame != pf { p.setFrame(pf, display: true) }
+        if p.frame != pf {
+            // при движении Dock меняется только положение: двигаем окно без перерисовки, это быстрее
+            if p.frame.size == pf.size { p.setFrameOrigin(pf.origin) } else { p.setFrame(pf, display: true) }
+        }
         if !p.isVisible { p.orderFrontRegardless() }
     }
 
@@ -296,7 +305,7 @@ final class DockButtonPanel: NSPanel {
     var onMoved: (() -> Void)?
     var userDragging = false
     private(set) var buttonSize: CGFloat = 0
-    /// Кнопка выше окна «Пуска» (оно на уровне .popUpMenu) в обоих режимах
+    /// Кнопка выше окна «Пуска» (оно на уровне .floating, ниже Dock) в обоих режимах
     func setFree(_ free: Bool) {
         let lvl = NSWindow.Level(rawValue: NSWindow.Level.popUpMenu.rawValue + 1)
         if level != lvl { level = lvl }
@@ -318,6 +327,13 @@ final class DockButtonPanel: NSPanel {
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
+
+    // «Жидкое стекло» (NSGlassEffectView) рисуется настоящим, с преломлением, только в окне с активным видом, то есть в ключевом окне
+    // активной программы. Наша панель ключевой не бывает (иначе она отнимала бы фокус у программы, в которой работает пользователь),
+    // и стекло рисовалось бы матовым и серым. Поэтому панель отвечает «да» на закрытые вопросы AppKit об активном виде.
+    // Это недокументированные селекторы AppKit: если в будущей macOS они пропадут, стекло просто станет матовым, ничего не сломается.
+    @objc(_hasActiveAppearance) func glassHasActiveAppearance() -> Bool { true }
+    @objc(_hasActiveAppearanceIgnoringKeyFocus) func glassHasActiveAppearanceIgnoringKeyFocus() -> Bool { true }
 
     func rebuild(size s: CGFloat) {
         buttonSize = s
@@ -345,17 +361,18 @@ private final class DockGlyphView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         let s = min(bounds.width, bounds.height)
         // поверх размытия подложка непрозрачнее: кнопка читается на любом фоне
-        NSColor.windowBackgroundColor.withAlphaComponent(DockButton.backgroundAlpha).setFill()
-        bounds.fill()
+        let shape = NSBezierPath(roundedRect: bounds, xRadius: s * 0.3, yRadius: s * 0.3)
+        if !DockButton.usesGlass {          // у стекла своя подложка и прозрачность
+            NSColor.windowBackgroundColor.withAlphaComponent(DockButton.backgroundAlpha).setFill()
+            shape.fill()
+        }
         if pressed {
             NSColor(white: 0, alpha: 0.18).setFill()
-            bounds.fill()
-        } else if hover {
-            NSColor(white: 1, alpha: 0.22).setFill()
-            bounds.fill()
+            shape.fill()
         }
         // четыре синих квадрата по центру
-        let block = s * 0.5, gap = s * 0.05
+        let grow: CGFloat = hover ? 1.12 : 1          // при наведении чуть крупнее только квадраты, сама кнопка не меняется
+        let block = s * 0.5 * grow, gap = s * 0.05 * grow
         let p = (block - gap) / 2
         let x0 = (bounds.width - block) / 2
         let y0 = (bounds.height - block) / 2
@@ -375,7 +392,7 @@ private final class DockGlyphView: NSView {
 
 /// Кнопка в духе «Пуск» из Windows на подложке в стиле Dock.
 /// При наведении чуть увеличивается, при нажатии темнеет; правый клик — меню значка «Пуска» из Dock плюс «Настройки…» и «Скрыть кнопку».
-private final class DockButtonView: NSVisualEffectView {
+private final class DockButtonView: NSView {
     var onClick: (() -> Void)?
     var onSettings: (() -> Void)?
     var onHide: (() -> Void)?
@@ -388,23 +405,65 @@ private final class DockButtonView: NSVisualEffectView {
     private var tracking: NSTrackingArea?
     private var restFrame: NSRect?
 
+    private var backdrop: NSView!
+
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        material = .hudWindow
-        blendingMode = .behindWindow
-        state = .active
         wantsLayer = true
-        layer?.masksToBounds = true
+        if #available(macOS 26.0, *) {
+            // macOS 26: настоящее «жидкое стекло», как у Dock и системных контролов
+            let g = NSGlassEffectView()
+            // стиль стекла: .clear (по умолчанию: прозрачное стекло с затемнением, как у Dock) или .regular: defaults write ru.local.StartMenu dockButton.glassStyle regular
+            g.style = UserDefaults.standard.string(forKey: "dockButton.glassStyle") == "regular" ? .regular : .clear
+            backdrop = g
+        } else {
+            let v = NSVisualEffectView()
+            v.material = .hudWindow
+            v.blendingMode = .behindWindow
+            v.state = .active
+            backdrop = v
+            layer?.masksToBounds = true
+        }
+        backdrop.frame = bounds
+        backdrop.autoresizingMask = [.width, .height]
+        addSubview(backdrop)
+        if DockButton.debugLog {
+            let v = ProcessInfo.processInfo.operatingSystemVersion
+            let line = "\(Date()) подложка: \(type(of: backdrop!)), стекло=\(DockButton.usesGlass), macOS \(v.majorVersion).\(v.minorVersion)\n"
+            let url = URL(fileURLWithPath: NSHomeDirectory() + "/Library/Logs/Pusk-dockbtn.log")
+            if let h = try? FileHandle(forWritingTo: url) { h.seekToEndOfFile(); h.write(Data(line.utf8)); try? h.close() }
+            else { try? line.write(to: url, atomically: true, encoding: .utf8) }
+        }
         restFrame = frameRect
         glyph.frame = bounds
         glyph.autoresizingMask = [.width, .height]
-        addSubview(glyph)
+        if #available(macOS 26.0, *), let g = backdrop as? NSGlassEffectView {
+            g.contentView = glyph             // по правилам AppKit содержимое кладут внутрь стекла: так оно рисуется как следует
+            applyTint()
+        } else {
+            addSubview(glyph)
+        }
     }
     required init?(coder: NSCoder) { fatalError() }
 
+    /// Лёгкое затемнение стекла по теме системы: системное стекло получается светлее Dock и на тёмном, и на светлом фоне.
+    /// Фон за кнопкой не измеряем (это требовало записи экрана), поэтому только по теме: в тёмной теме сильнее, в светлой слабее.
+    private func applyTint() {
+        guard #available(macOS 26.0, *), let g = backdrop as? NSGlassEffectView else { return }
+        let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        g.tintColor = NSColor.black.withAlphaComponent(dark ? 0.21 : 0.16)
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applyTint()
+    }
+
     override func layout() {
         super.layout()
-        layer?.cornerRadius = min(bounds.width, bounds.height) * 0.3
+        let radius = min(bounds.width, bounds.height) * 0.3
+        layer?.cornerRadius = radius
+        if #available(macOS 26.0, *), let g = backdrop as? NSGlassEffectView { g.cornerRadius = radius }
     }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
@@ -417,15 +476,8 @@ private final class DockButtonView: NSVisualEffectView {
         tracking = t
     }
 
-    private func setHover(_ on: Bool) {
-        glyph.hover = on
-        guard let rf = restFrame else { return }
-        let d = on ? -rf.width * 0.05 : 0
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.12
-            animator().frame = rf.insetBy(dx: d, dy: d)
-        }
-    }
+    /// При наведении только подсвечиваем: размер кнопки не меняем (при смене размера значок внутри «уезжал»)
+    private func setHover(_ on: Bool) { glyph.hover = on }
 
     override func mouseEntered(with event: NSEvent) { setHover(true) }
     override func mouseExited(with event: NSEvent) {

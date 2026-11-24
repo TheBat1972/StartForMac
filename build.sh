@@ -8,22 +8,36 @@
 #   NOTARY_PROFILE="<профиль notarytool>" ./build.sh
 #                                      — подпись Developer ID + нотаризация, на выходе StartForMac.zip
 #   NOTARY_PROFILE= ./build.sh         — быстрая сборка с подписью, без нотаризации
+#   ./build.sh dev                     — самая быстрая сборка для проверки правок: только под архитектуру
+#                                        этого Mac, без оптимизации, с той же подписью, что и обычная сборка
+#                                        (чтобы не сбрасывались разрешения), без архива и нотаризации
 set -e
 cd "$(dirname "$0")"
+# ./build.sh dev: одна архитектура (этого Mac), без -O, без подписи Developer ID
+if [ "$1" = "dev" ]; then
+  DEV=1
+  ARCHS="$(uname -m)"; OPT="-Onone"
+else
+  ARCHS="arm64 x86_64"; OPT="-O"
+fi
 # Личные настройки подписи читаются из файла .sign.local (он не попадает в git).
 # Значения из командной строки главнее. Пример файла: .sign.local.example
 [ -f .sign.local ] && . ./.sign.local
+[ -n "$DEV" ] && NOTARY_PROFILE=""          # в dev подпись Developer ID остаётся (иначе macOS сбрасывает разрешения), нотаризации нет
 APP="StartForMac.app"
 ZIP="StartForMac.zip"
 TMP="$(mktemp -d)"
 STAGE="$TMP/$APP"
 
-rm -f "$ZIP"
+[ -z "$DEV" ] && rm -f "$ZIP" || true
 mkdir -p "$STAGE/Contents/MacOS" "$STAGE/Contents/Resources"
 
-swiftc -O -target arm64-apple-macos12.0  Sources/*.swift -o "$TMP/arm64"
-swiftc -O -target x86_64-apple-macos12.0 Sources/*.swift -o "$TMP/x86_64"
-lipo -create "$TMP/arm64" "$TMP/x86_64" -output "$STAGE/Contents/MacOS/StartForMac"
+LIPO=""
+for A in $ARCHS; do
+  swiftc $OPT -target "$A-apple-macos12.0" Sources/*.swift -o "$TMP/$A"
+  LIPO="$LIPO $TMP/$A"
+done
+lipo -create $LIPO -output "$STAGE/Contents/MacOS/StartForMac"
 
 cp Info.plist "$STAGE/Contents/Info.plist"
 [ -d Cards ] && cp -R Cards "$STAGE/Contents/Resources/Cards"     # картинки и звуки карт для «Косынки»
@@ -41,11 +55,13 @@ iconutil -c icns "$TMP/AppIcon.iconset" -o "$STAGE/Contents/Resources/AppIcon.ic
 # Расширение Finder («Создать» в контекстном меню): отдельный модуль внутри приложения, обязательно в песочнице
 APPEX="$STAGE/Contents/PlugIns/StartFinderExt.appex"
 mkdir -p "$APPEX/Contents/MacOS"
-for A in arm64 x86_64; do
-  swiftc -O -target "$A-apple-macos12.0" -application-extension -module-name StartFinderExt FinderExt/*.swift \
+LIPO=""
+for A in $ARCHS; do
+  swiftc $OPT -target "$A-apple-macos12.0" -application-extension -module-name StartFinderExt FinderExt/*.swift \
     -Xlinker -e -Xlinker _NSExtensionMain -o "$TMP/ext_$A"
 done
-lipo -create "$TMP/ext_arm64" "$TMP/ext_x86_64" -output "$APPEX/Contents/MacOS/StartFinderExt"
+for A in $ARCHS; do LIPO="$LIPO $TMP/ext_$A"; done
+lipo -create $LIPO -output "$APPEX/Contents/MacOS/StartFinderExt"
 cp FinderExt/Info.plist "$APPEX/Contents/Info.plist"
 if [ -n "$SIGN_ID" ]; then
   codesign --force --options runtime --timestamp --entitlements FinderExt/FinderExt.entitlements --sign "$SIGN_ID" "$APPEX"
@@ -71,7 +87,9 @@ mkdir -p "$APP"
 rsync -a --delete "$STAGE/" "$APP/"
 codesign --verify --strict "$APP"
 
-if [ -n "$SIGN_ID" ]; then
+if [ -n "$SIGN_ID" ] && [ -n "$DEV" ]; then
+  echo "Готово (dev, подписано Developer ID, без архива): $(pwd)/$APP"
+elif [ -n "$SIGN_ID" ]; then
   ditto -c -k --keepParent "$APP" "$ZIP"
   echo "Готово (подписано Developer ID): $(pwd)/$APP  и  $(pwd)/$ZIP"
 else
