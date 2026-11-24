@@ -1,14 +1,25 @@
 # Что нового / What's new
 
+### Версия 11.3
+
+**Новое**
+- Версия 11.3.
+
+### Version 11.3
+
+- Version 11.3.
+
 ### Версия 11.2
 
 **Новое**
-- Кнопка «Пуска» на старых macOS: убрана своя подложка и ползунок «Прозрачность фона», остался только системный материал, который сам светлеет и темнеет по теме и фону. Материал — `.hudWindow`. Для проверки есть выключатель `DockButton.forceLegacy` (сейчас выключен).
+- Кнопка «Пуска» на старых macOS: убрана своя подложка и ползунок «Прозрачность фона», остался только системный материал, который сам светлеет и темнеет по теме и фону. Материал — `.hudWindow`.
+- Размер кнопки «Пуска» пересчитан: прежние 135% теперь 100% (по умолчанию), диапазон в настройках 60–160%. Сохранённый ранее размер сбрасывается на 100%.
 - Версия 11.2.
 
 ### Version 11.2
 
-- The Start button on older macOS: the custom backing and the “Background transparency” slider are removed; only the system material remains, which lightens and darkens by itself with the theme and backdrop. The material is `.hudWindow`. A test switch `DockButton.forceLegacy` (currently off) makes macOS 26+ draw it the same way.
+- The Start button on older macOS: the custom backing and the “Background transparency” slider are removed; only the system material remains, which lightens and darkens by itself with the theme and backdrop. The material is `.hudWindow`.
+- The Start button size is rescaled: the former 135% is now 100% (default), the Settings range is 60–160%. A previously saved size resets to 100%.
 - Version 11.2.
 
 ### Версия 11.1

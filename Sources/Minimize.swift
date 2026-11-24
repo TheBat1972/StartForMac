@@ -560,7 +560,6 @@ final class MinimizeController: NSObject, ObservableObject {
     @Published var dockButtonOn = DockButton.enabled
     @Published var dockButtonSize = DockButton.sizeScale
     @Published var dockButtonMode = DockButton.mode
-    @Published var dockButtonTransparency = DockButton.transparency
     @Published var dockButtonGap = DockButton.gapFraction
     /// Автоматический переключатель раскладки, его сочетание, исключения и флаг раскладки (по умолчанию всё выключено)
     @Published var layoutOn = LayoutSwitcher.enabled
@@ -722,11 +721,6 @@ final class MinimizeController: NSObject, ObservableObject {
         if m == 0 && dockButtonOn { _ = requestAccessibility(prompt: true) }
     }
 
-    func setDockButtonTransparency(_ v: Double) {
-        DockButton.transparency = v
-        dockButtonTransparency = v
-        DockButton.shared.refresh()
-    }
 
     func setDockButtonGap(_ v: Double) {
         DockButton.gapFraction = v

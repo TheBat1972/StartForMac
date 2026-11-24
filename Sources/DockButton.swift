@@ -18,10 +18,10 @@ final class DockButton {
     /// Журнал найденных окон Dock (~/Library/Logs/Pusk-dockbtn.log): пока альфа, нужен для подбора
     static let debugLog = true
 
-    /// Размер кнопки относительно значка Dock: 0,6…1,6 (по умолчанию 1 — как значок Dock)
+    /// Размер кнопки: 0,6…1,6 (по умолчанию 1 — штатный размер кнопки, 1,35 значка Dock)
     static var sizeScale: Double {
-        get { min(max(UserDefaults.standard.object(forKey: "dockButton.scale") as? Double ?? 1, 0.6), 1.6) }
-        set { UserDefaults.standard.set(newValue, forKey: "dockButton.scale") }
+        get { min(max(UserDefaults.standard.object(forKey: "dockButton.size") as? Double ?? 1, 0.6), 1.6) }
+        set { UserDefaults.standard.set(newValue, forKey: "dockButton.size") }
     }
 
     /// Положение: 0 — у Dock (следит за ним), 1 — свободно на экране поверх всех окон (можно перетащить)
@@ -45,39 +45,11 @@ final class DockButton {
     static var gapPoints: CGFloat { CGFloat(minGap + gapFraction * (maxGap - minGap)) }
 
     /// macOS 26 и новее: кнопка делается из «жидкого стекла», прозрачность задаёт система
-    /// true — притворяемся старой системой, чтобы проверить на macOS 26+ вид кнопки как на macOS 12–25 (системный материал без своей подложки)
-    static let forceLegacy = false
-    /// ВРЕМЕННО, для подбора: defaults write ru.local.StartMenu dockButton.material menu (popover, menu, hud, sheet, header, titlebar, fullscreen, sidebar, window, content, under)
-    static var legacyMaterial: NSVisualEffectView.Material {
-        switch UserDefaults.standard.string(forKey: "dockButton.material") ?? "hud" {
-        case "menu": return .menu
-        case "hud": return .hudWindow
-        case "sheet": return .sheet
-        case "header": return .headerView
-        case "titlebar": return .titlebar
-        case "fullscreen": return .fullScreenUI
-        case "sidebar": return .sidebar
-        case "window": return .windowBackground
-        case "content": return .contentBackground
-        case "under": return .underWindowBackground
-        case "popover": return .popover
-        default: return .hudWindow
-        }
-    }
-    /// ВРЕМЕННО: затемнение поверх материала 0…0,6, defaults write ru.local.StartMenu dockButton.dim 0.15
-    static var legacyDim: CGFloat { CGFloat(min(max(UserDefaults.standard.double(forKey: "dockButton.dim"), 0), 0.6)) }
     static var usesGlass: Bool {
-        if forceLegacy { return false }
         if #available(macOS 26.0, *) { return true }
         return false
     }
 
-    /// Прозрачность фона кнопки, 0…0,9 (по умолчанию 0,28)
-    static var transparency: Double {
-        get { min(max(UserDefaults.standard.object(forKey: "dockButton.transparency") as? Double ?? 0.28, 0), 0.9) }
-        set { UserDefaults.standard.set(newValue, forKey: "dockButton.transparency") }
-    }
-    static var backgroundAlpha: CGFloat { CGFloat(1 - transparency) }
     /// Где кнопка стоит в режиме «На экране» (левый нижний угол, координаты экрана)
     static var freeOrigin: NSPoint? {
         get { (UserDefaults.standard.string(forKey: "dockButton.freeOrigin")).map { NSPointFromString($0) } }
@@ -267,7 +239,7 @@ final class DockButton {
     private func buttonSize(fallback: CGFloat) -> CGFloat {
         let tile = CGFloat(UserDefaults(suiteName: "com.apple.dock")?.double(forKey: "tilesize") ?? 0)
         let base = tile > 0 ? tile : max(fallback, 48)
-        return min(max((base * CGFloat(Self.sizeScale)).rounded(), 28), 90)
+        return min(max((base * 1.35 * CGFloat(Self.sizeScale)).rounded(), 28), 90)
     }
 
     /// Режим «На экране»: кнопка стоит там, где её оставили, поверх всех окон
@@ -384,10 +356,6 @@ private final class DockGlyphView: NSView {
         let s = min(bounds.width, bounds.height)
         // поверх размытия подложка непрозрачнее: кнопка читается на любом фоне
         let shape = NSBezierPath(roundedRect: bounds, xRadius: s * 0.3, yRadius: s * 0.3)
-        if !DockButton.usesGlass, DockButton.legacyDim > 0 {
-            NSColor(white: 0, alpha: DockButton.legacyDim).setFill()
-            shape.fill()
-        }
         if pressed {
             NSColor(white: 0, alpha: 0.18).setFill()
             shape.fill()
@@ -440,7 +408,7 @@ private final class DockButtonView: NSView {
             backdrop = g
         } else {
             let v = NSVisualEffectView()
-            v.material = DockButton.legacyMaterial   // системный материал: сам светлеет/темнеет по теме и фону, без своей подложки
+            v.material = .hudWindow   // системный материал: сам светлеет/темнеет по теме и фону, без своей подложки
             v.blendingMode = .behindWindow
             v.state = .active
             backdrop = v
