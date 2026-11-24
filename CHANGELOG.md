@@ -3,11 +3,13 @@
 ### Версия 9.1
 
 **Новое**
+- Проверка обновлений: теперь каждые 6 часов и после пробуждения Mac (раньше раз в сутки, поэтому новая версия могла появиться с задержкой до суток). Сбой сети или лимит GitHub больше не откладывают следующую попытку на сутки, а найденное обновление не пропадает после перезапуска «Пуска». Переключатель называется «Проверять обновления автоматически».
 - Версия 9.1.
 
 ### Version 9.1
 
 **New**
+- Update check: now every 6 hours and after the Mac wakes up (it used to be once a day, so a new version could show up with up to a day of delay). A network failure or a GitHub rate limit no longer postpones the next attempt by a day, and a found update no longer disappears after restarting Start. The switch is now called “Check for updates automatically”.
 - Version 9.1.
 
 ### Версия 9.0

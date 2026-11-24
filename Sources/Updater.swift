@@ -2,7 +2,7 @@ import Cocoa
 
 // MARK: - Проверка и установка обновлений
 //
-// Раз в сутки «Пуск» спрашивает у GitHub последний релиз репозитория (TheBat1972/StartForMac, можно переопределить
+// Раз в 6 часов «Пуск» спрашивает у GitHub последний релиз репозитория (TheBat1972/StartForMac, можно переопределить
 // ключом update.repo) и сравнивает его номер со своей версией. Если вышла новая, в настройках появляется сообщение
 // с описанием и кнопкой «Обновить» (на значке настроек — точка); окон сам по себе «Пуск» не показывает.
 // «Обновить» скачивает StartForMac.zip из релиза, проверяет подпись и идентификатор, подменяет программу в её папке
@@ -28,27 +28,38 @@ final class AppUpdater: ObservableObject {
 
     private var repo: String { UserDefaults.standard.string(forKey: "update.repo") ?? "TheBat1972/StartForMac" }
     private var timer: Timer?
+    private var wakeObserver: NSObjectProtocol?
+    /// Как часто спрашивать GitHub (таймер смотрит раз в час и проверяет, прошло ли это время)
+    private static let interval: Double = 6 * 3600
 
     // MARK: расписание
 
     func start() {
+        restoreFound()
         guard AppUpdater.auto, timer == nil else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in self?.checkIfDue() }
         let t = Timer(timeInterval: 3600, repeats: true) { [weak self] _ in self?.checkIfDue() }
         RunLoop.main.add(t, forMode: .common)
         timer = t
+        // после пробуждения Mac не ждать следующего часового тика
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 15) { self?.checkIfDue() }
+        }
     }
 
     func setAuto(_ on: Bool) {
         AppUpdater.auto = on
-        if on { start() } else { timer?.invalidate(); timer = nil }
+        if on { start() } else {
+            timer?.invalidate(); timer = nil
+            if let o = wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(o); wakeObserver = nil }
+        }
     }
 
-    /// Проверка нужна, если с прошлой прошли сутки (таймер смотрит раз в час, так что Mac может спать и включаться когда угодно)
+    /// Проверка нужна, если с прошлой прошло достаточно времени (таймер смотрит раз в час, так что Mac может спать и включаться когда угодно)
     private func checkIfDue() {
         guard AppUpdater.auto, !busy else { return }
         let last = UserDefaults.standard.double(forKey: "update.last")
-        if Date().timeIntervalSince1970 - last >= 86_400 - 300 { check(manual: false) }
+        if Date().timeIntervalSince1970 - last >= AppUpdater.interval - 300 { check(manual: false) }
     }
 
     // MARK: проверка
@@ -84,7 +95,8 @@ final class AppUpdater: ObservableObject {
     private func handle(_ data: Data?, _ resp: URLResponse?, _ err: Error?, manual: Bool) {
         busy = false
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
-        if code != 0 { UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "update.last") }
+        // время проверки запоминаем только при настоящем ответе; сбой сети, лимит GitHub (403) или 5xx не откладывают следующую попытку
+        if code == 200 || code == 404 { UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "update.last") }
         guard err == nil, code == 200, let data = data,
               let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let tag = j["tag_name"] as? String else {
@@ -95,6 +107,7 @@ final class AppUpdater: ObservableObject {
         let ver = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
         guard AppUpdater.isNewer(ver, than: AppUpdater.currentVersion) else {
             availableVersion = nil
+            UserDefaults.standard.removeObject(forKey: "update.found")
             status = T("Установлена последняя версия")
             if manual { info(status) }
             return
@@ -110,8 +123,21 @@ final class AppUpdater: ObservableObject {
         availableVersion = ver
         availableURL = dl
         availableNotes = (j["body"] as? String) ?? ""
+        UserDefaults.standard.set(["ver": ver, "url": link, "notes": availableNotes], forKey: "update.found")
         status = Tf("Доступна версия %@.", ver)
         if manual { (NSApp.delegate as? AppDelegate)?.openSettings() }
+    }
+
+    /// Найденная ранее новая версия переживает перезапуск «Пуска»: сообщение не пропадает до следующей проверки
+    private func restoreFound() {
+        guard availableVersion == nil, let d = UserDefaults.standard.dictionary(forKey: "update.found"),
+              let v = d["ver"] as? String, let l = d["url"] as? String, let u = URL(string: l),
+              AppUpdater.isNewer(v, than: AppUpdater.currentVersion) else {
+            UserDefaults.standard.removeObject(forKey: "update.found"); return
+        }
+        availableVersion = v; availableURL = u
+        availableNotes = d["notes"] as? String ?? ""
+        status = Tf("Доступна версия %@.", v)
     }
 
     /// Ставит найденную версию (кнопка «Обновить»)

@@ -49,7 +49,7 @@ Each tool opens in its own window and works independently of the main window.
 ### Settings, updates and permissions
 
 - **Settings.** Language (system, Russian, English), theme, hotkeys, gesture, launch at login, pinning in the Dock, the “About” tab.
-- **Updates.** Once a day the app checks whether a new version is out; if so, Settings shows a message and an “Update” button. You can also check manually with “Check for updates…” in the app menu.
+- **Updates.** Every 6 hours (and after your Mac wakes up) the app checks whether a new version is out; if so, Settings shows a message and an “Update” button. You can also check manually with “Check for updates…” in the app menu.
 - **Permissions.** The “Permissions” tab explains why each permission is needed and opens the right pane of System Settings: “Full Disk Access”, “Accessibility”, “Screen & System Audio Recording” (only for window thumbnails), “App Management” and “Files & Folders”. The app works without them, but some features will be unavailable.
 
 ## Privacy and security

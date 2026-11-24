@@ -6623,7 +6623,7 @@ struct SettingsView: View {
                         }
                         sep()
                         section(T("Обновления")) {
-                            toggleRow(T("Проверять обновления раз в день"), updateAuto) {
+                            toggleRow(T("Проверять обновления автоматически"), updateAuto) {
                                 updateAuto = $0
                                 AppUpdater.shared.setAuto($0)
                             }

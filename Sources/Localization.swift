@@ -185,7 +185,7 @@ private let translations: [String: String] = [
     "Доступна новая версия %@ (у вас %@)": "New version %@ is available (you have %@)",
     "Проверить обновления…": "Check for updates…",
     "Обновления": "Updates",
-    "Проверять обновления раз в день": "Check for updates daily",
+    "Проверять обновления автоматически": "Check for updates automatically",
     "Проверить сейчас": "Check now",
     "Проверяю…": "Checking…",
     "Релизов не найдено: репозиторий закрыт или в нём ещё нет релизов.": "No releases found: the repository is private or has no releases yet.",
