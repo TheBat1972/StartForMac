@@ -5,6 +5,7 @@
 **Новое**
 - «Загрузка и конвертация»: исправлено перетаскивание файлов. При дропе видео из стопки в Dock на вкладку «Видео конвертор» вместо него подставлялся старый документ (docx) с прошлого перетаскивания. Теперь «Пуск» сверяет путь из буфера перетаскивания с тем, что отдаёт текущий дроп, а разделы «Видео» и «Аудио» принимают только свои типы файлов.
 - «Загрузка и конвертация»: выбор папки для результата убран, во всех трёх конверторах и в загрузке с YouTube результат всегда сохраняется в «Загрузки»: так проще найти результаты.
+- Файл менеджер: стрелка вниз в поле пути переводит курсор в поле поиска, следующая — в список файлов, дальше стрелки ходят по файлам; стрелка вверх с первой строки списка возвращает в поиск, а затем в поле пути. В полях пути и поиска стрелки влево и вправо работают как раньше.
 - Версия 9.2.
 
 ### Version 9.2
@@ -12,6 +13,7 @@
 **New**
 - Download and Convert: fixed drag and drop. When a video was dropped from a Dock stack onto the “Video converter” section, an old document (docx) from a previous drag was added instead. Start now checks the path from the drag pasteboard against what the current drop provides, and the Video and Audio sections accept only their own file types.
 - Download and Convert: the choice of the output folder is gone; in all three converters and in the YouTube download the result is always saved to Downloads, which makes the results easier to find.
+- File manager: the down arrow in the path field moves the cursor to the search field, the next one to the file list, and then the arrows walk through the files; the up arrow on the first row of the list goes back to the search field and then to the path field. In the path and search fields the left and right arrows work as before.
 - Version 9.2.
 
 ### Версия 9.1

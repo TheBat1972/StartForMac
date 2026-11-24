@@ -214,8 +214,10 @@ extension View {
                 .filter { FileManager.default.fileExists(atPath: $0.path) }
             // Буфер .drag может хранить путь от прошлого перетаскивания (так бывает при дропе из стопки Dock):
             // берём его, только если имя файла совпадает с тем, что отдают providers этого дропа
-            let names = Set(providers.compactMap { $0.suggestedName }.map { ($0 as NSString).deletingPathExtension })
-            let current = real.filter { names.contains($0.deletingPathExtension().lastPathComponent) }
+            // suggestedName бывает и с расширением, и без: сравниваем с обоими вариантами имени (в имени могут быть точки,
+            // как в «Запись экрана … 12.56.52.mov», поэтому расширение нельзя просто отрезать у suggestedName)
+            let names = Set(providers.compactMap { $0.suggestedName })
+            let current = real.filter { names.contains($0.lastPathComponent) || names.contains($0.deletingPathExtension().lastPathComponent) }
             let useBoard = !names.isEmpty && current.count == real.count && current.count >= providers.count
             if !real.isEmpty && useBoard {
                 DispatchQueue.main.async { handler(real) }

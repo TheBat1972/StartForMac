@@ -684,6 +684,52 @@ final class TPState: ObservableObject {
 
     // MARK: клавиатура
 
+    /// Поля ввода панели сверху вниз: первое — путь, второе — поиск (у панели с телефоном поиска нет)
+    private func paneFields(_ idx: Int, _ root: NSView) -> [NSTextField] {
+        func frameInWindow(_ v: NSView) -> NSRect { v.convert(v.bounds, to: nil) }
+        func editableFields(_ v: NSView) -> [NSTextField] {
+            var r: [NSTextField] = []
+            for s in v.subviews {
+                if let t = s as? NSTextField, t.isEditable, !t.isHidden { r.append(t) }
+                r += editableFields(s)
+            }
+            return r
+        }
+        let half = root.bounds.width / 2
+        return editableFields(root)
+            .filter { (frameInWindow($0).midX < half ? 0 : 1) == idx }
+            .sorted { frameInWindow($0).midY > frameInWindow($1).midY }
+    }
+
+    /// Стрелки вверх и вниз между полем пути, полем поиска и списком файлов; влево и вправо в полях работают как обычно.
+    func handleFieldKey(_ e: NSEvent, _ tv: NSTextView, _ w: NSWindow) -> Bool {
+        guard e.keyCode == 125 || e.keyCode == 126,
+              e.modifierFlags.intersection([.command, .shift, .option, .control]).isEmpty,
+              !tv.hasMarkedText(),
+              let field = tv.delegate as? NSTextField, field.isEditable,
+              let root = w.contentView else { return false }
+        let idx = field.convert(field.bounds, to: nil).midX < root.bounds.width / 2 ? 0 : 1
+        let fields = paneFields(idx, root)
+        guard let pos = fields.firstIndex(where: { $0 === field }) else { return false }
+        active = idx
+        if e.keyCode == 125 {
+            if pos + 1 < fields.count { w.makeFirstResponder(fields[pos + 1]) } else { clearKeyFocus() }
+        } else {
+            guard pos > 0 else { return false }        // выше поля пути идти некуда: курсор ведёт себя как в обычном поле
+            w.makeFirstResponder(fields[pos - 1])
+        }
+        return true
+    }
+
+    /// Со списка файлов вверх: из первой строки — в поле поиска (а если его нет — в поле пути)
+    private func focusFieldsAbove(_ idx: Int) -> Bool {
+        guard let w = window, let root = w.contentView else { return false }
+        let fields = paneFields(idx, root)
+        guard let target = fields.last else { return false }
+        w.makeFirstResponder(target)
+        return true
+    }
+
     func handleKey(_ e: NSEvent) -> Bool {
         let f = e.modifierFlags.intersection([.command, .shift, .option, .control])
         let cmd = f.contains(.command), shift = f.contains(.shift)
@@ -702,7 +748,9 @@ final class TPState: ObservableObject {
         case 48: active = 1 - active; return true                  // Tab
         case 123: active = 0; return true
         case 124: active = 1; return true
-        case 126: moveCursor(p, to: p.cursor - 1, extend: shift); return true
+        case 126:
+            if !shift, p.cursor <= 0, focusFieldsAbove(active) { return true }
+            moveCursor(p, to: p.cursor - 1, extend: shift); return true
         case 125: moveCursor(p, to: p.cursor + 1, extend: shift); return true
         case 116: moveCursor(p, to: p.cursor - 15, extend: shift); return true
         case 121: moveCursor(p, to: p.cursor + 15, extend: shift); return true
@@ -1697,7 +1745,10 @@ final class TPWindowController: NSObject, NSWindowDelegate {
         guard monitor == nil else { return }
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { e in
             guard let w = self.window, NSApp.keyWindow === w, NSApp.modalWindow == nil,
-                  w.attachedSheet == nil, !(w.firstResponder is NSTextView) else { return e }
+                  w.attachedSheet == nil else { return e }
+            if let tv = w.firstResponder as? NSTextView {
+                return TPState.shared.handleFieldKey(e, tv, w) ? nil : e
+            }
             return TPState.shared.handleKey(e) ? nil : e
         }
     }
