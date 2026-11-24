@@ -561,6 +561,10 @@ final class MinimizeController: NSObject, ObservableObject {
     @Published var dockButtonSize = DockButton.sizeScale
     @Published var dockButtonMode = DockButton.mode
     @Published var dockButtonGap = DockButton.gapFraction
+    @Published var dockIconColor = DockButton.iconColorIndex
+    @Published var dockIconAlpha = DockButton.iconAlpha
+    @Published var dockIconSaturation = DockButton.iconSaturation
+    @Published var dockIconOutline = DockButton.iconOutline
     /// Автоматический переключатель раскладки, его сочетание, исключения и флаг раскладки (по умолчанию всё выключено)
     @Published var layoutOn = LayoutSwitcher.enabled
     @Published var layoutAutoOn = LayoutSwitcher.autoFix
@@ -725,6 +729,30 @@ final class MinimizeController: NSObject, ObservableObject {
     func setDockButtonGap(_ v: Double) {
         DockButton.gapFraction = v
         dockButtonGap = v
+    }
+
+    func setDockIconOutline(_ on: Bool) {
+        DockButton.iconOutline = on
+        dockIconOutline = on
+        DockButton.shared.refresh()
+    }
+
+    func setDockIconColor(_ i: Int) {
+        DockButton.iconColorIndex = i
+        dockIconColor = i
+        DockButton.shared.refresh()
+    }
+
+    func setDockIconAlpha(_ v: Double) {
+        DockButton.iconAlpha = v
+        dockIconAlpha = v
+        DockButton.shared.refresh()
+    }
+
+    func setDockIconSaturation(_ v: Double) {
+        DockButton.iconSaturation = v
+        dockIconSaturation = v
+        DockButton.shared.refresh()
     }
 
     func setDockButtonSize(_ v: Double) {

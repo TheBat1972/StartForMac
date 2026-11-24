@@ -6839,6 +6839,34 @@ struct SettingsView: View {
                                     Text("\(Int((mc.dockButtonSize * 100).rounded())) %")
                                         .monospacedDigit().foregroundColor(.secondary).frame(width: 44, alignment: .trailing)
                                 }
+                                HStack(spacing: 8) {
+                                    Text(T("Цвет фона значка"))
+                                    ForEach(0..<DockButton.iconPalette.count, id: \.self) { i in
+                                        let c = DockButton.iconPalette[i]
+                                        Button { mc.setDockIconColor(i) } label: {
+                                            Circle().fill(Color(NSColor(calibratedHue: c.hue, saturation: c.sat, brightness: c.bri, alpha: 1)))
+                                                .frame(width: 18, height: 18)
+                                                .overlay(Circle().stroke(mc.dockIconColor == i ? Color.accentColor : Color.gray.opacity(0.6), lineWidth: mc.dockIconColor == i ? 2.5 : 1))
+                                        }
+                                        .buttonStyle(.plain).help(T(c.name))
+                                    }
+                                }
+                                HStack {
+                                    Text(T("Прозрачность фона значка"))
+                                    Slider(value: Binding(get: { 1 - mc.dockIconAlpha }, set: { mc.setDockIconAlpha(1 - $0) }), in: 0...1)
+                                        .frame(width: 180)
+                                    Text("\(Int(((1 - mc.dockIconAlpha) * 100).rounded())) %")
+                                        .monospacedDigit().foregroundColor(.secondary).frame(width: 44, alignment: .trailing)
+                                }
+                                HStack {
+                                    Text(T("Насыщенность фона значка"))
+                                    Slider(value: Binding(get: { mc.dockIconSaturation }, set: { mc.setDockIconSaturation($0) }), in: 0...1)
+                                        .frame(width: 180)
+                                        .disabled(mc.dockIconColor < 2)
+                                    Text("\(Int((mc.dockIconSaturation * 100).rounded())) %")
+                                        .monospacedDigit().foregroundColor(.secondary).frame(width: 44, alignment: .trailing)
+                                }
+                                toggleRow(T("Окантовка значка"), mc.dockIconOutline) { mc.setDockIconOutline($0) }
                             }
                         }
         }

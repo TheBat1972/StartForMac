@@ -3,10 +3,18 @@
 ### Версия 11.3
 
 **Новое**
+- Кнопка «Пуска» увеличивается вместе с Dock (режим «Рядом с Dock»): когда в системе включено «Увеличение» и курсор над Dock, кнопка раздвигается вдоль Dock (по горизонтали от стороны Dock, у бокового Dock вверх и вниз поровну), а значок внутри растёт и поднимается, как значки Dock (может выходить за границы кнопки); на самой кнопке он максимальный.
+- Внутри кнопки «Пуска» вместо голых синих квадратов теперь значок: белый скруглённый квадрат (непрозрачность 10%) с тончайшей серой окантовкой и четырьмя синими окнами, чуть меньше значка Finder в Dock; при размере 100% значок на 10% меньше значка Finder, ползунок меняет кнопку и значок пропорционально, а увеличение Dock умножает уже этот размер.
+- При нажатии на кнопку «Пуска» темнеют синие окна значка, а не сама кнопка.
+- Фон значка внутри кнопки «Пуска» настраивается: цвет (белый, чёрный и цвета радуги: красный, оранжевый, жёлтый, зелёный, голубой, синий, фиолетовый), прозрачность и насыщенность (у белого и чёрного не действует); тонкую серую окантовку можно выключить. По умолчанию белый, прозрачность 90%.
 - Версия 11.3.
 
 ### Version 11.3
 
+- The Start button magnifies with the Dock (“Next to Dock” mode): when Dock magnification is on and the pointer is over the Dock, the button widens along the Dock (horizontally away from the Dock side, or up and down equally beside a side Dock) and the icon inside grows and rises like the Dock icons (it may extend beyond the button); on the button itself it is at maximum.
+- Inside the Start button, instead of bare blue squares there is now an icon: a white rounded square (10% opacity) with a hairline gray outline and four blue windows, slightly smaller than the Finder icon in the Dock; at 100% the icon is 10% smaller than the Finder icon, the size slider scales the button and the icon proportionally, and Dock magnification multiplies that size.
+- On press, the blue windows of the icon darken instead of the button itself.
+- The background of the icon inside the Start button is adjustable: a color (white, black and the rainbow: red, orange, yellow, green, light blue, blue, violet), transparency and saturation (no effect for white and black); the hairline gray outline can be turned off. Default: white, 90% transparency.
 - Version 11.3.
 
 ### Версия 11.2

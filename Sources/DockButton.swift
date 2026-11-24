@@ -24,6 +24,35 @@ final class DockButton {
         set { UserDefaults.standard.set(newValue, forKey: "dockButton.size") }
     }
 
+    /// Фон значка внутри кнопки: белый, чёрный или цвет радуги, прозрачность и насыщенность
+    static let iconPalette: [(name: String, hue: CGFloat, sat: CGFloat, bri: CGFloat)] = [
+        ("Белый", 0, 0, 1), ("Чёрный", 0, 0, 0), ("Красный", 0, 1, 0.95), ("Оранжевый", 0.07, 1, 1), ("Жёлтый", 0.14, 1, 1),
+        ("Зелёный", 0.33, 1, 0.85), ("Голубой", 0.5, 1, 1), ("Синий", 0.62, 1, 1), ("Фиолетовый", 0.78, 1, 0.9)
+    ]
+    static var iconColorIndex: Int {
+        get { min(max(UserDefaults.standard.object(forKey: "dockButton.iconColor") as? Int ?? 0, 0), iconPalette.count - 1) }
+        set { UserDefaults.standard.set(newValue, forKey: "dockButton.iconColor") }
+    }
+    /// Непрозрачность фона значка 0…1 (по умолчанию 0,10)
+    static var iconAlpha: Double {
+        get { min(max(UserDefaults.standard.object(forKey: "dockButton.iconAlpha") as? Double ?? 0.10, 0), 1) }
+        set { UserDefaults.standard.set(newValue, forKey: "dockButton.iconAlpha") }
+    }
+    /// Насыщенность цвета фона 0…1 (по умолчанию 1); у белого и чёрного не действует
+    static var iconSaturation: Double {
+        get { min(max(UserDefaults.standard.object(forKey: "dockButton.iconSat") as? Double ?? 1, 0), 1) }
+        set { UserDefaults.standard.set(newValue, forKey: "dockButton.iconSat") }
+    }
+    /// Тонкая серая окантовка значка (по умолчанию включена)
+    static var iconOutline: Bool {
+        get { UserDefaults.standard.object(forKey: "dockButton.iconOutline") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "dockButton.iconOutline") }
+    }
+    static var iconBackground: NSColor {
+        let c = iconPalette[iconColorIndex]
+        return NSColor(calibratedHue: c.hue, saturation: c.sat * CGFloat(iconSaturation), brightness: c.bri, alpha: CGFloat(iconAlpha))
+    }
+
     /// Положение: 0 — у Dock (следит за ним), 1 — свободно на экране поверх всех окон (можно перетащить)
     static var mode: Int {
         get { min(max(UserDefaults.standard.object(forKey: "dockButton.mode") as? Int ?? 0, 0), 1) }
@@ -68,6 +97,7 @@ final class DockButton {
     private struct Geo { let rect: NSRect; let side: Side; let screen: NSScreen; var iconMid: CGFloat? = nil }
 
     private var panel: DockButtonPanel?
+    private var overlay: DockSquaresPanel?      // увеличенные квадраты: растут над кнопкой, как значки Dock над Dock
     private let queue = DispatchQueue(label: "dockbutton.poll", qos: .userInteractive)
     private var running = false
     private var generation = 0
@@ -92,6 +122,8 @@ final class DockButton {
         DispatchQueue.main.async { [weak self] in
             self?.panel?.orderOut(nil)
             self?.panel = nil
+            self?.overlay?.orderOut(nil)
+            self?.overlay = nil
         }
     }
 
@@ -116,7 +148,7 @@ final class DockButton {
         }
         // у края экрана или сразу после сдвига Dock — часто (анимация), иначе редко
         var interval = 0.25
-        if Date().timeIntervalSince(lastChange) < 2.5 || mouseNearEdge() { interval = 1.0 / 144.0 }   // Dock едет (автоскрытие): опрашиваем как можно чаще, чтобы кнопка успевала
+        if Date().timeIntervalSince(lastChange) < 2.5 || mouseNearEdge() || magK > 1.01 { interval = 1.0 / 144.0 }   // Dock едет (автоскрытие): опрашиваем как можно чаще, чтобы кнопка успевала
         queue.asyncAfter(deadline: .now() + interval) { [weak self] in self?.tick(gen) }
     }
 
@@ -124,7 +156,8 @@ final class DockButton {
         let m = NSEvent.mouseLocation
         for s in NSScreen.screens where s.frame.contains(m) {
             let f = s.frame
-            return m.y < f.minY + 140 || m.x < f.minX + 140 || m.x > f.maxX - 140
+            let e: CGFloat = 220      // с увеличением Dock выше
+            return m.y < f.minY + e || m.x < f.minX + e || m.x > f.maxX - e
         }
         return false
     }
@@ -209,7 +242,7 @@ final class DockButton {
     // MARK: кнопка
 
     private func apply(_ geo: Geo?) {
-        guard let geo = geo else { buttonFrame = nil; panel?.orderOut(nil); return }
+        guard let geo = geo else { buttonFrame = nil; panel?.orderOut(nil); overlay?.orderOut(nil); return }
         let r = geo.rect
         let s = buttonSize(fallback: min(r.width, r.height) - 16)
         var f: NSRect
@@ -219,7 +252,9 @@ final class DockButton {
         }
         // Dock спрятан (автоскрытие) или кнопка ушла за экран: не показываем
         let visible = f.intersection(geo.screen.frame)
-        if visible.width * visible.height < f.width * f.height * 0.1 { buttonFrame = nil; panel?.orderOut(nil); return }
+        if visible.width * visible.height < f.width * f.height * 0.1 { buttonFrame = nil; panel?.orderOut(nil); overlay?.orderOut(nil); return }
+        let k = smoothedMagnification(geo, f, current: widened(f, k: magK, side: geo.side), screen: geo.screen.frame)
+        f = widened(f, k: k, side: geo.side)       // при увеличении Dock кнопка раздвигается по горизонтали
         buttonFrame = f
         let p = panel ?? makePanel()
         let m = DockButtonPanel.margin
@@ -232,19 +267,87 @@ final class DockButton {
             // при движении Dock меняется только положение: двигаем окно без перерисовки, это быстрее
             if p.frame.size == pf.size { p.setFrameOrigin(pf.origin) } else { p.setFrame(pf, display: true) }
         }
+        let icon = iconSize(button: s)
+        p.setIconSize(icon)
+        p.setIconInOverlay(true)           // в режиме у Dock значок рисует только окно над кнопкой: без передачи между двумя окнами он не мигает
+        updateOverlay(k: k, buttonFrame: f, size: s, icon: icon, side: geo.side)
         if !p.isVisible { p.orderFrontRegardless() }
     }
+
+    /// Текущее увеличение значков Dock возле кнопки: 1 — обычное; растёт, когда курсор над Dock и в системе включено «Увеличение».
+    /// Нужно только для синих квадратов, сама кнопка не меняется.
+    /// Коэффициент к увеличению Dock (large/tilesize): значок растёт на 10% меньше, чем значки Dock
+    private static let magnifyCoef: CGFloat = 0.9
+    private static let maxMagnify: CGFloat = 2.0      // значок растёт не больше чем в 2 раза
+    private var magK: CGFloat = 1
+    /// Кнопка раздвигается вдоль Dock, но вдвое слабее квадратов (отступы до краёв не меняются): у нижнего Dock по горизонтали
+    /// от стороны Dock, у бокового — вверх и вниз поровну
+    private func widened(_ f: NSRect, k: CGFloat, side: Side) -> NSRect {
+        guard k > 1.001 else { return f }
+        var w = f
+        let s = min(f.width, f.height)
+        let grown = (s * (1 + (k - 1) / 2)).rounded()
+        if side == .bottom {
+            w.size.width = grown
+            w.origin.x = f.maxX - grown          // растёт влево, от Dock
+        } else {
+            w.size.height = grown
+            w.origin.y = f.midY - grown / 2      // растёт вверх и вниз поровну
+        }
+        return w
+    }
+
+    private func smoothedMagnification(_ geo: Geo, _ f: NSRect, current: NSRect, screen: NSRect) -> CGFloat {
+        var target: CGFloat = 1
+        if let d = UserDefaults(suiteName: "com.apple.dock"), d.bool(forKey: "magnification") {
+            let tile = CGFloat(d.double(forKey: "tilesize")), large = CGFloat(d.double(forKey: "largesize"))
+            let m = NSEvent.mouseLocation
+            // у горизонтального Dock курсор на кнопке или ниже неё (до края экрана) считается наведённым на кнопку
+            let hot = geo.side == .bottom ? NSRect(x: current.minX, y: screen.minY, width: current.width, height: current.maxY - screen.minY) : current
+            if tile > 0, large > tile, hot.contains(m) {
+                target = min(large / tile * Self.magnifyCoef, Self.maxMagnify)              // курсор на самой кнопке: квадраты максимальные
+            } else if tile > 0, large > tile, geo.rect.insetBy(dx: -8, dy: -8).contains(m) {
+                let dist = geo.side == .bottom ? abs(m.x - f.midX) : abs(m.y - f.midY)
+                let t = min(dist / (3 * tile), 1)
+                let w = cos(t * .pi / 2)
+                target = 1 + (min(large / tile * Self.magnifyCoef, Self.maxMagnify) - 1) * w * w
+            }
+        }
+        magK += (target - magK) * 0.4          // плавно, как у самого Dock
+        if abs(target - magK) < 0.02 { magK = target }
+        return magK
+    }
+
+    /// Окно с увеличенными квадратами: прозрачное, пропускает мышь, больше кнопки на 0,5 её размера с каждой стороны
+    private func updateOverlay(k: CGFloat, buttonFrame f: NSRect, size s: CGFloat, icon: CGFloat, side: Side) {
+        let o = overlay ?? DockSquaresPanel()
+        overlay = o
+        let pad = max(s * 0.5, icon * 1.3).rounded()
+        let of = f.insetBy(dx: -pad, dy: -pad)
+        if o.frame != of { o.setFrame(of, display: false) }
+        o.squares.pad = pad
+        o.squares.k = k
+        o.squares.iconSize = icon
+        o.squares.edge = side == .bottom ? 0 : 1
+        if !o.isVisible { o.orderFrontRegardless() }
+    }
+
+    /// Значок внутри кнопки пропорционален ей: при размере 100% он на 10% меньше значка Finder в Dock (0,81 tilesize при кнопке 1,35 tilesize),
+    /// ползунок размера меняет кнопку и значок вместе, увеличение Dock умножает уже этот размер
+    private func iconSize(button s: CGFloat) -> CGFloat { (s * 0.81 / 1.35).rounded() }
 
     /// Размер — как у значка Dock (tilesize), с поправкой на выбранный размер кнопки
     private func buttonSize(fallback: CGFloat) -> CGFloat {
         let tile = CGFloat(UserDefaults(suiteName: "com.apple.dock")?.double(forKey: "tilesize") ?? 0)
         let base = tile > 0 ? tile : max(fallback, 48)
-        return min(max((base * 1.35 * CGFloat(Self.sizeScale)).rounded(), 28), 90)
+        return min(max((base * 1.35 * CGFloat(Self.sizeScale)).rounded(), 28), 300)
     }
 
     /// Режим «На экране»: кнопка стоит там, где её оставили, поверх всех окон
     private func applyFree() {
         let s = buttonSize(fallback: 64)
+        magK = 1
+        overlay?.orderOut(nil)
         let p = panel ?? makePanel()
         let m = DockButtonPanel.margin
         if p.userDragging { buttonFrame = p.frame.insetBy(dx: m, dy: m); return }
@@ -260,6 +363,8 @@ final class DockButton {
         let pf = f.insetBy(dx: -m, dy: -m)
         p.setFree(true)
         if p.buttonSize != s { p.rebuild(size: s) }
+        p.setIconSize(iconSize(button: s))
+        p.setIconInOverlay(false)          // на экране значок рисует сама кнопка
         if p.frame != pf { p.setFrame(pf, display: true) }
         if !p.isVisible { p.orderFrontRegardless() }
     }
@@ -267,8 +372,9 @@ final class DockButton {
     /// Перерисовать кнопку после смены прозрачности
     func refresh() {
         DispatchQueue.main.async { [weak self] in
-            guard let p = self?.panel, p.buttonSize > 0 else { return }
+            guard let p = self?.panel, p.buttonSize > 0 else { self?.overlay?.squares.needsDisplay = true; return }
             p.rebuild(size: p.buttonSize)
+            self?.overlay?.squares.needsDisplay = true
         }
     }
 
@@ -290,6 +396,51 @@ final class DockButton {
     }
 }
 
+/// Невидимое окно над кнопкой: рисует увеличенные синие квадраты. Они растут от стороны, обращённой к Dock (вверх над нижним Dock,
+/// вбок у бокового), как значки Dock, и могут выходить за пределы кнопки. Мышь пропускает.
+final class DockSquaresPanel: NSPanel {
+    let squares = DockSquaresView()
+    init() {
+        super.init(contentRect: NSRect(x: 0, y: 0, width: 100, height: 100), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
+        isOpaque = false
+        backgroundColor = .clear
+        hasShadow = false
+        ignoresMouseEvents = true
+        level = NSWindow.Level(rawValue: NSWindow.Level.popUpMenu.rawValue + 2)
+        collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
+        hidesOnDeactivate = false
+        isReleasedWhenClosed = false
+        squares.autoresizingMask = [.width, .height]
+        contentView = squares
+    }
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
+}
+
+final class DockSquaresView: NSView {
+    static weak var shared: DockSquaresView?
+    var pressed = false { didSet { needsDisplay = true } }
+    var hover = false { didSet { needsDisplay = true } }
+    override init(frame frameRect: NSRect) { super.init(frame: frameRect); DockSquaresView.shared = self }
+    required init?(coder: NSCoder) { fatalError() }
+    var pad: CGFloat = 0 { didSet { needsDisplay = true } }
+    var k: CGFloat = 1 { didSet { needsDisplay = true } }
+    var iconSize: CGFloat = 0 { didSet { needsDisplay = true } }
+    var edge = 0 { didSet { needsDisplay = true } }      // 0 — Dock снизу (растём вверх), иначе от центра
+    override var isFlipped: Bool { false }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let btn = bounds.insetBy(dx: pad, dy: pad)
+        let base = iconSize > 0 ? iconSize : min(btn.width, btn.height) * 0.62
+        let size = base * (k > 1.001 ? k : (hover ? 1.12 : 1))      // увеличение Dock или, без него, небольшой рост при наведении
+        var x0 = btn.midX - size / 2, y0 = btn.midY - size / 2
+        if edge == 0 { y0 = btn.midY - base / 2 }          // у нижнего Dock низ значка стоит на месте, верх поднимается; у бокового растёт от центра
+        drawStartIcon(in: NSRect(x: x0, y: y0, width: size, height: size), dim: pressed ? 0.3 : 0)
+    }
+}
+
 final class DockButtonPanel: NSPanel {
     static let margin: CGFloat = 6          // запас вокруг кнопки: под тень и небольшое увеличение при наведении
     var onClick: (() -> Void)?
@@ -299,6 +450,9 @@ final class DockButtonPanel: NSPanel {
     var onMoved: (() -> Void)?
     var userDragging = false
     private(set) var buttonSize: CGFloat = 0
+    private weak var buttonView: DockButtonView?
+    func setIconInOverlay(_ on: Bool) { buttonView?.setIconInOverlay(on) }
+    func setIconSize(_ v: CGFloat) { buttonView?.setIconSize(v) }
     /// Кнопка выше окна «Пуска» (оно на уровне .floating, ниже Dock) в обоих режимах
     func setFree(_ free: Bool) {
         let lvl = NSWindow.Level(rawValue: NSWindow.Level.popUpMenu.rawValue + 1)
@@ -339,44 +493,58 @@ final class DockButtonPanel: NSPanel {
         v.onHide = { [weak self] in self?.onHide?() }
         v.menuProvider = { [weak self] in self?.menuProvider?() }
         v.onMoved = { [weak self] in self?.onMoved?() }
+        v.autoresizingMask = [.width, .height]
         box.addSubview(v)
+        buttonView = v
         contentView = box
+    }
+}
+
+/// Значок «Пуска»: белый (10%) скруглённый квадрат с тончайшей серой окантовкой и четырьмя синими окнами (как в Windows).
+private func drawStartIcon(in r: NSRect, dim: CGFloat = 0) {
+    let w = r.width
+    let radius = w * 0.225
+    let shape = NSBezierPath(roundedRect: r.insetBy(dx: 0.25, dy: 0.25), xRadius: radius, yRadius: radius)
+    DockButton.iconBackground.setFill()      // фон значка: цвет, прозрачность и насыщенность из настроек
+    shape.fill()
+    if DockButton.iconOutline {
+        NSColor(calibratedWhite: 0.72, alpha: 1).setStroke()
+        shape.lineWidth = 0.5
+        shape.stroke()
+    }
+    let block = w * 0.46 / 0.9, gap = block * 0.1      // окна остались прежнего размера, хотя значок стал на 10% меньше
+    let p = (block - gap) / 2
+    let x0 = r.midX - block / 2, y0 = r.midY - block / 2
+    let colors = [NSColor(calibratedRed: 0.20, green: 0.64, blue: 1.00, alpha: 1),
+                  NSColor(calibratedRed: 0.10, green: 0.55, blue: 0.96, alpha: 1),
+                  NSColor(calibratedRed: 0.08, green: 0.50, blue: 0.92, alpha: 1),
+                  NSColor(calibratedRed: 0.04, green: 0.44, blue: 0.86, alpha: 1)]
+    for row in 0..<2 {
+        for col in 0..<2 {
+            let q = NSRect(x: x0 + CGFloat(col) * (p + gap), y: y0 + CGFloat(1 - row) * (p + gap), width: p, height: p)
+            (colors[row * 2 + col].blended(withFraction: dim, of: .black) ?? colors[row * 2 + col]).setFill()      // при нажатии темнеют синие окна
+            NSBezierPath(roundedRect: q, xRadius: w * 0.022, yRadius: w * 0.022).fill()
+        }
     }
 }
 
 /// Четыре синих квадрата (как «Пуск» в Windows) с подсветкой при наведении и затемнением при нажатии.
 /// Рисуется отдельным видом поверх подложки: сама подложка (NSVisualEffectView) свой draw не вызывает.
 private final class DockGlyphView: NSView {
-    var hover = false { didSet { needsDisplay = true } }
-    var pressed = false { didSet { needsDisplay = true } }
+    var hover = false { didSet { needsDisplay = true; DockSquaresView.shared?.hover = hover } }
+    var pressed = false { didSet { needsDisplay = true; DockSquaresView.shared?.pressed = pressed } }
+    var iconInOverlay = false { didSet { if iconInOverlay != oldValue { needsDisplay = true } } }
+    var iconSize: CGFloat = 0 { didSet { if iconSize != oldValue { needsDisplay = true } } }
 
     override func hitTest(_ point: NSPoint) -> NSView? { nil }      // мышь достаётся кнопке под ним
 
     override func draw(_ dirtyRect: NSRect) {
         let s = min(bounds.width, bounds.height)
-        // поверх размытия подложка непрозрачнее: кнопка читается на любом фоне
-        let shape = NSBezierPath(roundedRect: bounds, xRadius: s * 0.3, yRadius: s * 0.3)
-        if pressed {
-            NSColor(white: 0, alpha: 0.18).setFill()
-            shape.fill()
-        }
-        // четыре синих квадрата по центру
-        let grow: CGFloat = hover ? 1.12 : 1          // при наведении чуть крупнее только квадраты, сама кнопка не меняется
-        let block = s * 0.5 * grow, gap = s * 0.05 * grow
-        let p = (block - gap) / 2
-        let x0 = (bounds.width - block) / 2
-        let y0 = (bounds.height - block) / 2
-        let colors = [NSColor(calibratedRed: 0.20, green: 0.64, blue: 1.00, alpha: 1),
-                      NSColor(calibratedRed: 0.10, green: 0.55, blue: 0.96, alpha: 1),
-                      NSColor(calibratedRed: 0.08, green: 0.50, blue: 0.92, alpha: 1),
-                      NSColor(calibratedRed: 0.04, green: 0.44, blue: 0.86, alpha: 1)]
-        for row in 0..<2 {
-            for col in 0..<2 {
-                let r = NSRect(x: x0 + CGFloat(col) * (p + gap), y: y0 + CGFloat(1 - row) * (p + gap), width: p, height: p)
-                colors[row * 2 + col].setFill()
-                NSBezierPath(roundedRect: r, xRadius: 1.5, yRadius: 1.5).fill()
-            }
-        }
+        // значок «Пуска» по центру: белый (10%) скруглённый квадрат с тонкой серой окантовкой и четырьмя синими окнами
+        if iconInOverlay { return }          // у Dock значок рисует отдельное окно над кнопкой (оно же показывает увеличение)
+        let base = iconSize > 0 ? iconSize : s * 0.62
+        let size = base * (hover ? 1.12 : 1)    // при наведении чуть крупнее только значок, сама кнопка не меняется
+        drawStartIcon(in: NSRect(x: (bounds.width - size) / 2, y: (bounds.height - size) / 2, width: size, height: size), dim: pressed ? 0.3 : 0)
     }
 }
 
@@ -468,6 +636,8 @@ private final class DockButtonView: NSView {
 
     /// При наведении только подсвечиваем: размер кнопки не меняем (при смене размера значок внутри «уезжал»)
     private func setHover(_ on: Bool) { glyph.hover = on }
+    func setIconInOverlay(_ on: Bool) { glyph.iconInOverlay = on }
+    func setIconSize(_ v: CGFloat) { glyph.iconSize = v }
 
     override func mouseEntered(with event: NSEvent) { setHover(true) }
     override func mouseExited(with event: NSEvent) {
