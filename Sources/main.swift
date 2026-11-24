@@ -6805,6 +6805,48 @@ struct SettingsView: View {
                             toggleRow(T("Окна при наведении на значок в Dock"), mc.dockPreviewOn) { mc.setDockPreview($0) }
                             Text(T("Если задержать курсор на значке запущенного приложения в Dock (около 0,3 с), над значком появятся его окна (в том числе свёрнутые). Клик по окну выводит его вперёд, на плитке есть кнопки «закрыть», «свернуть» и «на весь экран». Нужен доступ «Управление устройством и доступ к данным» (в ранних версиях macOS: «Универсальный доступ»). Миниатюры включаются выключателем выше."))
                                 .font(.caption).foregroundColor(.secondary)
+                            sep()
+                            HStack {
+                                Text(T("Значок «Пуска»"))
+                                Spacer()
+                                Picker("", selection: Binding(
+                                    get: { !mc.dockButtonOn ? 0 : (mc.dockButtonMode == 0 ? 1 : 2) },
+                                    set: { v in
+                                        if v == 0 { mc.setDockButton(false); return }
+                                        mc.setDockButtonMode(v == 1 ? 0 : 1)
+                                        if !mc.dockButtonOn { mc.setDockButton(true) }
+                                    })) {
+                                    Text(T("В Dock")).tag(0)
+                                    Text(T("Рядом с Dock")).tag(1)
+                                    Text(T("На экране")).tag(2)
+                                }
+                                .pickerStyle(.segmented).labelsHidden().fixedSize()
+                            }
+                            Text(T("«В Dock» — обычный значок программы, как всегда. «Рядом с Dock» — «Пуск» рисует свою кнопку из четырёх квадратов вплотную к Dock (слева от него, а если Dock сбоку, то под ним) и двигает её вслед за Dock; для этого нужен доступ «Управление устройством и доступ к данным» (в ранних версиях macOS: «Универсальный доступ»), программа запросит его при выборе. «На экране» — та же кнопка стоит там, где её оставили, поверх всех окон, и за Dock не следит; её можно перетащить мышью. В двух последних режимах обычный значок «Пуска» убирается из Dock, а при возврате в режим «В Dock» возвращается на место. Клик по кнопке открывает и закрывает «Пуск», правый клик — меню. Прозрачность, размер и расстояние от Dock относятся только к кнопке."))
+                                .font(.caption).foregroundColor(.secondary)
+                            if mc.dockButtonOn {
+                                HStack {
+                                    Text(T("Прозрачность фона"))
+                                    Slider(value: Binding(get: { mc.dockButtonTransparency }, set: { mc.setDockButtonTransparency($0) }), in: 0...0.9)
+                                        .frame(width: 180)
+                                    Text("\(Int((mc.dockButtonTransparency * 100).rounded())) %")
+                                        .monospacedDigit().foregroundColor(.secondary).frame(width: 44, alignment: .trailing)
+                                }
+                                if mc.dockButtonMode == 0 {
+                                    HStack {
+                                        Text(T("Расстояние от Dock"))
+                                        Slider(value: Binding(get: { mc.dockButtonGap }, set: { mc.setDockButtonGap($0) }), in: 0...1)
+                                            .frame(width: 180)
+                                    }
+                                }
+                                HStack {
+                                    Text(T("Размер кнопки"))
+                                    Slider(value: Binding(get: { mc.dockButtonSize }, set: { mc.setDockButtonSize($0) }), in: 0.6...1.6)
+                                        .frame(width: 180)
+                                    Text("\(Int((mc.dockButtonSize * 100).rounded())) %")
+                                        .monospacedDigit().foregroundColor(.secondary).frame(width: 44, alignment: .trailing)
+                                }
+                            }
                         }
         }
     }
@@ -8188,6 +8230,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.orderOut(nil)
     }
 
+
     /// «Настройки…» из меню программы: открывает окно «Пуска» сразу на настройках
     @objc func openSettings() {
         SettingsWindowController.shared.show(store: store, mc: minimize, resetPlacement: { [weak self] in self?.resetPlacement() })
@@ -8231,5 +8274,5 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate
-app.setActivationPolicy(.regular)
+app.setActivationPolicy(DockButton.enabled ? .accessory : .regular)
 app.run()

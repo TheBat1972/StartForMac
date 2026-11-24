@@ -1,0 +1,483 @@
+import AppKit
+import CoreGraphics
+import ApplicationServices
+
+// MARK: - Кнопка «Пуска» у края Dock (альфа)
+// «Пуск» рисует свою маленькую плавающую кнопку и ставит её вплотную к Dock: слева от него (Dock внизу)
+// или под ним (Dock сбоку). Сам Dock не трогаем: границы списка его значков читаем через Accessibility
+// и следуем за ними, поэтому учитываются размер, расположение и автоскрытие Dock.
+// Окно Dock в общем списке окон отдельной карточкой не виден (там только прозрачное окно на весь экран), поэтому нужен Accessibility.
+
+final class DockButton {
+    static let shared = DockButton()
+
+    static var enabled: Bool {
+        get { UserDefaults.standard.object(forKey: "dockButton.enabled") as? Bool ?? false }
+        set { UserDefaults.standard.set(newValue, forKey: "dockButton.enabled") }
+    }
+    /// Журнал найденных окон Dock (~/Library/Logs/Pusk-dockbtn.log): пока альфа, нужен для подбора
+    static let debugLog = true
+
+    /// Размер кнопки относительно значка Dock: 0,6…1,6 (по умолчанию 1 — как значок Dock)
+    static var sizeScale: Double {
+        get { min(max(UserDefaults.standard.object(forKey: "dockButton.scale") as? Double ?? 1, 0.6), 1.6) }
+        set { UserDefaults.standard.set(newValue, forKey: "dockButton.scale") }
+    }
+
+    /// Положение: 0 — у Dock (следит за ним), 1 — свободно на экране поверх всех окон (можно перетащить)
+    static var mode: Int {
+        get { min(max(UserDefaults.standard.object(forKey: "dockButton.mode") as? Int ?? 0, 0), 1) }
+        set { UserDefaults.standard.set(newValue, forKey: "dockButton.mode") }
+    }
+    /// Расстояние от Dock в режиме «Рядом с Dock»: 0…1 — от 3 pt до двух значков Dock (по умолчанию 8 pt, как было)
+    static var gapFraction: Double {
+        get {
+            if let v = UserDefaults.standard.object(forKey: "dockButton.gap") as? Double { return min(max(v, 0), 1) }
+            return (8 - minGap) / max(maxGap - minGap, 1)
+        }
+        set { UserDefaults.standard.set(newValue, forKey: "dockButton.gap") }
+    }
+    private static let minGap: Double = 3
+    private static var maxGap: Double {
+        let tile = UserDefaults(suiteName: "com.apple.dock")?.double(forKey: "tilesize") ?? 0
+        return 2 * (tile > 0 ? tile : 64)
+    }
+    static var gapPoints: CGFloat { CGFloat(minGap + gapFraction * (maxGap - minGap)) }
+
+    /// Прозрачность фона кнопки, 0…0,9 (по умолчанию 0,28)
+    static var transparency: Double {
+        get { min(max(UserDefaults.standard.object(forKey: "dockButton.transparency") as? Double ?? 0.28, 0), 0.9) }
+        set { UserDefaults.standard.set(newValue, forKey: "dockButton.transparency") }
+    }
+    static var backgroundAlpha: CGFloat { CGFloat(1 - transparency) }
+    /// Где кнопка стоит в режиме «На экране» (левый нижний угол, координаты экрана)
+    static var freeOrigin: NSPoint? {
+        get { (UserDefaults.standard.string(forKey: "dockButton.freeOrigin")).map { NSPointFromString($0) } }
+        set { UserDefaults.standard.set(newValue.map { NSStringFromPoint($0) }, forKey: "dockButton.freeOrigin") }
+    }
+
+    var onClick: (() -> Void)?
+    var onSettings: (() -> Void)?
+    var onHide: (() -> Void)?
+    /// Пункты меню значка «Пуска» в Dock (свернуть окна, не давать уснуть, «Создать»…): показываются и по правому клику на кнопке
+    var menuProvider: (() -> NSMenu?)?
+    /// Где сейчас кнопка (координаты экрана): от неё открывается окно «Пуска»
+    private(set) var buttonFrame: NSRect?
+
+    private enum Side { case bottom, left, right }
+    private struct Geo { let rect: NSRect; let side: Side; let screen: NSScreen; var iconMid: CGFloat? = nil }
+
+    private var panel: DockButtonPanel?
+    private let queue = DispatchQueue(label: "dockbutton.poll", qos: .userInteractive)
+    private var running = false
+    private var generation = 0
+    private var lastRect = NSRect.zero
+    private var lastChange = Date.distantPast
+    private var lastLog = ""
+    private var lastLogTime = Date.distantPast
+
+    func setEnabled(_ on: Bool) { on ? start() : stop() }
+
+    func start() {
+        guard !running else { return }
+        running = true
+        generation += 1
+        let gen = generation
+        queue.async { [weak self] in self?.tick(gen) }
+    }
+
+    func stop() {
+        running = false
+        generation += 1
+        DispatchQueue.main.async { [weak self] in
+            self?.panel?.orderOut(nil)
+            self?.panel = nil
+        }
+    }
+
+    // MARK: опрос окна Dock
+
+    private func tick(_ gen: Int) {
+        guard running, gen == generation else { return }
+        if Self.mode == 1 {                      // свободная кнопка за Dock не следит: Dock не опрашиваем
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self, self.running, gen == self.generation else { return }
+                self.applyFree()
+            }
+            queue.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.tick(gen) }
+            return
+        }
+        let geo = findDock()
+        let rect = geo?.rect ?? .zero
+        if rect != lastRect { lastRect = rect; lastChange = Date() }
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, self.running, gen == self.generation else { return }
+            self.apply(geo)
+        }
+        // у края экрана или сразу после сдвига Dock — часто (анимация), иначе редко
+        var interval = 0.25
+        if Date().timeIntervalSince(lastChange) < 1.5 || mouseNearEdge() { interval = 1.0 / 60.0 }
+        queue.asyncAfter(deadline: .now() + interval) { [weak self] in self?.tick(gen) }
+    }
+
+    private func mouseNearEdge() -> Bool {
+        let m = NSEvent.mouseLocation
+        for s in NSScreen.screens where s.frame.contains(m) {
+            let f = s.frame
+            return m.y < f.minY + 140 || m.x < f.minX + 140 || m.x > f.maxX - 140
+        }
+        return false
+    }
+
+    /// Границы списка значков Dock (AXList у процесса Dock): нужен доступ «Универсальный доступ»
+    private func findDock() -> Geo? {
+        guard AXIsProcessTrusted(),
+              let dock = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock").first else {
+            if Self.debugLog { log(["нет доступа Accessibility или нет процесса Dock"], chosen: nil) }
+            return nil
+        }
+        let screens = NSScreen.screens
+        guard let primary = screens.first else { return nil }
+        let app = AXUIElementCreateApplication(dock.processIdentifier)
+        var ch: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(app, kAXChildrenAttribute as CFString, &ch) == .success,
+              let kids = ch as? [AXUIElement] else {
+            if Self.debugLog { log(["у Dock нет дочерних элементов AX"], chosen: nil) }
+            return nil
+        }
+        var best: NSRect?
+        var bestKid: AXUIElement?
+        var desc: [String] = []
+        for k in kids {
+            var role: CFTypeRef?
+            AXUIElementCopyAttributeValue(k, kAXRoleAttribute as CFString, &role)
+            guard (role as? String) == kAXListRole as String else { continue }
+            var pv: CFTypeRef?, sv: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(k, kAXPositionAttribute as CFString, &pv) == .success,
+                  AXUIElementCopyAttributeValue(k, kAXSizeAttribute as CFString, &sv) == .success,
+                  let pvv = pv, let svv = sv else { continue }
+            var pt = CGPoint.zero, sz = CGSize.zero
+            guard AXValueGetValue(pvv as! AXValue, .cgPoint, &pt), AXValueGetValue(svv as! AXValue, .cgSize, &sz) else { continue }
+            desc.append("AXList x=\(Int(pt.x)) y=\(Int(pt.y)) w=\(Int(sz.width)) h=\(Int(sz.height))")
+            guard sz.width >= 20, sz.height >= 20 else { continue }
+            let r = NSRect(x: pt.x, y: primary.frame.height - (pt.y + sz.height), width: sz.width, height: sz.height)   // координаты Cocoa
+            if best == nil || r.width * r.height > best!.width * best!.height { best = r; bestKid = k }
+        }
+        if Self.debugLog { log(desc, chosen: best) }
+        guard let r = best else { return nil }
+        let c = NSPoint(x: r.midX, y: r.midY)
+        guard let screen = screens.first(where: { $0.frame.contains(c) }) ?? screens.first(where: { $0.frame.intersects(r) }) else { return nil }
+        let side: Side = r.width >= r.height ? .bottom : (r.midX < screen.frame.midX ? .left : .right)
+        var geo = Geo(rect: r, side: side, screen: screen)
+        // середина ряда значков (а не всего списка): по ней и центруем кнопку
+        if let k = bestKid {
+            var cv: CFTypeRef?
+            if AXUIElementCopyAttributeValue(k, kAXChildrenAttribute as CFString, &cv) == .success, let icons = cv as? [AXUIElement], !icons.isEmpty {
+                // берём самый маленький значок: увеличенный под курсором сдвинул бы середину
+                var minSize = CGFloat.greatestFiniteMagnitude
+                for ic in icons {
+                    var pv: CFTypeRef?, sv: CFTypeRef?
+                    guard AXUIElementCopyAttributeValue(ic, kAXPositionAttribute as CFString, &pv) == .success,
+                          AXUIElementCopyAttributeValue(ic, kAXSizeAttribute as CFString, &sv) == .success,
+                          let pvv = pv, let svv = sv else { continue }
+                    var pt = CGPoint.zero, sz = CGSize.zero
+                    guard AXValueGetValue(pvv as! AXValue, .cgPoint, &pt), AXValueGetValue(svv as! AXValue, .cgSize, &sz), sz.width > 8, sz.height > 8 else { continue }
+                    let dim = side == .bottom ? sz.height : sz.width
+                    guard dim < minSize else { continue }
+                    minSize = dim
+                    geo.iconMid = side == .bottom ? primary.frame.height - (pt.y + sz.height / 2) : pt.x + sz.width / 2
+                }
+            }
+        }
+        return geo
+    }
+
+    private func log(_ desc: [String], chosen: NSRect?) {
+        let text = desc.joined(separator: " | ") + " => " + (chosen.map { "\($0)" } ?? "none")
+        guard text != lastLog, Date().timeIntervalSince(lastLogTime) > 0.5 else { return }
+        lastLog = text
+        lastLogTime = Date()
+        let url = URL(fileURLWithPath: NSHomeDirectory() + "/Library/Logs/Pusk-dockbtn.log")
+        let line = "\(Date()) \(text)\n"
+        if let h = try? FileHandle(forWritingTo: url) {
+            h.seekToEndOfFile(); h.write(Data(line.utf8)); try? h.close()
+        } else {
+            try? line.write(to: url, atomically: true, encoding: .utf8)
+        }
+    }
+
+    // MARK: кнопка
+
+    private func apply(_ geo: Geo?) {
+        guard let geo = geo else { buttonFrame = nil; panel?.orderOut(nil); return }
+        let r = geo.rect
+        let s = buttonSize(fallback: min(r.width, r.height) - 16)
+        var f: NSRect
+        switch geo.side {
+        case .bottom: f = NSRect(x: r.minX - s - DockButton.gapPoints, y: (geo.iconMid ?? r.midY) - s / 2, width: s, height: s)      // слева от Dock, по середине ряда значков
+        case .left, .right: f = NSRect(x: (geo.iconMid ?? r.midX) - s / 2, y: r.minY - s - DockButton.gapPoints, width: s, height: s) // под Dock
+        }
+        // Dock спрятан (автоскрытие) или кнопка ушла за экран: не показываем
+        let visible = f.intersection(geo.screen.frame)
+        if visible.width * visible.height < f.width * f.height * 0.1 { buttonFrame = nil; panel?.orderOut(nil); return }
+        buttonFrame = f
+        let p = panel ?? makePanel()
+        let m = DockButtonPanel.margin
+        let pf = f.insetBy(dx: -m, dy: -m)
+        p.setFree(false)
+        if p.buttonSize != s {
+            p.rebuild(size: s)
+        }
+        if p.frame != pf { p.setFrame(pf, display: true) }
+        if !p.isVisible { p.orderFrontRegardless() }
+    }
+
+    /// Размер — как у значка Dock (tilesize), с поправкой на выбранный размер кнопки
+    private func buttonSize(fallback: CGFloat) -> CGFloat {
+        let tile = CGFloat(UserDefaults(suiteName: "com.apple.dock")?.double(forKey: "tilesize") ?? 0)
+        let base = tile > 0 ? tile : max(fallback, 48)
+        return min(max((base * CGFloat(Self.sizeScale)).rounded(), 28), 90)
+    }
+
+    /// Режим «На экране»: кнопка стоит там, где её оставили, поверх всех окон
+    private func applyFree() {
+        let s = buttonSize(fallback: 64)
+        let p = panel ?? makePanel()
+        let m = DockButtonPanel.margin
+        if p.userDragging { buttonFrame = p.frame.insetBy(dx: m, dy: m); return }
+        var origin = Self.freeOrigin ?? .zero
+        let screens = NSScreen.screens
+        let valid = Self.freeOrigin != nil && screens.contains { $0.frame.intersects(NSRect(origin: origin, size: NSSize(width: s, height: s))) }
+        if !valid {
+            let vf = (NSScreen.main ?? screens[0]).visibleFrame
+            origin = NSPoint(x: vf.minX + 24, y: vf.minY + 24)
+        }
+        let f = NSRect(origin: origin, size: NSSize(width: s, height: s))
+        buttonFrame = f
+        let pf = f.insetBy(dx: -m, dy: -m)
+        p.setFree(true)
+        if p.buttonSize != s { p.rebuild(size: s) }
+        if p.frame != pf { p.setFrame(pf, display: true) }
+        if !p.isVisible { p.orderFrontRegardless() }
+    }
+
+    /// Перерисовать кнопку после смены прозрачности
+    func refresh() {
+        DispatchQueue.main.async { [weak self] in
+            guard let p = self?.panel, p.buttonSize > 0 else { return }
+            p.rebuild(size: p.buttonSize)
+        }
+    }
+
+    /// Запомнить, где кнопку оставили (режим «На экране»)
+    fileprivate func saveFreeOrigin(from panel: DockButtonPanel) {
+        let m = DockButtonPanel.margin
+        Self.freeOrigin = NSPoint(x: panel.frame.minX + m, y: panel.frame.minY + m)
+    }
+
+    private func makePanel() -> DockButtonPanel {
+        let p = DockButtonPanel()
+        p.onClick = { [weak self] in self?.onClick?() }
+        p.onSettings = { [weak self] in self?.onSettings?() }
+        p.onHide = { [weak self] in self?.onHide?() }
+        p.menuProvider = { [weak self] in self?.menuProvider?() }
+        p.onMoved = { [weak self, weak p] in if let p = p { self?.saveFreeOrigin(from: p) } }
+        panel = p
+        return p
+    }
+}
+
+final class DockButtonPanel: NSPanel {
+    static let margin: CGFloat = 6          // запас вокруг кнопки: под тень и небольшое увеличение при наведении
+    var onClick: (() -> Void)?
+    var onSettings: (() -> Void)?
+    var onHide: (() -> Void)?
+    var menuProvider: (() -> NSMenu?)?
+    var onMoved: (() -> Void)?
+    var userDragging = false
+    private(set) var buttonSize: CGFloat = 0
+    /// Кнопка выше окна «Пуска» (оно на уровне .popUpMenu) в обоих режимах
+    func setFree(_ free: Bool) {
+        let lvl = NSWindow.Level(rawValue: NSWindow.Level.popUpMenu.rawValue + 1)
+        if level != lvl { level = lvl }
+    }
+
+    init() {
+        super.init(contentRect: NSRect(x: 0, y: 0, width: 60, height: 60),
+                   styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
+        isOpaque = false
+        backgroundColor = .clear
+        hasShadow = false
+        level = NSWindow.Level(rawValue: NSWindow.Level.popUpMenu.rawValue + 1)
+        collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
+        isMovable = false
+        hidesOnDeactivate = false
+        isReleasedWhenClosed = false
+    }
+
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
+
+    func rebuild(size s: CGFloat) {
+        buttonSize = s
+        let m = Self.margin
+        let box = NSView(frame: NSRect(x: 0, y: 0, width: s + 2 * m, height: s + 2 * m))
+        let v = DockButtonView(frame: NSRect(x: m, y: m, width: s, height: s))
+        v.onClick = { [weak self] in self?.onClick?() }
+        v.onSettings = { [weak self] in self?.onSettings?() }
+        v.onHide = { [weak self] in self?.onHide?() }
+        v.menuProvider = { [weak self] in self?.menuProvider?() }
+        v.onMoved = { [weak self] in self?.onMoved?() }
+        box.addSubview(v)
+        contentView = box
+    }
+}
+
+/// Четыре синих квадрата (как «Пуск» в Windows) с подсветкой при наведении и затемнением при нажатии.
+/// Рисуется отдельным видом поверх подложки: сама подложка (NSVisualEffectView) свой draw не вызывает.
+private final class DockGlyphView: NSView {
+    var hover = false { didSet { needsDisplay = true } }
+    var pressed = false { didSet { needsDisplay = true } }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }      // мышь достаётся кнопке под ним
+
+    override func draw(_ dirtyRect: NSRect) {
+        let s = min(bounds.width, bounds.height)
+        // поверх размытия подложка непрозрачнее: кнопка читается на любом фоне
+        NSColor.windowBackgroundColor.withAlphaComponent(DockButton.backgroundAlpha).setFill()
+        bounds.fill()
+        if pressed {
+            NSColor(white: 0, alpha: 0.18).setFill()
+            bounds.fill()
+        } else if hover {
+            NSColor(white: 1, alpha: 0.22).setFill()
+            bounds.fill()
+        }
+        // четыре синих квадрата по центру
+        let block = s * 0.5, gap = s * 0.05
+        let p = (block - gap) / 2
+        let x0 = (bounds.width - block) / 2
+        let y0 = (bounds.height - block) / 2
+        let colors = [NSColor(calibratedRed: 0.20, green: 0.64, blue: 1.00, alpha: 1),
+                      NSColor(calibratedRed: 0.10, green: 0.55, blue: 0.96, alpha: 1),
+                      NSColor(calibratedRed: 0.08, green: 0.50, blue: 0.92, alpha: 1),
+                      NSColor(calibratedRed: 0.04, green: 0.44, blue: 0.86, alpha: 1)]
+        for row in 0..<2 {
+            for col in 0..<2 {
+                let r = NSRect(x: x0 + CGFloat(col) * (p + gap), y: y0 + CGFloat(1 - row) * (p + gap), width: p, height: p)
+                colors[row * 2 + col].setFill()
+                NSBezierPath(roundedRect: r, xRadius: 1.5, yRadius: 1.5).fill()
+            }
+        }
+    }
+}
+
+/// Кнопка в духе «Пуск» из Windows на подложке в стиле Dock.
+/// При наведении чуть увеличивается, при нажатии темнеет; правый клик — меню значка «Пуска» из Dock плюс «Настройки…» и «Скрыть кнопку».
+private final class DockButtonView: NSVisualEffectView {
+    var onClick: (() -> Void)?
+    var onSettings: (() -> Void)?
+    var onHide: (() -> Void)?
+    var menuProvider: (() -> NSMenu?)?
+    var onMoved: (() -> Void)?
+    private var dragStartMouse = NSPoint.zero
+    private var dragStartOrigin = NSPoint.zero
+    private var dragged = false
+    private let glyph = DockGlyphView()
+    private var tracking: NSTrackingArea?
+    private var restFrame: NSRect?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        material = .hudWindow
+        blendingMode = .behindWindow
+        state = .active
+        wantsLayer = true
+        layer?.masksToBounds = true
+        restFrame = frameRect
+        glyph.frame = bounds
+        glyph.autoresizingMask = [.width, .height]
+        addSubview(glyph)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func layout() {
+        super.layout()
+        layer?.cornerRadius = min(bounds.width, bounds.height) * 0.3
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let t = tracking { removeTrackingArea(t) }
+        let t = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self, userInfo: nil)
+        addTrackingArea(t)
+        tracking = t
+    }
+
+    private func setHover(_ on: Bool) {
+        glyph.hover = on
+        guard let rf = restFrame else { return }
+        let d = on ? -rf.width * 0.05 : 0
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.12
+            animator().frame = rf.insetBy(dx: d, dy: d)
+        }
+    }
+
+    override func mouseEntered(with event: NSEvent) { setHover(true) }
+    override func mouseExited(with event: NSEvent) {
+        glyph.pressed = false
+        setHover(false)
+    }
+    override func mouseDown(with event: NSEvent) {
+        glyph.pressed = true
+        dragged = false
+        dragStartMouse = NSEvent.mouseLocation
+        dragStartOrigin = window?.frame.origin ?? .zero
+    }
+
+    /// В режиме «На экране» кнопку можно перетащить; короткий клик без сдвига — обычный клик
+    override func mouseDragged(with event: NSEvent) {
+        guard DockButton.mode == 1, let panel = window as? DockButtonPanel else { return }
+        let m = NSEvent.mouseLocation
+        let dx = m.x - dragStartMouse.x, dy = m.y - dragStartMouse.y
+        if !dragged && hypot(dx, dy) < 4 { return }
+        dragged = true
+        panel.userDragging = true
+        glyph.pressed = false
+        panel.setFrameOrigin(NSPoint(x: dragStartOrigin.x + dx, y: dragStartOrigin.y + dy))
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        glyph.pressed = false
+        if dragged {
+            dragged = false
+            (window as? DockButtonPanel)?.userDragging = false
+            onMoved?()
+            return
+        }
+        if bounds.contains(convert(event.locationInWindow, from: nil)) { onClick?() }
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        let menu = menuProvider?() ?? NSMenu()
+        if !menu.items.isEmpty { menu.addItem(.separator()) }
+        let a = NSMenuItem(title: T("Настройки…"), action: #selector(menuSettings), keyEquivalent: "")
+        a.target = self
+        let b = NSMenuItem(title: T("Скрыть кнопку"), action: #selector(menuHide), keyEquivalent: "")
+        b.target = self
+        menu.addItem(a)
+        menu.addItem(b)
+        menu.addItem(.separator())
+        let q = NSMenuItem(title: T("Закрыть «Пуск»"), action: #selector(menuQuit), keyEquivalent: "")
+        q.target = self
+        menu.addItem(q)
+        NSMenu.popUpContextMenu(menu, with: event, for: self)
+    }
+    @objc private func menuSettings() { onSettings?() }
+    @objc private func menuHide() { onHide?() }
+    @objc private func menuQuit() { NSApp.terminate(nil) }
+}

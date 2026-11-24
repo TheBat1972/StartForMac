@@ -452,6 +452,12 @@ enum DockPin {
         ]
         apps.insert(tile, at: 0)
 
+        return commit(apps)
+    }
+
+    /// Записывает список закреплённых приложений и перезапускает Dock; свёрнутые окна, которые Dock при этом разворачивает, сворачиваем обратно
+    private static func commit(_ apps: [[String: Any]]) -> Bool {
+        let domain = "com.apple.dock" as CFString
         let wasMinimized = minimizedWindows()
 
         CFPreferencesSetAppValue("persistent-apps" as CFString, apps as CFArray, domain)
@@ -472,6 +478,46 @@ enum DockPin {
             }
         }
         return true
+    }
+
+    // MARK: убрать «Пуск» из Dock на время работы кнопки у Dock и вернуть на место
+
+    private static func isSelf(_ item: [String: Any]) -> Bool {
+        guard let td = item["tile-data"] as? [String: Any] else { return false }
+        if let b = td["bundle-identifier"] as? String, b == Bundle.main.bundleIdentifier { return true }
+        if let fd = td["file-data"] as? [String: Any], let u = fd["_CFURLString"] as? String, let url = URL(string: u),
+           url.standardizedFileURL.path == Bundle.main.bundleURL.standardizedFileURL.path { return true }
+        return false
+    }
+
+    /// Убирает закреплённый значок «Пуска» из Dock, запомнив запись и её место. Не закреплён — ничего не делает.
+    static func unpinSelf() {
+        DispatchQueue.global(qos: .userInitiated).async {
+            var apps = (CFPreferencesCopyAppValue("persistent-apps" as CFString, "com.apple.dock" as CFString) as? [[String: Any]]) ?? []
+            guard let i = apps.firstIndex(where: isSelf) else { return }
+            let tile = apps.remove(at: i)
+            if let data = try? PropertyListSerialization.data(fromPropertyList: tile, format: .binary, options: 0) {
+                UserDefaults.standard.set(data, forKey: "dockButton.pinnedTile")
+                UserDefaults.standard.set(i, forKey: "dockButton.pinnedIndex")
+            }
+            _ = commit(apps)
+        }
+    }
+
+    /// Возвращает ранее убранный значок на прежнее место
+    static func restoreSelf() {
+        let ud = UserDefaults.standard
+        guard let data = ud.data(forKey: "dockButton.pinnedTile"),
+              let tile = (try? PropertyListSerialization.propertyList(from: data, options: [], format: nil)) as? [String: Any] else { return }
+        ud.removeObject(forKey: "dockButton.pinnedTile")
+        let index = ud.integer(forKey: "dockButton.pinnedIndex")
+        ud.removeObject(forKey: "dockButton.pinnedIndex")
+        DispatchQueue.global(qos: .userInitiated).async {
+            var apps = (CFPreferencesCopyAppValue("persistent-apps" as CFString, "com.apple.dock" as CFString) as? [[String: Any]]) ?? []
+            if apps.contains(where: isSelf) { return }
+            apps.insert(tile, at: min(max(index, 0), apps.count))
+            _ = commit(apps)
+        }
     }
 }
 
@@ -510,6 +556,12 @@ final class MinimizeController: NSObject, ObservableObject {
     @Published var thumbsOn = WindowSwitcher.thumbsEnabled
     /// Умный буфер обмена (⇧⌘V) и сколько записей хранить (по умолчанию выключен)
     @Published var dockPreviewOn = DockPreview.enabled
+    /// Кнопка «Пуска» у Dock, альфа (по умолчанию выключена)
+    @Published var dockButtonOn = DockButton.enabled
+    @Published var dockButtonSize = DockButton.sizeScale
+    @Published var dockButtonMode = DockButton.mode
+    @Published var dockButtonTransparency = DockButton.transparency
+    @Published var dockButtonGap = DockButton.gapFraction
     /// Автоматический переключатель раскладки, его сочетание, исключения и флаг раскладки (по умолчанию всё выключено)
     @Published var layoutOn = LayoutSwitcher.enabled
     @Published var layoutAutoOn = LayoutSwitcher.autoFix
@@ -656,6 +708,49 @@ final class MinimizeController: NSObject, ObservableObject {
         layoutExcluded = list
     }
 
+    private func wireDockButton() {
+        DockButton.shared.onClick = { [weak self] in self?.toggleStart?() }
+        DockButton.shared.onSettings = { (NSApp.delegate as? AppDelegate)?.openSettings() }
+        DockButton.shared.onHide = { [weak self] in self?.setDockButton(false) }
+        DockButton.shared.menuProvider = { (NSApp.delegate as? AppDelegate)?.applicationDockMenu(NSApp) }
+    }
+
+    func setDockButtonMode(_ m: Int) {
+        DockButton.mode = m
+        dockButtonMode = m
+        // у Dock кнопка читает его положение через Accessibility
+        if m == 0 && dockButtonOn { _ = requestAccessibility(prompt: true) }
+    }
+
+    func setDockButtonGap(_ v: Double) {
+        DockButton.gapFraction = v
+        dockButtonGap = v
+    }
+
+    func setDockButtonTransparency(_ v: Double) {
+        DockButton.transparency = v
+        dockButtonTransparency = v
+        DockButton.shared.refresh()
+    }
+
+    func setDockButtonSize(_ v: Double) {
+        DockButton.sizeScale = v
+        dockButtonSize = v
+    }
+
+    func setDockButton(_ on: Bool) {
+        DockButton.enabled = on
+        dockButtonOn = on
+        wireDockButton()
+        DockButton.shared.setEnabled(on)
+        // границы значков Dock читаются через Accessibility: просим доступ при включении (кнопка появится, как только он выдан)
+        if on && DockButton.mode == 0 { _ = requestAccessibility(prompt: true) }
+        // пока есть кнопка у Dock, обычного значка «Пуска» в Dock быть не должно: закреплённый значок убираем, а при выключении возвращаем на место
+        if on { DockPin.unpinSelf() } else { DockPin.restoreSelf() }
+        NSApp.setActivationPolicy(on ? .accessory : .regular)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
     func setDockPreview(_ on: Bool) {
         DockPreview.enabled = on
         dockPreviewOn = on
@@ -744,6 +839,11 @@ final class MinimizeController: NSObject, ObservableObject {
         if ClipboardHistory.enabled { ClipboardHistory.shared.start() }
         if WindowSwitcher.enabled { WindowSwitcher.shared.start() }
         if DockPreview.enabled { DockPreview.shared.start() }
+        wireDockButton()
+        if DockButton.enabled {
+            DockPin.unpinSelf()              // кнопка у Dock уже включена (в том числе в прошлой версии): закреплённого значка быть не должно
+            DockButton.shared.start()
+        }
         if LayoutSwitcher.enabled { LayoutSwitcher.shared.start() }
         LayoutKey.shared.apply()
         if LayoutFlag.enabled { LayoutFlag.shared.setEnabled(true) }
@@ -811,7 +911,7 @@ final class MinimizeController: NSObject, ObservableObject {
         awake.state = awakeOn ? .on : .off
         if let c = FinderNew.shared.createMenuItem() { m.addItem(.separator()); m.addItem(c) }
         m.addItem(.separator())
-        m.addItem(withTitle: T("Выход"), action: #selector(quit), keyEquivalent: "q").target = self
+        m.addItem(withTitle: T("Закрыть «Пуск»"), action: #selector(quit), keyEquivalent: "q").target = self
         statusItem.menu = m
         statusItem.button?.performClick(nil)
         statusItem.menu = nil
