@@ -39,6 +39,7 @@ Personal project, built with SwiftUI + AppKit, no third-party dependencies. Univ
 - **Automatic layout switcher** (Settings → “Keyboard layout”, off by default): fixes a word typed in the wrong layout right after the space, including short words (“И вот”, “А кто это?”), hyphenated words and trailing punctuation; site addresses are left alone. The hotkey (default ⌃⌥Space) fixes the last word or the selected text, and repeated presses toggle back and forth. A word you reverted by hand is remembered and no longer auto-fixed (up to 500 words). Apps can be excluded. Typed text is not stored.
 - **Own layout key:** Globe/fn or your own shortcut switches the layout; the system language popup can be hidden.
 - **Layout flag** (built-in LangFlag): a small on-screen and menu-bar indicator of the current layout with a flag.
+- **Start icon:** in Settings → Windows, three modes: “In Dock” (the regular app icon, default), “Next to Dock” (a floating button of four blue squares right beside the Dock; it follows the Dock and sits below it when the Dock is vertical) and “On screen” (the same button, draggable, above all windows, not following the Dock). Button size (60–160% of a Dock icon), background transparency and distance from the Dock are adjustable; right-click shows the icon menu plus Settings…, Hide button and Quit Start. While the button is on, the pinned Start icon is removed from the Dock and restored when it is turned off. Needs the “Control your computer and access data” permission (in earlier macOS versions: Accessibility).
 - **Dock window previews:** thumbnails of an app’s windows above its Dock icon on hover.
 - **⌥Tab window switcher:** thumbnails, search and window buttons.
 - **Window snap:** ⌃⌥ + arrows put the active window in a half of the screen, full screen, or minimize it.
@@ -107,6 +108,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the list of changes.
 | `Sources/Pack.swift` | creating archives (7z, ZIP, TAR.*; password, volumes) |
 | `Sources/Duplicates.swift` | duplicates and similar photos (SHA-256, perceptual hash) |
 | `Sources/Minimize.swift` | Minimize All, hotkeys, login item, Dock pinning |
+| `Sources/DockButton.swift` | Start button next to the Dock or on screen |
 | `Sources/Gesture.swift` | pinch gesture (private MultitouchSupport framework, loaded dynamically) |
 | `Sources/IconPicker.swift` | the icon picker: bank of ready-made icons and an image from disk |
 | `Sources/Calculator.swift` | the calculator (display, keys, keyboard) and the unit and currency converter |
