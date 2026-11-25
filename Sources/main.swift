@@ -242,6 +242,16 @@ final class Store: ObservableObject, @unchecked Sendable {
     private var iconAttempted = Set<UUID>()
     static weak var current: Store?
     @Published var showPermissions = false
+    /// Какие кнопки показывать под списком категорий («Новая категория» есть всегда)
+    @Published var menuShowMinimize = UserDefaults.standard.object(forKey: "menu.showMinimize") as? Bool ?? false {
+        didSet { UserDefaults.standard.set(menuShowMinimize, forKey: "menu.showMinimize") }
+    }
+    @Published var menuShowLock = UserDefaults.standard.object(forKey: "menu.showLock") as? Bool ?? false {
+        didSet { UserDefaults.standard.set(menuShowLock, forKey: "menu.showLock") }
+    }
+    @Published var menuShowPower = UserDefaults.standard.object(forKey: "menu.showPower") as? Bool ?? false {
+        didSet { UserDefaults.standard.set(menuShowPower, forKey: "menu.showPower") }
+    }
     @Published var fullDiskAccess = true
     @Published var accessibility = true
     @Published var screenRecording = true
@@ -1504,13 +1514,16 @@ struct PermissionsOverlay: View {
                                       request: { Permissions.requestInputMonitoring() },
                                       open: { Permissions.openInputMonitoringPane() })
                         permissionRow(T("Расширение Finder"), store.finderExtension,
-                                      T("Нужно только для пункта «Создать» в контекстном меню Finder (настройка «Создать» в меню Finder). Расширение включается в «Системные настройки → Расширения → Расширения Finder»: поставьте галочку у «StartForMac». Оно работает в песочнице и только сообщает приложению, в какой папке вы щёлкнули; файл создаёт «Пуск». Если статус недоступен, включите настройку и нажмите «Проверить снова»."),
+                                      T("Нужно для пункта «Создать» в контекстном меню Finder (настройка «Создать» в меню Finder) и для кнопки «Сортировка» на панели Finder. Расширение включается в «Системные настройки → Расширения → Расширения Finder»: поставьте галочку у «StartForMac». Оно работает в песочнице и только сообщает приложению, в какой папке вы щёлкнули; файл создаёт «Пуск». Если статус недоступен, включите настройку и нажмите «Проверить снова»."),
                                       red: false,
                                       request: { FinderNew.shared.requestEnable() },
                                       open: { FinderNew.openManagement() })
                         linkInfo("square.stack.3d.up", T("Управление приложениями"),
                                  T("Статус программа прочитать не может. Нужно, чтобы удалять и менять другие программы: полное удаление приложения вместе с ним самим, переименование и перенос. Если macOS спросит или удаление не получается — включите «StartForMac» в списке."),
                                  "Privacy_AppBundles")
+                        linkInfo("power", T("Автоматизация (выключение)"),
+                                 T("Статус программа прочитать не может. Нужна только для кнопки «Выключить / Перезагрузить» в меню: «Пуск» просит программу loginwindow показать системное окно выключения. Если macOS спросит разрешение, дайте его; без него кнопка ничего не делает. Если отказали, включите «StartForMac» в разделе «Автоматизация»."),
+                                 "Privacy_Automation")
                         linkInfo("folder", T("Файлы и папки"),
                                  T("Статус программа прочитать не может. macOS спрашивает доступ к «Рабочему столу», «Документам» и «Загрузкам», когда «Пуск» собирает файлы стола, очищает его или считает мусор. Полный доступ к диску эти вопросы снимает."),
                                  "Privacy_FilesAndFolders")
@@ -6714,6 +6727,14 @@ struct SettingsView: View {
                             }
                         }
                         sep()
+                        section(T("Кнопки внизу меню")) {
+                            Text(T("Какие кнопки показывать под списком категорий в меню «Пуска». «Новая категория» есть всегда."))
+                                .font(.caption).foregroundColor(.secondary)
+                            toggleRow(T("Свернуть все окна"), store.menuShowMinimize) { store.menuShowMinimize = $0 }
+                            toggleRow(T("Заблокировать экран"), store.menuShowLock) { store.menuShowLock = $0 }
+                            toggleRow(T("Выключить / Перезагрузить"), store.menuShowPower) { store.menuShowPower = $0 }
+                        }
+                        sep()
                         section(T("Значок «Пуска»")) {
                             HStack {
                                 Picker("", selection: Binding(
@@ -6944,6 +6965,12 @@ struct SettingsView: View {
                                     Text(T("Нужен хотя бы один модификатор (⌃ ⌥ ⌘ ⇧). Esc — отмена."))
                                         .font(.caption).foregroundColor(.secondary)
                                 }
+                            }
+                            if #available(macOS 26.0, *) {
+                                sep()
+                                toggleRow(T("Кнопка «Сортировка» на панели Finder"), mc.finderSortOn) { mc.setFinderSort($0) }
+                                Text(T("В Finder в «Вид» → «Настроить панель инструментов» появится кнопка «Сортировка»: она сортирует значки окна по имени, виду, дате изменения, дате создания, размеру или тегам без групп. Нужна, потому что в macOS 26 и новее прокрутка в режиме значков может залипать на заголовках групп. Работает через расширение Finder (его надо включить в «Системные настройки → Расширения → Расширения Finder») и доступ «Управление устройством и доступ к данным» (в ранних версиях macOS: «Универсальный доступ»): «Пуск» нажимает в Finder то же сочетание, что и пункт меню «Вид → Сортировать по …». В режиме колонок и галереи сортировка зависит от самого Finder."))
+                                    .font(.caption).foregroundColor(.secondary)
                             }
                         }
         }
@@ -7600,6 +7627,7 @@ struct RootView: View {
                 .hoverHighlight(7)
                 .help(T("Создать свою категорию"))
 
+                if store.menuShowMinimize {
                 Button {
                     store.minimize?.minimizeOnly()
                 } label: {
@@ -7613,6 +7641,9 @@ struct RootView: View {
                 .hoverHighlight(7)
                 .help(T("Свернуть окна всех программ. Повторное нажатие их не разворачивает"))
 
+                }
+
+                if store.menuShowLock {
                 Button {
                     close()
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { ScreenLock.lock() }
@@ -7626,6 +7657,22 @@ struct RootView: View {
                 .buttonStyle(.plain)
                 .hoverHighlight(7)
                 .help(T("Заблокировать экран Mac (как ⌃⌘Q)"))
+                }
+
+                if store.menuShowPower {
+                Button {
+                    PowerMenu.show()   // меню открывается выше курсора; окно «Пуска» остаётся открытым
+                } label: {
+                    Label(T("Выключить / Перезагрузить"), systemImage: "power")
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 8).padding(.vertical, 6)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .hoverHighlight(7)
+                .help(T("Перезагрузить, выключить или перевести Mac в сон"))
+                }
                 }
 
                 // быстрые вызовы программ слева (в рамке, их можно заменить), «Инструменты» — справа у края

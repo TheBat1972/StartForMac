@@ -6,6 +6,8 @@
 - В загрузке с YouTube кнопка «Что делать при ошибке?»: подсказка из четырёх шагов, если YouTube просит подтвердить, что вы не бот (перезайти в аккаунт в Safari, выбрать другой браузер для cookies, обновить yt-dlp).
 - В настройках кнопки переключатель «Увеличение вместе с Dock»: выключите, и значок не растёт при наведении на Dock (по умолчанию включено).
 - Настройки значка «Пуска» перенесены с вкладки «Окна» на вкладку «Интерфейс», в отдельный раздел «Значок «Пуска»».
+- Кнопка «Сортировка» на панели Finder, только на macOS 26 и новее; включается отдельной настройкой «Кнопка «Сортировка» на панели Finder» во вкладке «Finder и рабочий стол» (расширение Finder; добавляется в «Вид» → «Настроить панель инструментов»): сортирует значки окна так же, как системный пункт «Сортировать по» (имя, тип, дата последнего открытия, добавления, изменения, создания, размер, теги, без сортировки), но без групп. Это обход ошибки macOS, когда прокрутка в режиме значков залипает на заголовках групп. Нажимает в Finder пункт меню «Вид → Сортировать по …» (ищет его по названию), поэтому Finder сразу перерисовывает окно; нужен «Универсальный доступ».
+- Под списком категорий в меню новая кнопка «Выключить / Перезагрузить»: открывает маленькое меню: «Перезагрузить…», «Выключить…» (системные окна с подтверждением) и «Сон». Все три кнопки внизу меню по умолчанию выключены. Кнопки «Свернуть все окна», «Заблокировать экран» и «Выключить / Перезагрузить» можно отключить в Настройки → «Интерфейс» → «Кнопки внизу меню» («Новая категория» отключить нельзя).
 - Версия 11.6.
 
 ### Version 11.6
@@ -13,6 +15,8 @@
 - The YouTube download tool has a “What if it fails?” button: a four-step hint for when YouTube asks to confirm you're not a bot (sign in again in Safari, pick another browser for cookies, update yt-dlp).
 - A “Magnify with the Dock” switch in the button settings: turn it off and the icon no longer grows when you hover the Dock (on by default).
 - The Start button settings moved from the “Windows” tab to the “Interface” tab, into a separate “Start icon” section.
+- A “Sort” button for the Finder toolbar, on macOS 26 and later only; turned on by a separate setting “Sort button in the Finder toolbar” in the “Finder and desktop” tab (Finder extension; add it via View → Customize Toolbar): sorts the window's icons the same way as the system “Sort By” (name, kind, date last opened, added, modified, created, size, tags, none), but without groups. It works around a macOS bug where scrolling in icon view gets stuck on group headers. It clicks the View → Sort By menu item in Finder (found by its name), so Finder redraws the window at once; needs “Accessibility”.
+- A new “Shut Down / Restart” button under the category list opens a small menu: “Restart…”, “Shut Down…” (system dialogs with confirmation) and “Sleep”. All three bottom buttons are off by default. The “Minimize all windows”, “Lock screen” and “Shut Down / Restart” buttons can be turned off in Settings → Interface → “Buttons at the bottom of the menu” (“New category” cannot be turned off).
 - Version 11.6.
 
 ### Версия 11.5

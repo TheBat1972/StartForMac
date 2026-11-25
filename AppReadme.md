@@ -7,14 +7,14 @@
 - **“Recent” tab.** The latest documents from any app, by day: “Today”, “Yesterday”, “This week”, “Earlier”. The count (25, 50, 100 or 200) is chosen on the tab.
 - **“Sites” tab.** Quick links with icons, and folders. Order: “Manual”, “A–Z” or “Frequent”.
 - **Colored category icons**, with your own icon and color for every custom category (Settings → “Icons”).
-- **Sidebar buttons.** “Minimize all windows” minimizes every app's windows, “Lock screen” locks the screen at once.
+- **Sidebar buttons.** “Minimize all windows” minimizes every app's windows, “Lock screen” locks the screen at once, “Shut Down / Restart” opens a menu with Restart, Shut Down and Sleep. These three buttons are off by default; turn them on in Settings → Interface.
 - **Quick launch.** Five places at the bottom of the panel for your favorite apps.
 
 ### Tools (the key button)
 
 Each tool opens in its own window and works independently of the main window.
 
-- **Finder tweaks** (off by default). “Enter in Finder opens the file”: Enter launches files and opens folders, `⇧Enter` renames. “New” in the Finder menu: right-click an empty spot → “New” → a text document, Markdown, an empty file, documents, spreadsheets and presentations (for installed office apps) and images (PNG, JPEG, SVG always; PSD, XCF, KRA if a suitable app is installed; size 1920×1080, 1024×1024, 512×512 or custom). The same menu opens with `⌃⌥N` and from the menu-bar and Dock icon menu. Finder shows no extensions inside iCloud Drive.
+- **Finder tweaks** (off by default). “Enter in Finder opens the file”: Enter launches files and opens folders, `⇧Enter` renames. “New” in the Finder menu: right-click an empty spot → “New” → a text document, Markdown, an empty file, documents, spreadsheets and presentations (for installed office apps) and images (PNG, JPEG, SVG always; PSD, XCF, KRA if a suitable app is installed; size 1920×1080, 1024×1024, 512×512 or custom). The same menu opens with `⌃⌥N` and from the menu-bar and Dock icon menu. Finder shows no extensions inside iCloud Drive. The same extension gives a “Sort” button for the Finder toolbar on macOS 26 and later, turned on by its own switch in Settings → Finder and desktop (View → Customize Toolbar): icons are sorted by name, kind, date and so on without groups.
 - **Take a break.** Games: Tetris, Solitaire, Durak, JezzBall, Lode Runner, Snake, Arcan, Diam and Pacman. Games with scores keep a high-score table.
 - **Calculator** in the style of the old CalcNew: two memory cells, powers, roots, factorial, percent like an ordinary calculator, keyboard input. The “Converter” tab: a quick-entry line plus length, mass, volume, temperature, speed, time, data, area and about twenty currencies (rates refresh at most once an hour; offline, the last saved ones are used).
 - **File manager.** Two panes in the spirit of Total Commander: copy (`F5`), move (`F6`), new folder (`F7`), Trash (`F8`), view (`F3`), edit (`F4`), rename (`F2`, including batch rename with masks). Files can be dragged between panes and into other apps; each pane has a search, and when a search is open the commands act on the selected result. Android phones (“File transfer” mode) open right in a pane over USB: copy, rename and delete are available.
@@ -51,7 +51,7 @@ Each tool opens in its own window and works independently of the main window.
 
 - **Settings.** Language (system, Russian, English), theme, hotkeys, gesture, launch at login, pinning in the Dock, the “About” tab.
 - **Updates.** Every 6 hours (and after your Mac wakes up) the app checks whether a new version is out; if so, Settings shows a message and an “Update” button. You can also check manually with “Check for updates…” in the app menu.
-- **Permissions.** The “Permissions” tab explains why each permission is needed and opens the right pane of System Settings: “Full Disk Access”, “Accessibility”, “Screen & System Audio Recording” (only for window thumbnails), “App Management” and “Files & Folders”. The app works without them, but some features will be unavailable.
+- **Permissions.** The “Permissions” tab explains why each permission is needed and opens the right pane of System Settings: “Full Disk Access”, “Accessibility”, “Screen & System Audio Recording” (only for window thumbnails), “App Management”, “Automation” (only for the “Shut Down / Restart” button) and “Files & Folders”. The app works without them, but some features will be unavailable.
 
 ## Privacy and security
 

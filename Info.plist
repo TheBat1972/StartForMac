@@ -19,6 +19,7 @@
         </dict>
     </array>
     <key>LSMinimumSystemVersion</key><string>12.0</string>
+    <key>NSAppleEventsUsageDescription</key><string>«Пуск» просит систему показать окно перезагрузки или выключения Mac (кнопка «Выключить / Перезагрузить»). / StartForMac asks the system to show the Mac restart or shut down window (the “Shut Down / Restart” button).</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSAppTransportSecurity</key>
     <dict>

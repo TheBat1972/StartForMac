@@ -550,6 +550,7 @@ final class MinimizeController: NSObject, ObservableObject {
     @Published var finderEnterOn = FinderEnter.enabled
     /// «Создать» в контекстном меню Finder (по умолчанию выключено)
     @Published var finderNewOn = FinderNew.enabled
+    @Published var finderSortOn = FinderNew.sortEnabled
     @Published var finderNewComboTitle = Combo.load(prefix: "finder.new.hk", fallback: Combo.finderNewFallback).title
     /// Переключение окон по ⌥Tab и миниатюры (по умолчанию оба выключены)
     @Published var switcherOn = WindowSwitcher.enabled
@@ -830,10 +831,25 @@ final class MinimizeController: NSObject, ObservableObject {
     func setFinderNew(_ on: Bool) {
         FinderNew.enabled = on
         finderNewOn = on
-        FinderNew.shared.setEnabled(on)
+        FinderNew.shared.setEnabled(on || FinderNew.sortEnabled)
         registerFinderNewHotkey()
         guard on else { return }
         // если система ещё не включила расширение — показываем «Разрешения» и список расширений Finder
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            Store.current?.refreshPermissions()
+            if Store.current?.finderExtension != true {
+                Store.current?.showPermissions = true
+                FinderNew.openManagement()
+            }
+        }
+    }
+
+    /// Кнопка «Сортировка» на панели Finder: включает то же расширение Finder и просит дать доступ «Автоматизация»
+    func setFinderSort(_ on: Bool) {
+        FinderNew.sortEnabled = on
+        finderSortOn = on
+        FinderNew.shared.setEnabled(on || FinderNew.enabled)
+        guard on else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
             Store.current?.refreshPermissions()
             if Store.current?.finderExtension != true {
@@ -878,7 +894,7 @@ final class MinimizeController: NSObject, ObservableObject {
         if FinderEnter.enabled { FinderEnter.shared.start() }
         FinderNew.shared.registerURLHandler()
         registerFinderNewHotkey()
-        if FinderNew.enabled { FinderNew.shared.start() }
+        if FinderNew.enabled || FinderNew.sortEnabled { FinderNew.shared.start() }
         if ClipboardHistory.enabled { ClipboardHistory.shared.start() }
         if WindowSwitcher.enabled { WindowSwitcher.shared.start() }
         if DockPreview.enabled { DockPreview.shared.start() }

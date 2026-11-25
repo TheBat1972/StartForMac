@@ -51,8 +51,45 @@ final class StartFinderSync: FIFinderSync {
 
     private var russian: Bool { return Locale.preferredLanguages.first?.hasPrefix("ru") ?? false }
 
+    /// Кнопка «Сортировка» только на macOS 26 и новее (там ошибка с группами в режиме значков)
+    private static var sortAvailable: Bool {
+        if #available(macOS 26.0, *) { return true }
+        return false
+    }
+
+    /// На старых системах не отвечаем на запросы про кнопку панели, и Finder её не показывает
+    override func responds(to aSelector: Selector!) -> Bool {
+        if !StartFinderSync.sortAvailable,
+           aSelector == #selector(getter: FIFinderSync.toolbarItemName) || aSelector == #selector(getter: FIFinderSync.toolbarItemImage)
+            || aSelector == #selector(getter: FIFinderSync.toolbarItemToolTip) { return false }
+        return super.responds(to: aSelector)
+    }
+
+    // Кнопка «Сортировка» на панели Finder (добавляется в «Вид → Настроить панель инструментов»): сортировка значков без групп
+    override var toolbarItemName: String { return russian ? "Сортировка" : "Sort" }
+    override var toolbarItemToolTip: String { return russian ? "Сортировка значков без групп" : "Sort icons without groups" }
+    override var toolbarItemImage: NSImage {
+        let img = NSImage(systemSymbolName: "arrow.up.arrow.down", accessibilityDescription: nil) ?? NSImage(size: NSSize(width: 16, height: 16))
+        img.isTemplate = true
+        return img
+    }
+
+    private static let sortKeys = ["name", "kind", "opened", "added", "modified", "created", "size", "label", "none"]
+
     override func menu(for menuKind: FIMenuKind) -> NSMenu {
         let menu = NSMenu(title: "")
+        if menuKind == .toolbarItemMenu {
+            guard StartFinderSync.sortAvailable else { return menu }
+            let titles = russian ? ["По имени", "По типу", "По дате последнего открытия", "По дате добавления", "По дате изменения", "По дате создания", "По размеру", "По тегам", "Без сортировки"]
+                                 : ["Name", "Kind", "Date Last Opened", "Date Added", "Date Modified", "Date Created", "Size", "Tags", "None"]
+            for (i, t) in titles.enumerated() {
+                if i == titles.count - 1 { menu.addItem(.separator()) }
+                let item = NSMenuItem(title: t, action: #selector(sortItems(_:)), keyEquivalent: "")
+                item.tag = i
+                menu.addItem(item)
+            }
+            return menu
+        }
         guard menuKind == .contextualMenuForContainer else { return menu }
         var titles = russian ? ["Текстовый документ", "Документ Markdown", "Пустой файл", "Страница HTML", "Файл JSON", "Таблица CSV", "Документ RTF"]
                              : ["Text document", "Markdown document", "Empty file", "HTML page", "JSON file", "CSV table", "RTF document"]
@@ -100,6 +137,18 @@ final class StartFinderSync: FIFinderSync {
         top.submenu = sub
         menu.addItem(top)
         return menu
+    }
+
+    @objc func sortItems(_ sender: AnyObject?) {
+        guard let item = sender as? NSMenuItem, item.tag >= 0, item.tag < StartFinderSync.sortKeys.count else { return }
+        var c = URLComponents()
+        c.scheme = "startformac"
+        c.host = "sort"
+        c.queryItems = [URLQueryItem(name: "by", value: StartFinderSync.sortKeys[item.tag])]
+        guard let url = c.url else { return }
+        let cfg = NSWorkspace.OpenConfiguration()
+        cfg.activates = false
+        NSWorkspace.shared.open(url, configuration: cfg, completionHandler: nil)
     }
 
     @objc func create(_ sender: AnyObject?) {

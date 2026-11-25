@@ -17,6 +17,12 @@ final class FinderNew {
         set { UserDefaults.standard.set(newValue, forKey: "finder.new") }
     }
 
+    /// Кнопка «Сортировка» на панели Finder (macOS 26 и новее): отдельная настройка, по умолчанию выключена
+    static var sortEnabled: Bool {
+        get { UserDefaults.standard.object(forKey: "finder.sort") as? Bool ?? false }
+        set { UserDefaults.standard.set(newValue, forKey: "finder.sort") }
+    }
+
     private var urlHandlerSet = false
 
     /// Принимает ссылки startformac://create?dir=…&kind=… от расширения Finder
@@ -29,11 +35,69 @@ final class FinderNew {
 
     @objc private func handleURLEvent(_ event: NSAppleEventDescriptor, withReplyEvent reply: NSAppleEventDescriptor) {
         guard let str = event.paramDescriptor(forKeyword: keyDirectObject)?.stringValue,
-              let comps = URLComponents(string: str), comps.scheme == "startformac", comps.host == "create" else { return }
+              let comps = URLComponents(string: str), comps.scheme == "startformac" else { return }
         var q: [String: String] = [:]
         for i in comps.queryItems ?? [] { if let v = i.value { q[i.name] = v } }
-        create(dir: q["dir"], kind: q["kind"])
+        if comps.host == "create" { create(dir: q["dir"], kind: q["kind"]) }
+        else if comps.host == "sort" { sortFrontWindow(by: q["by"]) }
     }
+
+    /// Кнопка «Сортировка» на панели Finder: нажимает в Finder пункт «Вид → Сортировать по …» (Finder сам применяет сортировку
+    /// и перерисовывает окно). Пункт ищется по названию в меню самого Finder, потому что состав и порядок пунктов зависят
+    /// от версии macOS. Нужен «Универсальный доступ». Если такого пункта в меню нет, ничего не происходит.
+    private func sortFrontWindow(by key: String?) {
+        guard FinderNew.sortEnabled, #available(macOS 26.0, *) else { return }
+        guard let k = key,
+              let finder = NSWorkspace.shared.frontmostApplication, finder.bundleIdentifier == "com.apple.finder" else { return }
+        // части названия пункта (в нижнем регистре): русский и английский
+        let words: [String: [String]] = [
+            "none": ["нет", "без сорт", "none"],
+            "name": ["имя", "имени", "name"],
+            "kind": ["тип", "вид", "kind"],
+            "opened": ["открыти", "opened"],
+            "added": ["добавлени", "added"],
+            "modified": ["изменени", "modified"],
+            "created": ["создани", "created"],
+            "size": ["размер", "size"],
+            "label": ["тег", "метк", "tags", "label"]]
+        guard let w = words[k] else { return }
+        let app = AXUIElementCreateApplication(finder.processIdentifier)
+        func kids(_ e: AXUIElement) -> [AXUIElement] {
+            var v: CFTypeRef?
+            AXUIElementCopyAttributeValue(e, kAXChildrenAttribute as CFString, &v)
+            return (v as? [AXUIElement]) ?? []
+        }
+        func title(_ e: AXUIElement) -> String {
+            var v: CFTypeRef?
+            AXUIElementCopyAttributeValue(e, kAXTitleAttribute as CFString, &v)
+            return (v as? String) ?? ""
+        }
+        var mb: CFTypeRef?
+        AXUIElementCopyAttributeValue(app, kAXMenuBarAttribute as CFString, &mb)
+        guard let bar = mb else { return }
+        // «Вид» — пятый пункт строки меню (Apple, Finder, Файл, Правка, Вид); внутри ищем подменю «Сортировать по»
+        let barItems = kids(bar as! AXUIElement)
+        guard barItems.count > 4, let viewMenu = kids(barItems[4]).first else { return }
+        guard let sortItem = kids(viewMenu).first(where: {
+            let t = title($0).lowercased()
+            return t.hasPrefix("сортировать") || t.hasPrefix("sort by")
+        }), let sortMenu = kids(sortItem).first else { return }
+        let items = kids(sortMenu).filter { !title($0).isEmpty }
+        if FinderNew.debugSort { NSLog("Sort menu: %@", items.map { title($0) }.joined(separator: " | ")) }
+        // «Дата создания» не должна совпасть с «Дата изменения» и т. п. — ищем по самой специфичной части названия
+        // «Без сортировки» — всегда первый пункт подменю, как бы он ни назывался
+        if k == "none", let first = items.first {
+            AXUIElementPerformAction(first, kAXPressAction as CFString)
+            return
+        }
+        if let hit = items.first(where: { it in
+            let t = title(it).lowercased()
+            return w.contains(where: { t.contains($0) })
+        }) {
+            AXUIElementPerformAction(hit, kAXPressAction as CFString)
+        }
+    }
+    static var debugSort = true
 
     private var appexPath: String { Bundle.main.bundlePath + "/Contents/PlugIns/StartFinderExt.appex" }
 
