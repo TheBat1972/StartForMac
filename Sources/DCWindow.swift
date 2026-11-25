@@ -4,13 +4,14 @@ import SwiftUI
 import AppKit
 
 enum DCSection: String, CaseIterable, Identifiable {
-    case download, audio, video, text, components
+    case download, audio, video, images, text, components
     var id: String { rawValue }
     var icon: String {
         switch self {
         case .download: return "arrow.down.circle"
         case .audio: return "waveform"
         case .video: return "film"
+        case .images: return "photo"
         case .text: return "doc.text"
         case .components: return "gearshape"
         }
@@ -20,6 +21,7 @@ enum DCSection: String, CaseIterable, Identifiable {
         case .download: return L("nav.download")
         case .audio: return L("nav.mp3")
         case .video: return L("nav.video")
+        case .images: return L("nav.images")
         case .text: return L("nav.text")
         case .components: return L("nav.components")
         }
@@ -53,6 +55,7 @@ struct DCRootView: View {
                     case .download: DownloadView()
                     case .audio: AudioView()
                     case .video: VideoView()
+                    case .images: ImagesView()
                     case .text: TextView()
                     case .components: DCComponentsView()
                     }
@@ -180,7 +183,7 @@ final class DCWindowController: NSObject, NSWindowDelegate {
     @objc private func languageChanged() { window?.title = T("Загрузка и конвертация") }
 
     var isBusy: Bool {
-        VideoConverter.shared.isRunning || AudioConverter.shared.isRunning || TextConverter.shared.isRunning || Downloader.shared.running
+        VideoConverter.shared.isRunning || AudioConverter.shared.isRunning || TextConverter.shared.isRunning || ImageConverter.shared.isRunning || Downloader.shared.running
     }
 
     /// При выходе из «Пуска» спрашивает, если ещё идёт загрузка или конвертация
@@ -196,6 +199,7 @@ final class DCWindowController: NSObject, NSWindowDelegate {
         VideoConverter.shared.abortForQuit()
         AudioConverter.shared.abortForQuit()
         TextConverter.shared.abortForQuit()
+        ImageConverter.shared.abortForQuit()
         Downloader.shared.cancel()
         return true
     }

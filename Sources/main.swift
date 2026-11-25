@@ -1524,6 +1524,14 @@ struct PermissionsOverlay: View {
                         linkInfo("power", T("Автоматизация (выключение)"),
                                  T("Статус программа прочитать не может. Нужна только для кнопки «Выключить / Перезагрузить» в меню: «Пуск» просит программу loginwindow показать системное окно выключения. Если macOS спросит разрешение, дайте его; без него кнопка ничего не делает. Если отказали, включите «StartForMac» в разделе «Автоматизация»."),
                                  "Privacy_Automation")
+                        linkInfo("location", T("Геолокация (сканер Wi-Fi)"),
+                                 T("Статус программа прочитать не может. Нужна только для сканера Wi-Fi в «Сетевых инструментах»: без неё macOS прячет названия и каналы сетей. Место не определяется и не сохраняется."),
+                                 "Privacy_LocationServices")
+                        linkInfo("network", T("Локальная сеть"),
+                                 T("Статус программа прочитать не может. Нужна для «Сетевых инструментов»: ping, проверка портов и поиск устройств в вашей сети."),
+                                 "Privacy_LocalNetwork")
+                        info("bell", T("Уведомления (таймер и напоминания)"),
+                             T("Статус программа прочитать не может. Нужны только для сигналов таймера и напоминаний; звук прозвучит и без них."))
                         linkInfo("folder", T("Файлы и папки"),
                                  T("Статус программа прочитать не может. macOS спрашивает доступ к «Рабочему столу», «Документам» и «Загрузкам», когда «Пуск» собирает файлы стола, очищает его или считает мусор. Полный доступ к диску эти вопросы снимает."),
                                  "Privacy_FilesAndFolders")
@@ -6469,6 +6477,7 @@ enum AppInfo {
 struct SettingsView: View {
     let store: Store
     @ObservedObject var mc: MinimizeController
+    @ObservedObject private var timerHub = TimerHub.shared
     let resetPlacement: () -> Void
     @State private var confirmReset = false
     private func scrollTo(_ proxy: ScrollViewProxy, _ id: String) {
@@ -6735,6 +6744,13 @@ struct SettingsView: View {
                             toggleRow(T("Выключить / Перезагрузить"), store.menuShowPower) { store.menuShowPower = $0 }
                         }
                         sep()
+                        section(T("Таймер, секундомер и напоминания")) {
+                            Text(T("Кнопка рядом с чашкой в верхней строке «Пуска»: таймер обратного отсчёта, секундомер и напоминания на выбранное время. Напоминания срабатывают, пока «Пуск» запущен."))
+                                .font(.caption).foregroundColor(.secondary)
+                            toggleRow(T("Добавить на главную панель"), timerHub.enabled) { timerHub.setEnabled($0) }
+                            toggleRow(T("Показывать в верхней панели"), timerHub.inMenuBar, disabled: !timerHub.enabled) { timerHub.setInMenuBar($0) }
+                        }
+                        sep()
                         section(T("Значок «Пуска»")) {
                             HStack {
                                 Picker("", selection: Binding(
@@ -6898,6 +6914,13 @@ struct SettingsView: View {
                                 }
                             }
                         }
+                        sep()
+                        section(T("Запись экрана")) {
+                            toggleRow(T("Отправлять новые записи экрана в конвертор"), mc.screenRecAutoOn) { mc.setScreenRecAuto($0) }
+                            toggleRow(T("Начинать конвертацию сразу, без кнопки «Старт»"), mc.screenRecStartOn, disabled: !mc.screenRecAutoOn) { mc.setScreenRecStart($0) }
+                            Text(T("Новая запись, сделанная стандартной утилитой (⇧⌘5), сама попадает в «Загрузку и конвертацию» (раздел «Видео») и конвертируется с теми настройками, что там стоят сейчас. Если второй переключатель выключен, запись только встаёт в очередь, а «Старт» вы нажимаете сами. Результат ложится в «Загрузки», оригинал остаётся на месте. Следим за папкой, куда утилита сохраняет записи (рабочий стол или выбранная в её параметрах); записи, которые уже лежали там, не трогаем. Работает, пока «Пуск» запущен; нужны компоненты конвертора (ffmpeg), их можно скачать в «Загрузке и конвертации»."))
+                                .font(.caption).foregroundColor(.secondary)
+                        }
         }
     }
 
@@ -6946,6 +6969,14 @@ struct SettingsView: View {
                             sep()
                             toggleRow(T("Enter в Finder — открыть файл"), mc.finderEnterOn) { mc.setFinderEnter($0) }
                             Text(T("В Finder Enter запускает выделенные файлы и открывает папки (как в Windows), а не включает переименование. Переименовать можно по ⇧Enter, через контекстное меню или щелчком по имени. В полях ввода, в диалогах и листах («Заменить?», «Подключение к серверу») Enter остаётся обычным. Нужен доступ «Управление устройством и доступ к данным» (в ранних версиях macOS: «Универсальный доступ»): программа запросит его при включении."))
+                                .font(.caption).foregroundColor(.secondary)
+                            sep()
+                            toggleRow(T("Delete в Finder — в Корзину"), mc.finderDeleteOn) { mc.setFinderDelete($0) }
+                            Text(T("В Finder клавиша Delete (⌫ и ⌦) отправляет выделенные файлы в Корзину, как в Windows, без ⌘. Файлы не удаляются насовсем: их можно вернуть из Корзины. В полях ввода (переименование, поиск), в диалогах и листах Delete остаётся обычным. Нужен доступ «Управление устройством и доступ к данным» (в ранних версиях macOS: «Универсальный доступ»): программа запросит его при включении."))
+                                .font(.caption).foregroundColor(.secondary)
+                            sep()
+                            toggleRow(T("⇧Delete в Finder — удалить мимо Корзины"), mc.finderDeleteNowOn) { mc.setFinderDeleteNow($0) }
+                            Text(T("В Finder ⇧Delete удаляет выделенные файлы сразу, минуя Корзину (как ⇧Del в Windows и ⌥⌘⌫ в macOS). Finder сам спросит подтверждение, вернуть такие файлы будет нельзя. В полях ввода, диалогах и листах ⇧Delete остаётся обычным. Нужен доступ «Управление устройством и доступ к данным» (в ранних версиях macOS: «Универсальный доступ»): программа запросит его при включении."))
                                 .font(.caption).foregroundColor(.secondary)
                             sep()
                             toggleRow(T("«Создать» в контекстном меню Finder"), mc.finderNewOn) { mc.setFinderNew($0) }
@@ -7171,6 +7202,7 @@ struct RootView: View {
     @State private var toolsBox = FrameBox()
     @State private var toolsBtnBox = FrameBox()
     @State private var showClip = false
+    @State private var showTimers = false
     @ObservedObject private var clipHist = ClipboardHistory.shared
     @ObservedObject private var updater = AppUpdater.shared
     @ObservedObject private var cleanDesk = CleanDesktop.shared
@@ -7440,6 +7472,7 @@ struct RootView: View {
                     .hoverHighlight(6)
                     .foregroundColor(store.keepAwake ? .accentColor : .secondary)
                     .help(store.keepAwake ? T("Компьютер не уснёт — нажмите, чтобы отключить") : T("Не давать компьютеру уснуть"))
+                    TimersHeaderButton(open: $showTimers)
                     Button { CalcWindowController.shared.show() } label: {
                         Image(systemName: "plusminus.circle")
                             .padding(5).contentShape(Rectangle())
@@ -7531,6 +7564,9 @@ struct RootView: View {
                     }
                 }
             }
+        }
+        .overlay(alignment: .topTrailing) {
+            if showTimers { TimersOverlay(close: { showTimers = false }) }
         }
         .overlay(alignment: .topTrailing) {
             if showClip && clipHist.enabled {
@@ -7987,6 +8023,18 @@ struct RootView: View {
             ToolRow(title: T("Диспетчер задач"), symbol: "chart.bar.xaxis") {
                 showTools = false
                 TMWindowController.shared.show()
+            }
+            ToolRow(title: T("Пипетка и линейка"), symbol: "eyedropper") {
+                showTools = false
+                ScreenToolsController.shared.show()
+            }
+            ToolRow(title: T("Сетевые инструменты"), symbol: "network") {
+                showTools = false
+                NetToolsController.shared.show()
+            }
+            ToolRow(title: T("Сведения о системе"), symbol: "info.circle") {
+                showTools = false
+                SysInfoController.shared.show()
             }
             ToolRow(title: T("Закрыть все программы"), symbol: "xmark.circle") {
                 showTools = false

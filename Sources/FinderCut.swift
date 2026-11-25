@@ -85,7 +85,12 @@ final class FinderCut {
         guard !urls.isEmpty else { return }
         let title = urls.count == 1 ? Tf("Вырезано: «%@»", urls[0].lastPathComponent)
                                     : Tf("Вырезано файлов: %@", "\(urls.count)")
-        let view = CutToastView(title: title, subtitle: T("Вставьте ⌘V, чтобы переместить"))
+        present(icon: "scissors", title: title, subtitle: T("Вставьте ⌘V, чтобы переместить"))
+    }
+
+    /// Плашка справа внизу (та же, что у «Вырезано»): значок, заголовок и подпись; через три секунды уезжает за край экрана
+    func present(icon: String, title: String, subtitle: String) {
+        let view = CutToastView(icon: icon, title: title, subtitle: subtitle)
         let size = view.frame.size
         let mouse = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { $0.frame.contains(mouse) } ?? NSScreen.main ?? NSScreen.screens[0]
@@ -167,9 +172,10 @@ final class FinderCut {
 
 /// Небольшая плашка справа внизу; цвета системные, поэтому подчиняется светлой и тёмной теме
 final class CutToastView: NSView {
-    private let title: String, subtitle: String
+    private let icon: String, title: String, subtitle: String
 
-    init(title: String, subtitle: String) {
+    init(icon: String = "scissors", title: String, subtitle: String) {
+        self.icon = icon
         self.title = title
         self.subtitle = subtitle
         super.init(frame: NSRect(x: 0, y: 0, width: 300, height: 58))
@@ -185,7 +191,7 @@ final class CutToastView: NSView {
         path.lineWidth = 1
         path.stroke()
 
-        if let img = NSImage(systemSymbolName: "scissors", accessibilityDescription: nil) {
+        if let img = NSImage(systemSymbolName: icon, accessibilityDescription: nil) {
             let cfg = NSImage.SymbolConfiguration(pointSize: 18, weight: .semibold)
             let icon = img.withSymbolConfiguration(cfg) ?? img
             let tinted = NSImage(size: icon.size, flipped: false) { rect in

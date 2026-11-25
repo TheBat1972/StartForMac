@@ -548,6 +548,10 @@ final class MinimizeController: NSObject, ObservableObject {
     @Published var finderCutOn = FinderCut.enabled
     /// Enter в Finder открывает файл, ⇧Enter — переименование (по умолчанию выключено)
     @Published var finderEnterOn = FinderEnter.enabled
+    @Published var finderDeleteOn = FinderDelete.enabled
+    @Published var screenRecAutoOn = ScreenRecAuto.enabled
+    @Published var screenRecStartOn = ScreenRecAuto.startNow
+    @Published var finderDeleteNowOn = FinderDelete.shiftEnabled
     /// «Создать» в контекстном меню Finder (по умолчанию выключено)
     @Published var finderNewOn = FinderNew.enabled
     @Published var finderSortOn = FinderNew.sortEnabled
@@ -822,6 +826,29 @@ final class MinimizeController: NSObject, ObservableObject {
         FinderCut.shared.setEnabled(on)
     }
 
+    func setScreenRecStart(_ on: Bool) {
+        ScreenRecAuto.startNow = on
+        screenRecStartOn = on
+    }
+
+    func setScreenRecAuto(_ on: Bool) {
+        ScreenRecAuto.enabled = on
+        screenRecAutoOn = on
+        ScreenRecAuto.shared.setEnabled(on)
+    }
+
+    func setFinderDelete(_ on: Bool) {
+        FinderDelete.enabled = on
+        finderDeleteOn = on
+        FinderDelete.shared.setEnabled(on || FinderDelete.shiftEnabled)   // при включении сам просит «Управление устройством и доступ к данным»
+    }
+
+    func setFinderDeleteNow(_ on: Bool) {
+        FinderDelete.shiftEnabled = on
+        finderDeleteNowOn = on
+        FinderDelete.shared.setEnabled(on || FinderDelete.enabled)
+    }
+
     func setFinderEnter(_ on: Bool) {
         FinderEnter.enabled = on
         finderEnterOn = on
@@ -892,6 +919,8 @@ final class MinimizeController: NSObject, ObservableObject {
         CleanDesktop.shared.launch()
         if FinderCut.enabled { FinderCut.shared.start() }
         if FinderEnter.enabled { FinderEnter.shared.start() }
+        if ScreenRecAuto.enabled { ScreenRecAuto.shared.start() }
+        if FinderDelete.enabled || FinderDelete.shiftEnabled { FinderDelete.shared.start() }
         FinderNew.shared.registerURLHandler()
         registerFinderNewHotkey()
         if FinderNew.enabled || FinderNew.sortEnabled { FinderNew.shared.start() }

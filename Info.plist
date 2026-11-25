@@ -8,8 +8,8 @@
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundleExecutable</key><string>StartForMac</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>11.6</string>
-    <key>CFBundleVersion</key><string>11.6</string>
+    <key>CFBundleShortVersionString</key><string>12.0</string>
+    <key>CFBundleVersion</key><string>12.0</string>
     <key>NSHumanReadableCopyright</key><string>© 2026 Andy Khristoforov</string>
     <key>CFBundleURLTypes</key>
     <array>
@@ -20,6 +20,9 @@
     </array>
     <key>LSMinimumSystemVersion</key><string>12.0</string>
     <key>NSAppleEventsUsageDescription</key><string>«Пуск» просит систему показать окно перезагрузки или выключения Mac (кнопка «Выключить / Перезагрузить»). / StartForMac asks the system to show the Mac restart or shut down window (the “Shut Down / Restart” button).</string>
+    <key>NSLocationUsageDescription</key><string>«Пуск» просит доступ к геолокации только для сканера Wi-Fi: без него macOS не показывает названия и каналы сетей. Место не определяется и не сохраняется. / StartForMac needs location access only for the Wi-Fi scanner: without it macOS hides network names and channels. Your location is not determined or stored.</string>
+    <key>NSLocationWhenInUseUsageDescription</key><string>«Пуск» просит доступ к геолокации только для сканера Wi-Fi: без него macOS не показывает названия и каналы сетей. Место не определяется и не сохраняется. / StartForMac needs location access only for the Wi-Fi scanner: without it macOS hides network names and channels. Your location is not determined or stored.</string>
+    <key>NSLocalNetworkUsageDescription</key><string>«Пуск» обращается к устройствам вашей сети в «Сетевых инструментах»: ping, проверка портов, поиск устройств. / StartForMac contacts devices on your network in the Network tools: ping, port check, device search.</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSAppTransportSecurity</key>
     <dict>
