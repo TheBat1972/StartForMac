@@ -26,7 +26,7 @@ Each tool opens in its own window and works independently of the main window.
 - **Duplicates and similar photos.** Exact copies are found by content, similar pictures by a reduced fingerprint of the image. Only what you tick goes to the Trash, you can tick any number of copies, and before deleting you see a warning if some group would be left with none. Folders can be excluded from the results (a tree with checkboxes or a button in a file row), and your choice is remembered.
 - **Disk analyzer** in the style of DaisyDisk: a pie chart of used space, folder navigation, moving to the Trash. When reopened, only changed folders are rescanned.
 - **Download and convert.** A large window with four sections:
-  - *YouTube download:* paste a link, choose the quality; the file goes to Downloads.
+  - *YouTube download:* paste a link, choose the quality; the file goes to Downloads. A “What if it fails?” button explains what to do if YouTube refuses.
   - *Audio converter:* any audio or video to MP3, M4A, FLAC, WAV, AIFF, OGG or Opus.
   - *Text and documents:* TXT, RTF, HTML, DOC, DOCX, ODT, Markdown, PDF, FB2 and EPUB into each other; pictures and scanned PDFs become text with the built-in macOS recognition, without the internet.
   - *Video converter:* MP4, MOV, MKV, WebM, AVI or GIF; codec, quality, resolution (as in the original, 4K, 1080p, 720p, 480p, 360p or custom), sound mode, trimming. Results of all converters are saved to Downloads.
@@ -41,7 +41,7 @@ Each tool opens in its own window and works independently of the main window.
 - **Automatic layout switcher** (off by default). Fixes a word typed in the wrong layout; leaves website addresses alone; apps can be excluded. The `⌃⌥Space` hotkey fixes the last word or the selected text. Typed text is not saved.
 - **Your own layout key.** Globe/fn or your own shortcut switches the layout.
 - **Layout flag.** A small indicator of the current layout with a flag, on screen and in the menu bar.
-- **Start icon.** Three modes in Settings: the regular Dock icon, a button next to the Dock, or a button on screen above all windows. Size and distance from the Dock are adjustable, and the icon background (color, transparency, saturation, outline; a live preview is shown in Settings) can be changed; the button magnifies with the Dock icons when Dock magnification is on; on macOS 26 and later the button is Liquid Glass. The picture on the icon can be swapped for one of eight and recolored.
+- **Start icon.** Three modes in Settings: the regular Dock icon, a button next to the Dock, or a button on screen above all windows. Size and distance from the Dock are adjustable, and the icon background (color, transparency, saturation, outline; a live preview is shown in Settings) can be changed; the button magnifies with the Dock icons when Dock magnification is on; on macOS 26 and later the button is Liquid Glass. The picture on the icon can be swapped for one of eight and recolored; magnification with the Dock can be switched off.
 - **Windows on Dock hover.** Window thumbnails of an app above its Dock icon.
 - **`⌥Tab` window switcher.** Window thumbnails, search and window buttons.
 - **Windows from the keyboard.** `⌃⌥` and the arrows put a window on half the screen, on the full screen, or minimize it.

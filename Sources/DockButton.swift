@@ -83,6 +83,11 @@ final class DockButton {
         let steps: [CGFloat] = light ? [0.20, 0.08, -0.05, -0.16] : [0.14, 0.04, -0.04, -0.12]
         return steps.map { f in f >= 0 ? (base.blended(withFraction: f, of: .white) ?? base) : (base.blended(withFraction: -f, of: .black) ?? base) }
     }
+    /// Увеличивать значок вместе с Dock (по умолчанию да); при выключенном значок остаётся обычного размера
+    static var magnify: Bool {
+        get { UserDefaults.standard.object(forKey: "dockButton.magnify") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "dockButton.magnify") }
+    }
     /// Тонкая серая окантовка значка (по умолчанию включена)
     static var iconOutline: Bool {
         get { UserDefaults.standard.object(forKey: "dockButton.iconOutline") as? Bool ?? true }
@@ -95,7 +100,7 @@ final class DockButton {
 
     /// Наибольшее увеличение значка при текущих настройках Dock (1, если «Увеличение» выключено). Курсор на кнопке при щелчке даёт именно его
     static func maxMagnification() -> CGFloat {
-        guard let d = UserDefaults(suiteName: "com.apple.dock"), d.bool(forKey: "magnification") else { return 1 }
+        guard magnify, let d = UserDefaults(suiteName: "com.apple.dock"), d.bool(forKey: "magnification") else { return 1 }
         let tile = CGFloat(d.double(forKey: "tilesize")), large = CGFloat(d.double(forKey: "largesize"))
         guard tile > 0, large > tile else { return 1 }
         return large / tile * magnifyCoef
@@ -360,7 +365,7 @@ final class DockButton {
 
     private func smoothedMagnification(_ geo: Geo, _ f: NSRect, screen: NSRect) -> CGFloat {
         var target: CGFloat = 1
-        if let d = UserDefaults(suiteName: "com.apple.dock"), d.bool(forKey: "magnification") {
+        if Self.magnify, let d = UserDefaults(suiteName: "com.apple.dock"), d.bool(forKey: "magnification") {
             let tile = CGFloat(d.double(forKey: "tilesize")), large = CGFloat(d.double(forKey: "largesize"))
             let m = NSEvent.mouseLocation
             // «На кнопке» считаем по самому широкому виду кнопки, а не по текущему: иначе граница области ездит вместе с шириной,

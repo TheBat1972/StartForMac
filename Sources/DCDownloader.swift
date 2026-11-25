@@ -251,6 +251,7 @@ final class Downloader: ObservableObject {
 struct DownloadView: View {
     @ObservedObject var d = Downloader.shared
     @ObservedObject var tm = ToolsManager.shared
+    @State private var showHelp = false
 
     var body: some View {
         SectionPage {
@@ -342,6 +343,18 @@ struct DownloadView: View {
                 }
                 Button(L("common.clearAll")) { d.clearWindow() }
                     .disabled(d.running || (d.urlText.isEmpty && d.log.isEmpty && d.lastFile == nil))
+                Button(L("yt.help.button")) { showHelp.toggle() }
+                    .popover(isPresented: $showHelp, arrowEdge: .top) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(L("yt.help.title")).font(.headline)
+                            Text(L("yt.help.body"))
+                                .font(.callout)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .textSelection(.enabled)
+                        }
+                        .padding(16)
+                        .frame(width: 420)
+                    }
                 if tm.ytDlpPath == nil {
                     Button(L("yt.install")) { tm.installYtDlp() }.disabled(tm.ytDlpBusy)
                 }

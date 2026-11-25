@@ -1,5 +1,20 @@
 # Что нового / What's new
 
+### Версия 11.6
+
+**Новое**
+- В загрузке с YouTube кнопка «Что делать при ошибке?»: подсказка из четырёх шагов, если YouTube просит подтвердить, что вы не бот (перезайти в аккаунт в Safari, выбрать другой браузер для cookies, обновить yt-dlp).
+- В настройках кнопки переключатель «Увеличение вместе с Dock»: выключите, и значок не растёт при наведении на Dock (по умолчанию включено).
+- Настройки значка «Пуска» перенесены с вкладки «Окна» на вкладку «Интерфейс», в отдельный раздел «Значок «Пуска»».
+- Версия 11.6.
+
+### Version 11.6
+
+- The YouTube download tool has a “What if it fails?” button: a four-step hint for when YouTube asks to confirm you're not a bot (sign in again in Safari, pick another browser for cookies, update yt-dlp).
+- A “Magnify with the Dock” switch in the button settings: turn it off and the icon no longer grows when you hover the Dock (on by default).
+- The Start button settings moved from the “Windows” tab to the “Interface” tab, into a separate “Start icon” section.
+- Version 11.6.
+
 ### Версия 11.5
 
 **Новое**
@@ -21,7 +36,7 @@
 
 **Новое**
 - Внутри кнопки «Пуска» вместо голых синих квадратов значок: скруглённый квадрат с фоном и тончайшей серой окантовкой и четырьмя синими окнами, чуть меньше значка Finder в Dock. При нажатии темнеют синие окна, а не сама кнопка.
-- Настройки фона значка (Настройки → «Окна»): цвет (белый, чёрный и цвета радуги: красный, оранжевый, жёлтый, зелёный, голубой, синий, фиолетовый), прозрачность и насыщенность (у белого и чёрного не действует), выключатель окантовки. По умолчанию белый фон, прозрачность 0%, насыщенность 74%, окантовка включена, расстояние от Dock минимальное.
+- Настройки фона значка (Настройки → «Интерфейс»): цвет (белый, чёрный и цвета радуги: красный, оранжевый, жёлтый, зелёный, голубой, синий, фиолетовый), прозрачность и насыщенность (у белого и чёрного не действует), выключатель окантовки. По умолчанию белый фон, прозрачность 0%, насыщенность 74%, окантовка включена, расстояние от Dock минимальное.
 - Кнопка увеличивается вместе с Dock (режим «Рядом с Dock»): когда в системе включено «Увеличение» и курсор над Dock, кнопка раздвигается вдоль Dock (по горизонтали от стороны Dock, у бокового Dock вверх и вниз поровну), а значок внутри растёт и приподнимается, как значки Dock, и может выходить за границы кнопки. Увеличение зависит от расстояния до кнопки: плавно растёт по пути к ней и затухает за ней, на самой кнопке значок максимальный. Предел задают только настройки Dock (размер увеличенных значков). Клик по значку, в том числе правой кнопкой, работает по всей его площади, и там, где он выше кнопки.
 - Размер кнопки пересчитан: прежние 142% (135% × 1,05) теперь 100% (по умолчанию), диапазон 60–160%; ползунок меняет кнопку и значок пропорционально, увеличение Dock умножает уже этот размер. Сохранённый ранее размер сбрасывается на 100%.
 - Кнопка плавнее едет за Dock: положение догоняется на каждом кадре (120 раз в секунду), а не прыжками по ответам опроса Dock.
@@ -35,7 +50,7 @@
 ### Version 11.4
 
 - Inside the Start button, instead of bare blue squares there is now an icon: a rounded square with a background and a hairline gray outline and four blue windows, slightly smaller than the Finder icon in the Dock. On press the blue windows darken instead of the button itself.
-- Icon background settings (Settings → “Windows”): color (white, black and the rainbow: red, orange, yellow, green, light blue, blue, violet), transparency and saturation (no effect for white and black), an outline switch. Default: white background, 0% transparency, 74% saturation, outline on, minimal distance from the Dock.
+- Icon background settings (Settings → “Interface”): color (white, black and the rainbow: red, orange, yellow, green, light blue, blue, violet), transparency and saturation (no effect for white and black), an outline switch. Default: white background, 0% transparency, 74% saturation, outline on, minimal distance from the Dock.
 - The button magnifies with the Dock (“Next to Dock” mode): when Dock magnification is on and the pointer is over the Dock, the button widens along the Dock (horizontally away from the Dock side, or up and down equally beside a side Dock) and the icon inside grows and lifts like the Dock icons, and may extend beyond the button. The magnification depends on the distance to the button: it grows smoothly on the way to it and fades behind it, and the icon is at maximum on the button itself. The limit is set only by the Dock settings (the size of magnified icons). A click on the icon, right button included, works over its whole area, also where it is taller than the button.
 - The button size is rescaled: the former 142% (135% × 1.05) is now 100% (default), range 60–160%; the slider scales the button and the icon proportionally, and Dock magnification multiplies that size. A previously saved size resets to 100%.
 - The button follows the Dock more smoothly: its position catches up on every frame (120 times a second) instead of jumping on each Dock poll.

@@ -566,6 +566,7 @@ final class MinimizeController: NSObject, ObservableObject {
     @Published var dockIconSaturation = DockButton.iconSaturation
     @Published var dockIconOutline = DockButton.iconOutline
     @Published var dockIconStyle = DockButton.iconStyle
+    @Published var dockMagnify = DockButton.magnify
     @Published var dockGlyphColor = DockButton.glyphColorIndex
     /// Автоматический переключатель раскладки, его сочетание, исключения и флаг раскладки (по умолчанию всё выключено)
     @Published var layoutOn = LayoutSwitcher.enabled
@@ -742,6 +743,12 @@ final class MinimizeController: NSObject, ObservableObject {
     func setDockIconStyle(_ i: Int) {
         DockButton.iconStyle = i
         dockIconStyle = i
+        DockButton.shared.refresh()
+    }
+
+    func setDockMagnify(_ on: Bool) {
+        DockButton.magnify = on
+        dockMagnify = on
         DockButton.shared.refresh()
     }
 

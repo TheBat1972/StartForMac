@@ -364,6 +364,7 @@ private let translations: [String: String] = [
     "Закрыть «Пуск»": "Quit Start",
     "Окантовка значка": "Icon outline",
     "Рисунок значка": "Icon picture",
+    "Увеличение вместе с Dock": "Magnify with the Dock",
     "Цвет рисунка значка": "Icon picture color",
     "Сетка": "Grid",
     "Меню": "Menu",
