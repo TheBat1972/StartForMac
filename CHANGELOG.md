@@ -13,6 +13,11 @@
 - Твик «⇧Delete в Finder — удалить мимо Корзины» (Настройки, по умолчанию выключен): ⇧Delete удаляет выделенные файлы сразу, как ⌥⌘⌫; Finder сам спрашивает подтверждение, вернуть такие файлы нельзя.
 - Автоконвертация записей экрана (Настройки → «Управление» → «Запись экрана», по умолчанию выключена): новая запись, сделанная стандартной утилитой (⇧⌘5), сама отправляется в «Загрузку и конвертацию» (раздел «Видео») с теми настройками, что там стоят сейчас; результат ложится в «Загрузки», оригинал остаётся. Второй переключатель решает, начнётся ли конвертация сразу или запись только встанет в очередь. Следим за папкой, куда утилита сохраняет записи; записи, лежавшие там раньше, не трогаются. Файл проверяется: расширение .mov, имя «Запись экрана …» и настоящий контейнер QuickTime. Подтверждение приходит плашкой справа внизу, как у ⌘X.
 
+**Исправлено**
+- «Внешние диски»: после форматирования программа проверяет, что macOS смонтировала новый том. Если нет, она пробует смонтировать его сама, а если не вышло, пишет об этом вместе с ответом системы и советует схему GPT, вместо того чтобы сообщить об успехе.
+- «Внешние диски»: если флешка не принимает выбранное имя (том не монтируется, как у одной Kingston с именем «Kingston»), программа сама форматирует её ещё раз с именем «USB» и пишет об этом, имя можно поменять в Finder.
+- «Внешние диски»: для FAT32 и FAT16 имя флешки с русскими и другими не латинскими буквами раньше приводило к ошибке форматирования без понятной причины. Теперь поле имени сразу подсказывает, что для FAT нужна латиница.
+
 ### Version 12.0
 
 - Eyedropper, ruler and protractor in one “Eyedropper and Ruler” window (Tools): the eyedropper takes the color of any point on the screen (HEX, RGB, HSL, last 16 colors), the ruler measures a dragged box in points and pixels, the protractor measures an angle with three clicks. No Screen Recording access is needed.
@@ -24,6 +29,11 @@
 - A “Delete in Finder — move to Trash” tweak (Settings, off by default): in Finder the Delete key (⌫ and ⌦) moves the selected files to the Trash, as in Windows, without ⌘. Files are not deleted permanently and can be put back from the Trash; in text fields, dialogs and sheets Delete stays normal. When turned on, the app asks for the “Accessibility” permission.
 - A “⇧Delete in Finder — delete permanently” tweak (Settings, off by default): ⇧Delete deletes the selected files at once, like ⌥⌘⌫; Finder asks for confirmation itself, and such files cannot be recovered.
 - Automatic conversion of screen recordings (Settings → Control → Screen recording, off by default): a new recording made with the standard utility (⇧⌘5) is sent to Download and Convert (the “Video” section) with the settings that are there now; the result goes to Downloads, the original stays. The second switch decides whether the conversion starts at once or the recording only joins the queue. We watch the folder where the utility saves recordings; recordings that were already there are left alone. The file is checked: a .mov extension, a “Screen Recording …” name and a real QuickTime container. A confirmation appears as a card at the bottom right, like with ⌘X.
+
+**Fixed**
+- “External drives”: after formatting, the app checks that macOS mounted the new volume. If not, it tries to mount it itself, and if that fails it says so with the system’s reply and suggests the GPT scheme, instead of reporting success.
+- “External drives”: if a drive does not accept the chosen name (the volume does not mount, as with one Kingston drive and the name “Kingston”), the app formats it once more with the name “USB” and says so; the name can be changed in Finder.
+- “External drives”: for FAT32 and FAT16 a name with Russian or other non-Latin letters used to make formatting fail for no clear reason. Now the name field says at once that FAT needs Latin letters.
 
 ### Версия 11.6
 

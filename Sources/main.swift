@@ -3702,6 +3702,8 @@ final class FormatModel: ObservableObject {
         if n.count > kind.maxName { return Tf("Имя слишком длинное (максимум %@ символов)", "\(kind.maxName)") }
         let bad: Set<Character> = (kind == .hfs || kind == .apfs) ? ["/", ":"] : Set("*?.,;:/\\|+=<>[]\"")
         if n.contains(where: { bad.contains($0) }) || n.hasPrefix("-") { return T("В имени есть недопустимые символы") }
+        // у FAT имя хранится в однобайтной кодировке: кириллица и прочее не латинское diskutil не принимает
+        if kind.isFAT && n.contains(where: { !$0.isASCII }) { return T("Для FAT имя только латиницей: буквы, цифры, пробел, - и _") }
         return nil
     }
 
@@ -3783,6 +3785,16 @@ final class FormatModel: ObservableObject {
         return out
     }
 
+    /// Хотя бы один раздел диска смонтирован (после форматирования macOS обычно монтирует новый том сама)
+    private static func volumeMounted(_ disk: String) -> Bool {
+        guard let list = plist(["list", "-plist", disk]),
+              let first = (list["AllDisksAndPartitions"] as? [[String: Any]])?.first else { return false }
+        for p in first["Partitions"] as? [[String: Any]] ?? [] {
+            if let mp = p["MountPoint"] as? String, !mp.isEmpty { return true }
+        }
+        return false
+    }
+
     private static func resultFS(_ disk: String) -> String {
         guard let list = plist(["list", "-plist", disk]),
               let first = (list["AllDisksAndPartitions"] as? [[String: Any]])?.first else { return "" }
@@ -3816,7 +3828,39 @@ final class FormatModel: ObservableObject {
                 if r.ok { out = r.output; code = r.detail.isEmpty ? 0 : 1 } else { out = r.detail; code = 1 }
             }
             let fs = code == 0 ? FormatModel.resultFS(d.id) : ""
+            // проверяем, что Mac и правда видит новый том; если нет — пробуем смонтировать и честно говорим, если не вышло
+            var mountNote = ""
+            var fallbackName = ""
+            if code == 0 && !FormatModel.volumeMounted(d.id) {
+                let r = FormatModel.runTool("/usr/sbin/diskutil", ["mountDisk", d.id], mergeErrors: true, timeout: 30)
+                if !FormatModel.volumeMounted(d.id) {
+                    let t = (String(data: r.1, encoding: .utf8) ?? "").split(separator: "\n").suffix(2).joined(separator: "\n")
+                    mountNote = t.isEmpty ? "—" : String(t.prefix(300))
+                    // некоторые имена флешка не принимает (том не монтируется): пробуем то же самое с именем «USB»
+                    if name != "USB" {
+                        let r2 = FormatModel.runTool("/usr/sbin/diskutil", ["eraseDisk", kind.personality, "USB", scheme, d.id],
+                                                     mergeErrors: true, timeout: 900)
+                        if r2.0 == 0 && FormatModel.volumeMounted(d.id) { mountNote = ""; fallbackName = name }
+                    }
+                }
+            }
             DispatchQueue.main.async {
+                if !fallbackName.isEmpty {
+                    self.resultOK = true
+                    self.resultFS = fs.isEmpty ? kind.title : fs
+                    self.resultText = Tf("Имя «%@» эта флешка не приняла: том не монтировался. Диск отформатирован с именем «USB», его можно переименовать в Finder.", fallbackName)
+                    self.ejectNote = ""
+                    self.stage = .done
+                    return
+                }
+                if !mountNote.isEmpty {
+                    self.resultOK = false
+                    self.resultFS = fs.isEmpty ? kind.title : fs
+                    self.resultText = Tf("Диск отформатирован, но macOS не смонтировала том: %@", mountNote) + "\n" + T("Попробуйте схему GPT или другой формат.")
+                    self.ejectNote = ""
+                    self.stage = .done
+                    return
+                }
                 self.resultOK = code == 0
                 self.resultFS = fs.isEmpty ? kind.title : fs
                 let lines = out.split(separator: "\n").suffix(3).joined(separator: "\n")
