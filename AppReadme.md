@@ -41,7 +41,7 @@ Each tool opens in its own window and works independently of the main window.
 - **Automatic layout switcher** (off by default). Fixes a word typed in the wrong layout; leaves website addresses alone; apps can be excluded. The `⌃⌥Space` hotkey fixes the last word or the selected text. Typed text is not saved.
 - **Your own layout key.** Globe/fn or your own shortcut switches the layout.
 - **Layout flag.** A small indicator of the current layout with a flag, on screen and in the menu bar.
-- **Start icon.** Three modes in Settings: the regular Dock icon, a button next to the Dock, or a button on screen above all windows. Size and distance from the Dock are adjustable, and the icon background (color, transparency, saturation, outline) can be changed; the button magnifies with the Dock icons when Dock magnification is on; on macOS 26 and later the button is Liquid Glass.
+- **Start icon.** Three modes in Settings: the regular Dock icon, a button next to the Dock, or a button on screen above all windows. Size and distance from the Dock are adjustable, and the icon background (color, transparency, saturation, outline; a live preview is shown in Settings) can be changed; the button magnifies with the Dock icons when Dock magnification is on; on macOS 26 and later the button is Liquid Glass. The picture on the icon can be swapped for one of eight and recolored.
 - **Windows on Dock hover.** Window thumbnails of an app above its Dock icon.
 - **`⌥Tab` window switcher.** Window thumbnails, search and window buttons.
 - **Windows from the keyboard.** `⌃⌥` and the arrows put a window on half the screen, on the full screen, or minimize it.

@@ -24,24 +24,64 @@ final class DockButton {
         set { UserDefaults.standard.set(newValue, forKey: "dockButton.size") }
     }
 
-    /// Фон значка внутри кнопки: белый, чёрный или цвет радуги, прозрачность и насыщенность
+    /// Фон значка внутри кнопки: белый, чёрный, серый или цвет радуги, прозрачность и насыщенность
     static let iconPalette: [(name: String, hue: CGFloat, sat: CGFloat, bri: CGFloat)] = [
-        ("Белый", 0, 0, 1), ("Чёрный", 0, 0, 0), ("Красный", 0, 1, 0.95), ("Оранжевый", 0.07, 1, 1), ("Жёлтый", 0.14, 1, 1),
-        ("Зелёный", 0.33, 1, 0.85), ("Голубой", 0.5, 1, 1), ("Синий", 0.62, 1, 1), ("Фиолетовый", 0.78, 1, 0.9)
+        ("Белый", 0, 0, 1), ("Чёрный", 0, 0, 0), ("Серый", 0, 0, 0.5),
+        ("Красный", 0, 1, 0.95), ("Оранжевый", 0.07, 1, 1), ("Жёлтый", 0.14, 1, 1), ("Зелёный", 0.33, 1, 0.85),
+        ("Голубой", 0.57, 0.55, 1), ("Синий", 0.62, 1, 1), ("Фиолетовый", 0.78, 1, 0.9)
     ]
+    /// Выбранный цвет хранится по названию (порядок в палитре может меняться); до версии 11.5 хранился номер в прежнем порядке
     static var iconColorIndex: Int {
-        get { min(max(UserDefaults.standard.object(forKey: "dockButton.iconColor") as? Int ?? 0, 0), iconPalette.count - 1) }
-        set { UserDefaults.standard.set(newValue, forKey: "dockButton.iconColor") }
+        get {
+            let legacy = ["Белый", "Чёрный", "Красный", "Оранжевый", "Жёлтый", "Зелёный", "Голубой", "Синий", "Фиолетовый"]
+            var name = UserDefaults.standard.string(forKey: "dockButton.iconColorName")
+            if name == nil, let old = UserDefaults.standard.object(forKey: "dockButton.iconColor") as? Int, old >= 0, old < legacy.count { name = legacy[old] }
+            return iconPalette.firstIndex { $0.name == name } ?? 0
+        }
+        set { UserDefaults.standard.set(iconPalette[min(max(newValue, 0), iconPalette.count - 1)].name, forKey: "dockButton.iconColorName") }
     }
-    /// Непрозрачность фона значка 0…1 (по умолчанию 0,10)
+    /// Непрозрачность фона значка 0…1 (по умолчанию 1: прозрачность 0%)
     static var iconAlpha: Double {
-        get { min(max(UserDefaults.standard.object(forKey: "dockButton.iconAlpha") as? Double ?? 0.10, 0), 1) }
+        get { min(max(UserDefaults.standard.object(forKey: "dockButton.iconAlpha") as? Double ?? 1, 0), 1) }
         set { UserDefaults.standard.set(newValue, forKey: "dockButton.iconAlpha") }
     }
-    /// Насыщенность цвета фона 0…1 (по умолчанию 1); у белого и чёрного не действует
+    /// Насыщенность цвета фона 0…1 (по умолчанию 0,74); у белого и чёрного не действует
     static var iconSaturation: Double {
-        get { min(max(UserDefaults.standard.object(forKey: "dockButton.iconSat") as? Double ?? 1, 0), 1) }
+        get { min(max(UserDefaults.standard.object(forKey: "dockButton.iconSat") as? Double ?? 0.74, 0), 1) }
         set { UserDefaults.standard.set(newValue, forKey: "dockButton.iconSat") }
+    }
+    /// Рисунок внутри значка: окна (по умолчанию), сетка, меню, звезда, домик, выключатель, флаг, ромб из окон
+    static let iconStyleNames = ["Окна", "Сетка", "Меню", "Звезда", "Домик", "Выключатель", "Флаг", "Ромб"]
+    static var iconStyle: Int {
+        get { min(max(UserDefaults.standard.object(forKey: "dockButton.iconStyle") as? Int ?? 0, 0), iconStyleNames.count - 1) }
+        set { UserDefaults.standard.set(newValue, forKey: "dockButton.iconStyle") }
+    }
+    /// Цвет самого рисунка: первый, «Синий», — прежние оттенки; остальные считаются от базового цвета
+    static let glyphPalette: [(name: String, hue: CGFloat, sat: CGFloat, bri: CGFloat)] = [
+        ("Синий", 0.595, 0.90, 0.96), ("Белый", 0, 0, 1), ("Чёрный", 0, 0, 0.08), ("Серый", 0, 0, 0.55),
+        ("Красный", 0, 0.9, 0.95), ("Оранжевый", 0.07, 0.95, 1), ("Жёлтый", 0.14, 0.9, 1), ("Зелёный", 0.33, 0.85, 0.80),
+        ("Голубой", 0.55, 0.60, 1), ("Фиолетовый", 0.78, 0.7, 0.9)
+    ]
+    static var glyphColorIndex: Int {
+        get { glyphPalette.firstIndex { $0.name == UserDefaults.standard.string(forKey: "dockButton.glyphColorName") } ?? 0 }
+        set { UserDefaults.standard.set(glyphPalette[min(max(newValue, 0), glyphPalette.count - 1)].name, forKey: "dockButton.glyphColorName") }
+    }
+    static var glyphColor: NSColor {
+        let c = glyphPalette[glyphColorIndex]
+        return NSColor(calibratedHue: c.hue, saturation: c.sat, brightness: c.bri, alpha: 1)
+    }
+    /// Четыре оттенка рисунка от светлого к тёмному (для окон, флага, ромба); light — более светлый набор флага
+    static func glyphShades(light: Bool) -> [NSColor] {
+        if glyphColorIndex == 0 {
+            return light
+                ? [NSColor(calibratedRed: 0.35, green: 0.72, blue: 1.00, alpha: 1), NSColor(calibratedRed: 0.20, green: 0.62, blue: 0.98, alpha: 1),
+                   NSColor(calibratedRed: 0.14, green: 0.54, blue: 0.94, alpha: 1), NSColor(calibratedRed: 0.06, green: 0.46, blue: 0.88, alpha: 1)]
+                : [NSColor(calibratedRed: 0.20, green: 0.64, blue: 1.00, alpha: 1), NSColor(calibratedRed: 0.10, green: 0.55, blue: 0.96, alpha: 1),
+                   NSColor(calibratedRed: 0.08, green: 0.50, blue: 0.92, alpha: 1), NSColor(calibratedRed: 0.04, green: 0.44, blue: 0.86, alpha: 1)]
+        }
+        let base = glyphColor
+        let steps: [CGFloat] = light ? [0.20, 0.08, -0.05, -0.16] : [0.14, 0.04, -0.04, -0.12]
+        return steps.map { f in f >= 0 ? (base.blended(withFraction: f, of: .white) ?? base) : (base.blended(withFraction: -f, of: .black) ?? base) }
     }
     /// Тонкая серая окантовка значка (по умолчанию включена)
     static var iconOutline: Bool {
@@ -69,11 +109,11 @@ final class DockButton {
         get { min(max(UserDefaults.standard.object(forKey: "dockButton.mode") as? Int ?? 0, 0), 1) }
         set { UserDefaults.standard.set(newValue, forKey: "dockButton.mode") }
     }
-    /// Расстояние от Dock в режиме «Рядом с Dock»: 0…1 — от 3 pt до двух значков Dock (по умолчанию 8 pt, как было)
+    /// Расстояние от Dock в режиме «Рядом с Dock»: 0…1 — от 3 pt до двух значков Dock (по умолчанию минимальное, 3 pt)
     static var gapFraction: Double {
         get {
             if let v = UserDefaults.standard.object(forKey: "dockButton.gap") as? Double { return min(max(v, 0), 1) }
-            return (8 - minGap) / max(maxGap - minGap, 1)
+            return 0
         }
         set { UserDefaults.standard.set(newValue, forKey: "dockButton.gap") }
     }
@@ -416,13 +456,17 @@ final class DockButton {
 
     /// Значок внутри кнопки пропорционален ей: при размере 100% он на 10% меньше значка Finder в Dock (0,81 tilesize при кнопке 1,35 tilesize),
     /// ползунок размера меняет кнопку и значок вместе, увеличение Dock умножает уже этот размер
-    private func iconSize(button s: CGFloat) -> CGFloat { (s * 0.81 / 1.35).rounded() }
+    private func iconSize(button s: CGFloat) -> CGFloat { Self.iconSide(button: s) }
+    static func iconSide(button s: CGFloat) -> CGFloat { (s * 0.81 / 1.35).rounded() }
 
     /// Размер — как у значка Dock (tilesize), с поправкой на выбранный размер кнопки
-    private func buttonSize(fallback: CGFloat) -> CGFloat {
+    private func buttonSize(fallback: CGFloat) -> CGFloat { Self.buttonSide(fallback: fallback) }
+
+    /// Сторона кнопки при текущих настройках (её же рисует и образец в настройках)
+    static func buttonSide(fallback: CGFloat = 64) -> CGFloat {
         let tile = CGFloat(UserDefaults(suiteName: "com.apple.dock")?.double(forKey: "tilesize") ?? 0)
         let base = tile > 0 ? tile : max(fallback, 48)
-        return min(max((base * 1.35 * CGFloat(Self.sizeScale)).rounded(), 28), 300)
+        return min(max((base * 1.4175 * CGFloat(sizeScale)).rounded(), 28), 300)
     }
 
     /// Режим «На экране»: кнопка стоит там, где её оставили, поверх всех окон
@@ -608,7 +652,7 @@ final class DockButtonPanel: NSPanel {
 }
 
 /// Значок «Пуска»: белый (10%) скруглённый квадрат с тончайшей серой окантовкой и четырьмя синими окнами (как в Windows).
-private func drawStartIcon(in r: NSRect, dim: CGFloat = 0) {
+private func drawStartIcon(in r: NSRect, dim: CGFloat = 0, style: Int? = nil) {
     let w = r.width
     let radius = w * 0.225
     let shape = NSBezierPath(roundedRect: r.insetBy(dx: 0.25, dy: 0.25), xRadius: radius, yRadius: radius)
@@ -619,18 +663,119 @@ private func drawStartIcon(in r: NSRect, dim: CGFloat = 0) {
         shape.lineWidth = 0.5
         shape.stroke()
     }
-    let block = w * 0.46 / 0.9, gap = block * 0.1      // окна остались прежнего размера, хотя значок стал на 10% меньше
-    let p = (block - gap) / 2
-    let x0 = r.midX - block / 2, y0 = r.midY - block / 2
-    let colors = [NSColor(calibratedRed: 0.20, green: 0.64, blue: 1.00, alpha: 1),
-                  NSColor(calibratedRed: 0.10, green: 0.55, blue: 0.96, alpha: 1),
-                  NSColor(calibratedRed: 0.08, green: 0.50, blue: 0.92, alpha: 1),
-                  NSColor(calibratedRed: 0.04, green: 0.44, blue: 0.86, alpha: 1)]
-    for row in 0..<2 {
-        for col in 0..<2 {
-            let q = NSRect(x: x0 + CGFloat(col) * (p + gap), y: y0 + CGFloat(1 - row) * (p + gap), width: p, height: p)
-            (colors[row * 2 + col].blended(withFraction: dim, of: .black) ?? colors[row * 2 + col]).setFill()      // при нажатии темнеют синие окна
-            NSBezierPath(roundedRect: q, xRadius: w * 0.022, yRadius: w * 0.022).fill()
+    func dimmed(_ c: NSColor) -> NSColor { c.blended(withFraction: dim, of: .black) ?? c }      // при нажатии темнеет рисунок, а не кнопка
+    let blue = dimmed(DockButton.glyphColorIndex == 0 ? NSColor(calibratedRed: 0.10, green: 0.55, blue: 0.96, alpha: 1) : DockButton.glyphColor)
+    let block = w * 0.46 / 0.9               // сторона рисунка: прежний размер синих окон
+    let cx = r.midX, cy = r.midY
+    switch style ?? DockButton.iconStyle {
+    case 1:      // сетка 3×3
+        let cell = block / 3.5, gap = cell * 0.25
+        let x0 = cx - (cell * 3 + gap * 2) / 2, y0 = cy - (cell * 3 + gap * 2) / 2
+        blue.setFill()
+        for row in 0..<3 { for col in 0..<3 {
+            NSBezierPath(roundedRect: NSRect(x: x0 + CGFloat(col) * (cell + gap), y: y0 + CGFloat(row) * (cell + gap), width: cell, height: cell), xRadius: cell * 0.25, yRadius: cell * 0.25).fill()
+        } }
+    case 2:      // меню: три полосы
+        let h = block * 0.17, gap = block * 0.19
+        blue.setFill()
+        for i in 0..<3 {
+            let y = cy - (h * 3 + gap * 2) / 2 + CGFloat(i) * (h + gap)
+            NSBezierPath(roundedRect: NSRect(x: cx - block / 2, y: y, width: block, height: h), xRadius: h / 2, yRadius: h / 2).fill()
+        }
+    case 3:      // звезда
+        let outer = block * 0.58, inner = outer * 0.45
+        let star = NSBezierPath()
+        for i in 0..<10 {
+            let a = CGFloat.pi / 2 + CGFloat(i) * .pi / 5
+            let rad = i % 2 == 0 ? outer : inner
+            let pt = NSPoint(x: cx + cos(a) * rad, y: cy + sin(a) * rad - outer * 0.06)
+            i == 0 ? star.move(to: pt) : star.line(to: pt)
+        }
+        star.close()
+        star.lineJoinStyle = .round
+        blue.setFill()
+        star.fill()
+    case 4:      // домик
+        let hw = block * 0.52, top = cy + block * 0.56, eaves = cy + block * 0.08, bottom = cy - block * 0.5
+        let house = NSBezierPath()
+        house.move(to: NSPoint(x: cx, y: top))
+        house.line(to: NSPoint(x: cx + hw, y: eaves))
+        house.line(to: NSPoint(x: cx + hw * 0.78, y: eaves))
+        house.line(to: NSPoint(x: cx + hw * 0.78, y: bottom))
+        house.line(to: NSPoint(x: cx - hw * 0.78, y: bottom))
+        house.line(to: NSPoint(x: cx - hw * 0.78, y: eaves))
+        house.line(to: NSPoint(x: cx - hw, y: eaves))
+        house.close()
+        house.appendRect(NSRect(x: cx - block * 0.13, y: bottom, width: block * 0.26, height: block * 0.4))      // дверь
+        house.windingRule = .evenOdd
+        blue.setFill()
+        house.fill()
+    case 5:      // выключатель: кольцо с разрывом сверху и палочка
+        let rad = block * 0.42, lw = block * 0.15
+        let ring = NSBezierPath()
+        ring.appendArc(withCenter: NSPoint(x: cx, y: cy - block * 0.03), radius: rad, startAngle: 120, endAngle: 60, clockwise: false)
+        ring.lineWidth = lw
+        ring.lineCapStyle = .round
+        let stick = NSBezierPath()
+        stick.move(to: NSPoint(x: cx, y: cy + block * 0.12))
+        stick.line(to: NSPoint(x: cx, y: cy + block * 0.52))
+        stick.lineWidth = lw
+        stick.lineCapStyle = .round
+        blue.setStroke()
+        ring.stroke()
+        stick.stroke()
+    case 6:      // голубой флаг в стиле Windows 7: четыре волнистых стекла
+        let colors = DockButton.glyphShades(light: true)
+        let gap = block * 0.07
+        let pw = (block - gap) / 2 + block * 0.02, ph = (block - gap) / 2
+        let x0 = cx - block * 0.53, yTop = cy + block * 0.5
+        for row in 0..<2 {
+            for col in 0..<2 {
+                // левые стекла ниже и чуть выше сверху: флаг «развевается»
+                let ox = x0 + CGFloat(col) * (pw + gap) + CGFloat(row) * block * 0.02
+                let wave = block * 0.08
+                let dy: CGFloat = col == 0 ? 0 : wave
+                let top = yTop - CGFloat(row) * (ph + gap) + dy - wave * 0.5
+                let q = NSBezierPath()
+                q.move(to: NSPoint(x: ox, y: top - dy * 0.0))
+                q.curve(to: NSPoint(x: ox + pw, y: top + (col == 0 ? wave : -wave) * 0.9 + dy * 0),
+                        controlPoint1: NSPoint(x: ox + pw * 0.35, y: top + wave * 0.9),
+                        controlPoint2: NSPoint(x: ox + pw * 0.65, y: top - wave * 0.9))
+                q.line(to: NSPoint(x: ox + pw, y: top + (col == 0 ? wave : -wave) * 0.9 - ph))
+                q.curve(to: NSPoint(x: ox, y: top - ph),
+                        controlPoint1: NSPoint(x: ox + pw * 0.65, y: top - ph - wave * 0.9),
+                        controlPoint2: NSPoint(x: ox + pw * 0.35, y: top - ph + wave * 0.9))
+                q.close()
+                dimmed(colors[row * 2 + col]).setFill()
+                q.fill()
+            }
+        }
+    case 7:      // ромб из четырёх голубых окон, вершина вверху
+        let gap = block * 0.08
+        let p = (block * 0.72 - gap) / 2
+        var t = AffineTransform(translationByX: cx, byY: cy)
+        t.rotate(byDegrees: 45)
+        let colors = DockButton.glyphShades(light: true)
+        for row in 0..<2 {
+            for col in 0..<2 {
+                let q = NSRect(x: (CGFloat(col) - 1) * (p + gap) + gap / 2, y: (CGFloat(1 - row) - 1) * (p + gap) + gap / 2 , width: p, height: p)
+                let path = NSBezierPath(roundedRect: q, xRadius: p * 0.12, yRadius: p * 0.12)
+                path.transform(using: t)
+                dimmed(colors[row * 2 + col]).setFill()
+                path.fill()
+            }
+        }
+    default:     // четыре окна
+        let gap = block * 0.1
+        let p = (block - gap) / 2
+        let x0 = cx - block / 2, y0 = cy - block / 2
+        let colors = DockButton.glyphShades(light: false)
+        for row in 0..<2 {
+            for col in 0..<2 {
+                let q = NSRect(x: x0 + CGFloat(col) * (p + gap), y: y0 + CGFloat(1 - row) * (p + gap), width: p, height: p)
+                dimmed(colors[row * 2 + col]).setFill()
+                NSBezierPath(roundedRect: q, xRadius: w * 0.022, yRadius: w * 0.022).fill()
+            }
         }
     }
 }
@@ -821,4 +966,87 @@ private final class DockButtonView: NSView {
     @objc private func menuSettings() { onSettings?() }
     @objc private func menuHide() { onHide?() }
     @objc private func menuQuit() { NSApp.terminate(nil) }
+}
+
+
+/// Образец кнопки для настроек: то же стекло (или материал на старых macOS) и тот же значок, что у настоящей кнопки;
+/// перерисовывается при любой настройке, поэтому меняется в реальном времени
+final class DockButtonPreviewView: NSView {
+    private var backdrop: NSView!
+    private let icon = DockPreviewIconView()
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        if DockButton.usesGlass, #available(macOS 26.0, *) {
+            let g = NSGlassEffectView()
+            g.style = .clear
+            backdrop = g
+        } else {
+            let v = NSVisualEffectView()
+            v.material = .hudWindow
+            v.blendingMode = .behindWindow
+            v.state = .active
+            backdrop = v
+            layer?.masksToBounds = true
+        }
+        backdrop.frame = bounds
+        backdrop.autoresizingMask = [.width, .height]
+        addSubview(backdrop)
+        icon.frame = bounds
+        icon.autoresizingMask = [.width, .height]
+        if #available(macOS 26.0, *), let g = backdrop as? NSGlassEffectView {
+            g.contentView = icon
+        } else {
+            addSubview(icon)
+        }
+        update()
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    /// Вызывается при изменении любой настройки кнопки
+    func update() {
+        icon.iconSize = DockButton.iconSide(button: DockButton.buttonSide())
+        icon.needsDisplay = true
+        applyTint()
+        needsLayout = true
+    }
+
+    private func applyTint() {
+        guard #available(macOS 26.0, *), let g = backdrop as? NSGlassEffectView else { return }
+        let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        g.tintColor = NSColor.black.withAlphaComponent(dark ? 0.21 : 0.16)
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applyTint()
+    }
+
+    override func layout() {
+        super.layout()
+        let radius = min(bounds.width, bounds.height) * 0.3
+        layer?.cornerRadius = radius
+        if #available(macOS 26.0, *), let g = backdrop as? NSGlassEffectView { g.cornerRadius = radius }
+    }
+}
+
+private final class DockPreviewIconView: NSView {
+    var iconSize: CGFloat = 0
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func draw(_ dirtyRect: NSRect) {
+        let size = iconSize > 0 ? iconSize : min(bounds.width, bounds.height) * 0.6
+        drawStartIcon(in: NSRect(x: (bounds.width - size) / 2, y: (bounds.height - size) / 2, width: size, height: size))
+    }
+}
+
+
+extension DockButton {
+    /// Картинка значка для выбора рисунка в настройках (с текущим фоном и окантовкой)
+    static func iconThumbnail(style: Int, side: CGFloat) -> NSImage {
+        NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
+            drawStartIcon(in: rect.insetBy(dx: 1, dy: 1), style: style)
+            return true
+        }
+    }
 }

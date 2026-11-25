@@ -6825,48 +6825,84 @@ struct SettingsView: View {
                             Text(T("«В Dock» — обычный значок программы, как всегда. «Рядом с Dock» — «Пуск» рисует свою кнопку из четырёх квадратов вплотную к Dock (слева от него, а если Dock сбоку, то под ним) и двигает её вслед за Dock; для этого нужен доступ «Управление устройством и доступ к данным» (в ранних версиях macOS: «Универсальный доступ»), программа запросит его при выборе. «На экране» — та же кнопка стоит там, где её оставили, поверх всех окон, и за Dock не следит; её можно перетащить мышью. В двух последних режимах обычный значок «Пуска» убирается из Dock, а при возврате в режим «В Dock» возвращается на место. Клик по кнопке открывает и закрывает «Пуск», правый клик — меню. Размер и расстояние от Dock относятся только к кнопке."))
                                 .font(.caption).foregroundColor(.secondary)
                             if mc.dockButtonOn {
-                                if mc.dockButtonMode == 0 {
-                                    HStack {
-                                        Text(T("Расстояние от Dock"))
-                                        Slider(value: Binding(get: { mc.dockButtonGap }, set: { mc.setDockButtonGap($0) }), in: 0...1)
-                                            .frame(width: 180)
+                                // настройки кнопки слева, а справа от них по середине образец кнопки: меняется сразу
+                                HStack(alignment: .center, spacing: 0) {
+                                    VStack(alignment: .leading, spacing: 8) {
+                                    if mc.dockButtonMode == 0 {
+                                        HStack {
+                                            Text(T("Расстояние от Dock"))
+                                            Slider(value: Binding(get: { mc.dockButtonGap }, set: { mc.setDockButtonGap($0) }), in: 0...1)
+                                                .frame(width: 180)
+                                        }
                                     }
+                                    HStack {
+                                        Text(T("Размер кнопки"))
+                                        Slider(value: Binding(get: { mc.dockButtonSize }, set: { mc.setDockButtonSize($0) }), in: 0.6...1.6)
+                                            .frame(width: 180)
+                                        Text("\(Int((mc.dockButtonSize * 100).rounded())) %")
+                                            .monospacedDigit().foregroundColor(.secondary).frame(width: 44, alignment: .trailing)
+                                    }
+                                    HStack(spacing: 8) {
+                                        Text(T("Цвет фона значка"))
+                                        ForEach(0..<DockButton.iconPalette.count, id: \.self) { i in
+                                            let c = DockButton.iconPalette[i]
+                                            Button { mc.setDockIconColor(i) } label: {
+                                                Circle().fill(Color(NSColor(calibratedHue: c.hue, saturation: c.sat, brightness: c.bri, alpha: 1)))
+                                                    .frame(width: 18, height: 18)
+                                                    .overlay(Circle().stroke(mc.dockIconColor == i ? Color.accentColor : Color.gray.opacity(0.6), lineWidth: mc.dockIconColor == i ? 2.5 : 1))
+                                            }
+                                            .buttonStyle(.plain).help(T(c.name))
+                                        }
+                                    }
+                                    HStack {
+                                        Text(T("Прозрачность фона значка"))
+                                        Slider(value: Binding(get: { 1 - mc.dockIconAlpha }, set: { mc.setDockIconAlpha(1 - $0) }), in: 0...1)
+                                            .frame(width: 180)
+                                        Text("\(Int(((1 - mc.dockIconAlpha) * 100).rounded())) %")
+                                            .monospacedDigit().foregroundColor(.secondary).frame(width: 44, alignment: .trailing)
+                                    }
+                                    HStack {
+                                        Text(T("Насыщенность фона значка"))
+                                        Slider(value: Binding(get: { mc.dockIconSaturation }, set: { mc.setDockIconSaturation($0) }), in: 0...1)
+                                            .frame(width: 180)
+                                            .disabled(DockButton.iconPalette[mc.dockIconColor].sat == 0)
+                                        Text("\(Int((mc.dockIconSaturation * 100).rounded())) %")
+                                            .monospacedDigit().foregroundColor(.secondary).frame(width: 44, alignment: .trailing)
+                                    }
+                                    }
+                                    .fixedSize(horizontal: true, vertical: false)
+                                    Spacer()
+                                    DockButtonPreview(key: "\(mc.dockButtonSize)|\(mc.dockIconColor)|\(mc.dockIconAlpha)|\(mc.dockIconSaturation)|\(mc.dockIconOutline)|\(mc.dockIconStyle)|\(mc.dockGlyphColor)")
+                                        .frame(width: DockButton.buttonSide(), height: DockButton.buttonSide())
+                                    Spacer()
                                 }
-                                HStack {
-                                    Text(T("Размер кнопки"))
-                                    Slider(value: Binding(get: { mc.dockButtonSize }, set: { mc.setDockButtonSize($0) }), in: 0.6...1.6)
-                                        .frame(width: 180)
-                                    Text("\(Int((mc.dockButtonSize * 100).rounded())) %")
-                                        .monospacedDigit().foregroundColor(.secondary).frame(width: 44, alignment: .trailing)
+                                toggleRow(T("Окантовка значка"), mc.dockIconOutline) { mc.setDockIconOutline($0) }
+                                HStack(spacing: 8) {
+                                    Text(T("Рисунок значка"))
+                                    ForEach(0..<DockButton.iconStyleNames.count, id: \.self) { i in
+                                        Button { mc.setDockIconStyle(i) } label: {
+                                            Image(nsImage: DockButton.iconThumbnail(style: i, side: 34))
+                                                .padding(2)
+                                                .background(RoundedRectangle(cornerRadius: 9).fill(Color.gray.opacity(0.12)))
+                                                .overlay(RoundedRectangle(cornerRadius: 9).stroke(mc.dockIconStyle == i ? Color.accentColor : Color.clear, lineWidth: 2))
+                                        }
+                                        .buttonStyle(.plain).help(T(DockButton.iconStyleNames[i]))
+                                    }
+                                    Spacer()
                                 }
                                 HStack(spacing: 8) {
-                                    Text(T("Цвет фона значка"))
-                                    ForEach(0..<DockButton.iconPalette.count, id: \.self) { i in
-                                        let c = DockButton.iconPalette[i]
-                                        Button { mc.setDockIconColor(i) } label: {
+                                    Text(T("Цвет рисунка значка"))
+                                    ForEach(0..<DockButton.glyphPalette.count, id: \.self) { i in
+                                        let c = DockButton.glyphPalette[i]
+                                        Button { mc.setDockGlyphColor(i) } label: {
                                             Circle().fill(Color(NSColor(calibratedHue: c.hue, saturation: c.sat, brightness: c.bri, alpha: 1)))
                                                 .frame(width: 18, height: 18)
-                                                .overlay(Circle().stroke(mc.dockIconColor == i ? Color.accentColor : Color.gray.opacity(0.6), lineWidth: mc.dockIconColor == i ? 2.5 : 1))
+                                                .overlay(Circle().stroke(mc.dockGlyphColor == i ? Color.accentColor : Color.gray.opacity(0.6), lineWidth: mc.dockGlyphColor == i ? 2.5 : 1))
                                         }
                                         .buttonStyle(.plain).help(T(c.name))
                                     }
+                                    Spacer()
                                 }
-                                HStack {
-                                    Text(T("Прозрачность фона значка"))
-                                    Slider(value: Binding(get: { 1 - mc.dockIconAlpha }, set: { mc.setDockIconAlpha(1 - $0) }), in: 0...1)
-                                        .frame(width: 180)
-                                    Text("\(Int(((1 - mc.dockIconAlpha) * 100).rounded())) %")
-                                        .monospacedDigit().foregroundColor(.secondary).frame(width: 44, alignment: .trailing)
-                                }
-                                HStack {
-                                    Text(T("Насыщенность фона значка"))
-                                    Slider(value: Binding(get: { mc.dockIconSaturation }, set: { mc.setDockIconSaturation($0) }), in: 0...1)
-                                        .frame(width: 180)
-                                        .disabled(mc.dockIconColor < 2)
-                                    Text("\(Int((mc.dockIconSaturation * 100).rounded())) %")
-                                        .monospacedDigit().foregroundColor(.secondary).frame(width: 44, alignment: .trailing)
-                                }
-                                toggleRow(T("Окантовка значка"), mc.dockIconOutline) { mc.setDockIconOutline($0) }
                             }
                         }
         }
@@ -7042,6 +7078,13 @@ struct SettingsWindowRoot: View {
     var body: some View {
         SettingsView(store: store, mc: mc, resetPlacement: resetPlacement).id(store.language)
     }
+}
+
+/// Образец кнопки «Пуска» в настройках; key меняется при любой настройке, и вид обновляется
+struct DockButtonPreview: NSViewRepresentable {
+    let key: String
+    func makeNSView(context: Context) -> DockButtonPreviewView { DockButtonPreviewView() }
+    func updateNSView(_ v: DockButtonPreviewView, context: Context) { v.update() }
 }
 
 final class SettingsWindowController: NSObject, NSWindowDelegate {

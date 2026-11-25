@@ -1,12 +1,29 @@
 # Что нового / What's new
 
+### Версия 11.5
+
+**Новое**
+- В настройках кнопки «Пуска» вверху образец кнопки: он меняется в реальном времени при любой настройке (размер, цвет, прозрачность, насыщенность, окантовка).
+- В цветах фона значка кнопки «Пуска» появился серый, а «Голубой» стал нормальным светло-синим (раньше был ближе к бирюзовому). Выбранный цвет теперь хранится по названию.
+- Рисунок на значке кнопки «Пуска» можно заменить: восемь вариантов на выбор вместо четырёх окон (окна, сетка, меню, звезда, домик, выключатель, голубой флаг в стиле Windows 7, ромб из окон), выбор под выключателем окантовки.
+- Цвет самого рисунка на значке: синий (как раньше), белый, чёрный, серый и цвета радуги; оттенки окон, флага и ромба считаются от выбранного цвета.
+- Версия 11.5.
+
+### Version 11.5
+
+- The Start button settings show a live preview of the button at the top: it changes in real time with any setting (size, color, transparency, saturation, outline).
+- Gray is added to the icon background colors of the Start button, and “Light blue” is now a proper light blue (it used to be closer to turquoise). The chosen color is now stored by name.
+- The picture on the Start button icon can be replaced: eight options instead of the four windows (windows, grid, menu, star, house, power, a Windows 7-style blue flag, a diamond of windows), chosen below the outline toggle.
+- Color of the icon picture itself: blue (as before), white, black, gray and rainbow colors; shades of the windows, flag and diamond follow the chosen color.
+- Version 11.5.
+
 ### Версия 11.4
 
 **Новое**
 - Внутри кнопки «Пуска» вместо голых синих квадратов значок: скруглённый квадрат с фоном и тончайшей серой окантовкой и четырьмя синими окнами, чуть меньше значка Finder в Dock. При нажатии темнеют синие окна, а не сама кнопка.
-- Настройки фона значка (Настройки → «Окна»): цвет (белый, чёрный и цвета радуги: красный, оранжевый, жёлтый, зелёный, голубой, синий, фиолетовый), прозрачность и насыщенность (у белого и чёрного не действует), выключатель окантовки. По умолчанию белый фон, прозрачность 90%, окантовка включена.
+- Настройки фона значка (Настройки → «Окна»): цвет (белый, чёрный и цвета радуги: красный, оранжевый, жёлтый, зелёный, голубой, синий, фиолетовый), прозрачность и насыщенность (у белого и чёрного не действует), выключатель окантовки. По умолчанию белый фон, прозрачность 0%, насыщенность 74%, окантовка включена, расстояние от Dock минимальное.
 - Кнопка увеличивается вместе с Dock (режим «Рядом с Dock»): когда в системе включено «Увеличение» и курсор над Dock, кнопка раздвигается вдоль Dock (по горизонтали от стороны Dock, у бокового Dock вверх и вниз поровну), а значок внутри растёт и приподнимается, как значки Dock, и может выходить за границы кнопки. Увеличение зависит от расстояния до кнопки: плавно растёт по пути к ней и затухает за ней, на самой кнопке значок максимальный. Предел задают только настройки Dock (размер увеличенных значков). Клик по значку, в том числе правой кнопкой, работает по всей его площади, и там, где он выше кнопки.
-- Размер кнопки пересчитан: прежние 135% теперь 100% (по умолчанию), диапазон 60–160%; ползунок меняет кнопку и значок пропорционально, увеличение Dock умножает уже этот размер. Сохранённый ранее размер сбрасывается на 100%.
+- Размер кнопки пересчитан: прежние 142% (135% × 1,05) теперь 100% (по умолчанию), диапазон 60–160%; ползунок меняет кнопку и значок пропорционально, увеличение Dock умножает уже этот размер. Сохранённый ранее размер сбрасывается на 100%.
 - Кнопка плавнее едет за Dock: положение догоняется на каждом кадре (120 раз в секунду), а не прыжками по ответам опроса Dock.
 - Меню по правому клику на кнопке открывается над кнопкой, по её центру, как у значков Dock (с отступом от увеличенного значка), а у бокового Dock — сбоку от кнопки: справа, если Dock слева, и слева, если справа.
 - Кнопка «Пуска» на старых macOS: убраны своя подложка и ползунок «Прозрачность фона», остался только системный материал `.hudWindow`, который сам светлеет и темнеет по теме и фону.
@@ -18,9 +35,9 @@
 ### Version 11.4
 
 - Inside the Start button, instead of bare blue squares there is now an icon: a rounded square with a background and a hairline gray outline and four blue windows, slightly smaller than the Finder icon in the Dock. On press the blue windows darken instead of the button itself.
-- Icon background settings (Settings → “Windows”): color (white, black and the rainbow: red, orange, yellow, green, light blue, blue, violet), transparency and saturation (no effect for white and black), an outline switch. Default: white background, 90% transparency, outline on.
+- Icon background settings (Settings → “Windows”): color (white, black and the rainbow: red, orange, yellow, green, light blue, blue, violet), transparency and saturation (no effect for white and black), an outline switch. Default: white background, 0% transparency, 74% saturation, outline on, minimal distance from the Dock.
 - The button magnifies with the Dock (“Next to Dock” mode): when Dock magnification is on and the pointer is over the Dock, the button widens along the Dock (horizontally away from the Dock side, or up and down equally beside a side Dock) and the icon inside grows and lifts like the Dock icons, and may extend beyond the button. The magnification depends on the distance to the button: it grows smoothly on the way to it and fades behind it, and the icon is at maximum on the button itself. The limit is set only by the Dock settings (the size of magnified icons). A click on the icon, right button included, works over its whole area, also where it is taller than the button.
-- The button size is rescaled: the former 135% is now 100% (default), range 60–160%; the slider scales the button and the icon proportionally, and Dock magnification multiplies that size. A previously saved size resets to 100%.
+- The button size is rescaled: the former 142% (135% × 1.05) is now 100% (default), range 60–160%; the slider scales the button and the icon proportionally, and Dock magnification multiplies that size. A previously saved size resets to 100%.
 - The button follows the Dock more smoothly: its position catches up on every frame (120 times a second) instead of jumping on each Dock poll.
 - The right-click menu of the button opens above the button, centered on it, like Dock icons' menus (clear of the magnified icon), and beside a side Dock it opens to the side of the button: to the right if the Dock is on the left, and to the left if it is on the right.
 - The Start button on older macOS: the custom backing and the “Background transparency” slider are removed; only the system material `.hudWindow` remains, which lightens and darkens by itself with the theme and backdrop.
