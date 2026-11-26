@@ -40,6 +40,8 @@ struct TPItem: Identifiable {
     var mtpHandle: UInt32 = 0       // объект на телефоне (MTP)
     var mtpStorage: UInt32 = 0
     var isStorage = false           // хранилище телефона («Внутренняя память», карта)
+    var remotePath = ""             // полный путь на сервере (FTP, SFTP, HTTP)
+    var remoteLink = false          // ссылка на сервере: внутрь неё при удалении не заходим
     var id: String { isParent ? ".." : url.path }
 }
 
@@ -90,6 +92,7 @@ final class TPPane: ObservableObject {
     @Published var free: Int64 = 0
     @Published var error: String?
     @Published var mtp: MTPLoc?
+    @Published var remote: RemoteLoc?
     let search = FileSearch()      // поиск, как в «Пуске»
     var searchActive = false       // поверх списка показаны результаты поиска
     var hitURL: URL?               // выбранная строка результатов поиска
@@ -99,7 +102,7 @@ final class TPPane: ObservableObject {
     var anchor: Int?
     var rangeBase: Set<String> = []
     var rangeUnmark = false
-    private var gen = 0
+    var gen = 0
 
     init(key: String, fallback: URL) {
         self.key = key
@@ -148,6 +151,7 @@ final class TPPane: ObservableObject {
         guard FileManager.default.fileExists(atPath: u.path, isDirectory: &isDir), isDir.boolValue,
               FileManager.default.isReadableFile(atPath: u.path) else { return false }
         mtp = nil
+        remote = nil
         dir = u
         displayPath = u.path
         marked = []
@@ -159,6 +163,7 @@ final class TPPane: ObservableObject {
     }
 
     func goUp() {
+        if remote != nil { goUpRemote(); return }
         if var l = mtp {
             if !l.trail.isEmpty {
                 let left = l.trail.removeLast()
@@ -184,6 +189,7 @@ final class TPPane: ObservableObject {
     }
 
     func reload(select name: String? = nil, keepCurrent: Bool = true) {
+        if remote != nil { reloadRemote(select: name, keepCurrent: keepCurrent); return }
         if mtp != nil { reloadMTP(select: name, keepCurrent: keepCurrent); return }
         let d = dir, hidden = showHidden, sk = sortKey, asc = ascending
         var keep = name
@@ -257,7 +263,9 @@ final class TPPane: ObservableObject {
     // MARK: телефон (MTP)
 
     func updatePath() {
-        if let l = mtp {
+        if let l = remote {
+            displayPath = remoteDisplay(l)
+        } else if let l = mtp {
             var parts = [l.session.name]
             if l.storage != 0 { parts.append(l.storageName) }
             parts += l.trail.map { $0.name }
@@ -620,7 +628,7 @@ final class TPState: ObservableObject {
     @Published var status = ""
     @Published var busy = false
     weak var window: NSWindow?
-    private var qlProc: Process?
+    var qlProc: Process?
     @Published var mtpDevices: [MTPDeviceInfo] = []
     private var missing = 0
     private var bag = Set<AnyCancellable>()
@@ -678,6 +686,11 @@ final class TPState: ObservableObject {
 
     func open(_ pane: TPPane, _ it: TPItem) {
         if it.isParent { pane.goUp(); return }
+        if pane.remote != nil {
+            if it.isDir { pane.enterRemoteDir(it) }
+            else if let loc = pane.remote { remoteFetchTemp(loc, it) { NSWorkspace.shared.open($0) } }
+            return
+        }
         if pane.mtp != nil { if it.isDir { pane.enterMTP(it) }; return }     // файлы на телефоне не открываем
         if it.isDir { pane.navigate(to: it.url) } else { NSWorkspace.shared.open(it.url) }
     }
@@ -732,7 +745,7 @@ final class TPState: ObservableObject {
 
     func handleKey(_ e: NSEvent) -> Bool {
         let f = e.modifierFlags.intersection([.command, .shift, .option, .control])
-        let cmd = f.contains(.command), shift = f.contains(.shift)
+        let cmd = f.contains(.command), shift = f.contains(.shift), opt = f.contains(.option)
         let p = src
         if cmd {
             switch e.keyCode {
@@ -749,9 +762,10 @@ final class TPState: ObservableObject {
         case 123: active = 0; return true
         case 124: active = 1; return true
         case 126:
+            if opt { moveCursor(p, to: p.cursor - 15, extend: shift); return true }      // ⌥↑ — страница вверх, как PgUp
             if !shift, p.cursor <= 0, focusFieldsAbove(active) { return true }
             moveCursor(p, to: p.cursor - 1, extend: shift); return true
-        case 125: moveCursor(p, to: p.cursor + 1, extend: shift); return true
+        case 125: moveCursor(p, to: p.cursor + (opt ? 15 : 1), extend: shift); return true      // ⌥↓ — страница вниз, как PgDn
         case 116: moveCursor(p, to: p.cursor - 15, extend: shift); return true
         case 121: moveCursor(p, to: p.cursor + 15, extend: shift); return true
         case 115: moveCursor(p, to: 0, extend: shift); return true
@@ -825,11 +839,12 @@ final class TPState: ObservableObject {
         return a.runModal() == .alertFirstButtonReturn ? f.stringValue : nil
     }
 
-    static func askConflict(_ name: String, multiple: Bool, device: Bool = false) -> (TPDecision, Bool) {
+    static func askConflict(_ name: String, multiple: Bool, device: Bool = false, remote: Bool = false) -> (TPDecision, Bool) {
         let a = NSAlert()
         a.alertStyle = .warning
         a.messageText = Tf("«%@» уже существует", name)
-        a.informativeText = device ? T("Заменить файл? Старый будет удалён с телефона.") : T("Заменить файл? Старый уйдёт в Корзину.")
+        a.informativeText = remote ? T("Заменить файл? Старый будет удалён с сервера.")
+            : (device ? T("Заменить файл? Старый будет удалён с телефона.") : T("Заменить файл? Старый уйдёт в Корзину."))
         a.addButton(withTitle: T("Заменить"))
         a.addButton(withTitle: T("Пропустить"))
         a.addButton(withTitle: T("Отмена"))
@@ -856,7 +871,7 @@ final class TPState: ObservableObject {
         a.runModal()
     }
 
-    private func summary(_ t: [TPItem]) -> String {
+    func summary(_ t: [TPItem]) -> String {
         t.count == 1 ? t[0].name : Tf("Объектов: %@", "\(t.count)")
     }
 
@@ -866,6 +881,11 @@ final class TPState: ObservableObject {
         let p = src
         let t = p.targets()
         guard !t.isEmpty else { return }
+        if p.remote != nil || dst.remote != nil {
+            if move { remoteNote(); return }                 // с сервером — без переноса: только копирование
+            remoteCopy(p, t)
+            return
+        }
         if p.mtp != nil || dst.mtp != nil {
             if move { phoneRestricted(); return }          // с телефоном — только копирование
             mtpCopy(p, t)
@@ -955,7 +975,8 @@ final class TPState: ObservableObject {
             }
         }
         g.notify(queue: .main) { [weak self] in
-            if let loc = pane.mtp { self?.mtpUpload(urls, to: loc, cleanTemp: true) }
+            if let loc = pane.remote { self?.remoteUpload(urls, to: loc, cleanTemp: true) }
+            else if let loc = pane.mtp { self?.mtpUpload(urls, to: loc, cleanTemp: true) }
             else { self?.transfer(urls, to: pane.dir, move: false, cleanTemp: true) }
         }
         return true
@@ -980,6 +1001,21 @@ final class TPState: ObservableObject {
         add(T("Загрузки")) { pane.navigate(to: home.appendingPathComponent("Downloads")) }
         add(T("Программы")) { pane.navigate(to: URL(fileURLWithPath: "/Applications")) }
         add(T("Корень диска")) { pane.navigate(to: URL(fileURLWithPath: "/")) }
+        // папки из «Избранного» Finder (кроме тех, что уже есть выше)
+        let standard: Set<String> = [home.path, home.appendingPathComponent("Desktop").path, home.appendingPathComponent("Documents").path,
+                                     home.appendingPathComponent("Downloads").path, "/Applications", "/"]
+        let fav = FinderFavorites.load()
+        let favs = fav.folders.filter { !standard.contains($0.path) }
+        if !favs.isEmpty || fav.note != nil {
+            menu.addItem(.separator())
+            for u in favs {
+                add(fm.displayName(atPath: u.path)) { pane.navigate(to: u) }
+                let icon = NSWorkspace.shared.icon(forFile: u.path)
+                icon.size = NSSize(width: 16, height: 16)
+                menu.items.last?.image = icon
+            }
+            if let n = fav.note { menu.addItem(NSMenuItem(title: n, action: nil, keyEquivalent: "")) }
+        }
         menu.addItem(.separator())
         add(T("Показать в Finder")) { NSWorkspace.shared.activateFileViewerSelecting([pane.dir]) }
         menu.addItem(.separator())
@@ -988,6 +1024,9 @@ final class TPState: ObservableObject {
             let name = (try? v.resourceValues(forKeys: [.volumeNameKey]))?.volumeName ?? v.lastPathComponent
             add(name.isEmpty ? "/" : name) { pane.navigate(to: v) }
         }
+        menu.addItem(.separator())
+        for s in RemoteStore.load() { add("🌐 " + s.name) { [weak self] in self?.connectRemote(pane, s, index: index) } }
+        add(T("Серверы FTP, SFTP, HTTP…")) { [weak self] in self?.showRemoteManager(pane: pane, index: index) }
         menu.addItem(.separator())
         let devs = MTPScanner.scan()          // свежий опрос USB в момент нажатия
         if devs.map({ $0.id }) != mtpDevices.map({ $0.id }) { mtpDevices = devs }
@@ -1238,6 +1277,7 @@ final class TPState: ObservableObject {
         let p = src
         let t = p.targets()
         guard !t.isEmpty else { return }
+        if p.remote != nil { remoteDelete(p, t); return }
         if p.mtp != nil { mtpDelete(p, t); return }
         let a = NSAlert()
         a.alertStyle = .warning
@@ -1273,6 +1313,7 @@ final class TPState: ObservableObject {
         let p = src
         let t = p.targets()
         guard !t.isEmpty else { return }
+        if p.remote != nil { remoteRename(p, t); return }
         if t.count > 1 { batchRename(t, in: p); return }
         let it = t[0]
         guard let nn = TPState.prompt(title: T("Переименовать"), info: T("Новое имя:"), value: it.name,
@@ -1317,6 +1358,7 @@ final class TPState: ObservableObject {
 
     func newFolder() {
         let p = src
+        if p.remote != nil { remoteNewFolder(p); return }
         if p.mtp != nil { phoneRestricted(); return }
         guard let n = TPState.prompt(title: T("Новая папка"), info: T("Имя папки:"), value: T("Новая папка"),
                                      ok: T("Создать")) else { return }
@@ -1335,6 +1377,19 @@ final class TPState: ObservableObject {
         if src.mtp != nil { phoneRestricted(); return }
         guard let it = src.current, !it.isParent else { return }
         if it.isDir { open(src, it); return }
+        if let loc = src.remote {
+            remoteFetchTemp(loc, it) { [weak self] u in
+                self?.qlProc?.terminate()
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: "/usr/bin/qlmanage")
+                p.arguments = ["-p", u.path]
+                p.standardOutput = FileHandle.nullDevice
+                p.standardError = FileHandle.nullDevice
+                try? p.run()
+                self?.qlProc = p
+            }
+            return
+        }
         qlProc?.terminate()
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/qlmanage")
@@ -1346,6 +1401,7 @@ final class TPState: ObservableObject {
     }
 
     func editFile() {
+        if src.remote != nil { remoteNote(); return }
         if src.mtp != nil { phoneRestricted(); return }
         guard let it = src.current, !it.isParent, !it.isDir else { return }
         let p = Process()
@@ -1451,7 +1507,7 @@ struct TPPaneView: View {
         .buttonStyle(.plain)
     }
 
-    private var searching: Bool { pane.mtp == nil && query.trimmingCharacters(in: .whitespaces).count >= 2 }
+    private var searching: Bool { !pane.offDisk && query.trimmingCharacters(in: .whitespaces).count >= 2 }
 
     @ViewBuilder
     private var hitsOverlay: some View {
@@ -1520,7 +1576,7 @@ struct TPPaneView: View {
         let sel = files.filter { pane.marked.contains($0.id) }
         var s = Tf("Выбрано: %@ из %@", "\(sel.count)", "\(files.count)")
         if !sel.isEmpty { s += " · " + tpBytes(sel.reduce(0) { $0 + $1.size }) }
-        s += " · " + T("Свободно") + ": " + tpBytes(pane.free)
+        if pane.remote == nil { s += " · " + T("Свободно") + ": " + tpBytes(pane.free) }
         return s
     }
 
@@ -1538,16 +1594,16 @@ struct TPPaneView: View {
         Divider()
         Button(T("Переименовать") + "\t F2") { prep(); st.renameSelected() }
         Button(T("Просмотр") + "\t F3") { prep(); st.quickLook() }.disabled(pane.mtp != nil)
-        if !it.isDir { Button(T("Правка") + "\t F4") { prep(); st.editFile() }.disabled(pane.mtp != nil) }
+        if !it.isDir { Button(T("Правка") + "\t F4") { prep(); st.editFile() }.disabled(pane.offDisk) }
         Button(T("Копировать") + "\t F5") { prep(); st.copyMove(move: false) }
-        Button(T("Переместить") + "\t F6") { prep(); st.copyMove(move: true) }.disabled(pane.mtp != nil || st.panes[1 - index].mtp != nil)
+        Button(T("Переместить") + "\t F6") { prep(); st.copyMove(move: true) }.disabled(pane.offDisk || st.panes[1 - index].offDisk)
         Button(T("Новая папка") + "\t F7") { prep(); st.newFolder() }.disabled(pane.mtp != nil)
         Button(T("Удалить") + "\t F8") { prep(); st.deleteSelected() }
         Divider()
-        Button(T("Показать в Finder")) { NSWorkspace.shared.activateFileViewerSelecting([it.url]) }.disabled(pane.mtp != nil)
+        Button(T("Показать в Finder")) { NSWorkspace.shared.activateFileViewerSelecting([it.url]) }.disabled(pane.offDisk)
         Button(T("Копировать путь")) {
             NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(it.url.path, forType: .string)
+            NSPasteboard.general.setString(pane.remote != nil ? it.remotePath : it.url.path, forType: .string)
         }.disabled(pane.mtp != nil)
     }
 
@@ -1571,6 +1627,7 @@ struct TPPaneView: View {
                     .textFieldStyle(.roundedBorder)
                     .onSubmit {
                         if pane.mtp != nil { pathText = pane.displayPath; st.clearKeyFocus(); return }
+                        if st.handleAddress(pathText, pane: pane, index: index) { st.clearKeyFocus(); return }
                         let p = (pathText as NSString).expandingTildeInPath
                         if !pane.navigate(to: URL(fileURLWithPath: p)) { pathText = pane.dir.path }
                         st.clearKeyFocus()
@@ -1586,7 +1643,7 @@ struct TPPaneView: View {
             .padding(6)
             .background(isActive ? Color.accentColor.opacity(0.15) : Color.clear)
 
-            if pane.mtp == nil {
+            if !pane.offDisk {
                 HStack(spacing: 6) {
                     Image(systemName: "magnifyingglass").foregroundColor(.secondary)
                     TextField(T("Поиск"), text: $query)
@@ -1619,7 +1676,7 @@ struct TPPaneView: View {
                                 .id(it.id)
                                 .onTapGesture(count: 2) { st.active = index; st.open(pane, it) }
                                 .onTapGesture { st.click(pane: pane, index: index, row: i) }
-                                .onDrag { (it.isParent || pane.mtp != nil) ? NSItemProvider() : makeFileDragProvider(it.url) }
+                                .onDrag { (it.isParent || pane.offDisk) ? NSItemProvider() : makeFileDragProvider(it.url) }
                                 .contextMenu { if !it.isParent { rowMenu(row: i, item: it) } }
                         }
                     }
@@ -1684,9 +1741,9 @@ struct TPRootView: View {
             HStack(spacing: 6) {
                 button("F2", T("Переименовать")) { st.renameSelected() }
                 button("F3", T("Просмотр")) { st.quickLook() }.disabled(st.src.mtp != nil)
-                button("F4", T("Правка")) { st.editFile() }.disabled(st.src.mtp != nil)
+                button("F4", T("Правка")) { st.editFile() }.disabled(st.src.offDisk)
                 button("F5", T("Копировать")) { st.copyMove(move: false) }
-                button("F6", T("Переместить")) { st.copyMove(move: true) }.disabled(st.src.mtp != nil || st.dst.mtp != nil)
+                button("F6", T("Переместить")) { st.copyMove(move: true) }.disabled(st.src.offDisk || st.dst.offDisk)
                 button("F7", T("Новая папка")) { st.newFolder() }.disabled(st.src.mtp != nil)
                 button("F8", T("Удалить")) { st.deleteSelected() }
             }

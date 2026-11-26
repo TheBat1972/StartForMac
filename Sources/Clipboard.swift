@@ -440,6 +440,7 @@ final class ClipPanelController {
     static let shared = ClipPanelController()
     private var panel: ClipPanel?
     private let ui = ClipUI()
+    private var stickerTarget: UUID?                 // стикер, по которому щёлкнули перед вызовом списка: вставка пойдёт в него
     private let digitCodes: [UInt16] = [18, 19, 20, 21, 23, 22, 26, 28, 25, 29]
 
     func toggle() {
@@ -486,11 +487,18 @@ final class ClipPanelController {
         }
         p.setFrameOrigin(o)
         panel = p
+        stickerTarget = StickerManager.shared.keyStickerID()
         p.makeKeyAndOrderFront(nil)
     }
 
     private func pick(_ item: ClipItem) {
         close()
+        if let t = stickerTarget {                   // вставка в стикер идёт напрямую: нажатие ⌘V ушло бы в программу под ним (на рабочем столе — в Finder)
+            stickerTarget = nil
+            ClipboardHistory.shared.copy(item)
+            StickerManager.shared.insertFromClipboard(t)
+            return
+        }
         ClipboardHistory.shared.paste(item)
     }
 

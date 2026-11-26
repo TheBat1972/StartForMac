@@ -40,6 +40,7 @@ final class ScreenRecAuto {
         guard timer == nil else { return }
         seen = Set(recordings().map { $0.path })
         sizes = [:]
+        _ = ToolsManager.shared          // ffmpeg ищется заранее: к первой записи он уже готов
         timer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in self?.poll() }
     }
 
@@ -81,14 +82,36 @@ final class ScreenRecAuto {
         }
     }
 
+    private var waitingTools: NSObjectProtocol?
+
+    /// ffmpeg ещё не готов: запускаем конвертацию, когда он появится
+    private func startWhenReady() {
+        guard waitingTools == nil else { return }
+        waitingTools = NotificationCenter.default.addObserver(forName: .toolsReady, object: nil, queue: .main) { [weak self] _ in
+            guard let self = self else { return }
+            if let o = self.waitingTools { NotificationCenter.default.removeObserver(o) }
+            self.waitingTools = nil
+            let conv = VideoConverter.shared
+            if Self.startNow, !conv.isRunning, conv.hasWaiting { conv.start() }
+        }
+    }
+
     private func handle(_ url: URL) {
         let conv = VideoConverter.shared
         conv.add([url])
-        let ready = ToolsManager.shared.tools != nil
+        let tm = ToolsManager.shared
         let title: String, sub: String
-        if !ready {
+        if tm.tools == nil {
             title = Tf("В очередь: «%@»", url.lastPathComponent)
-            sub = T("Нужны компоненты ffmpeg")
+            if case .failed = tm.state {
+                sub = T("Нужны компоненты ffmpeg")
+            } else if Self.startNow {
+                // компоненты ещё проверяются или скачиваются: конвертация начнётся сама, как только они будут готовы
+                startWhenReady()
+                sub = T("Начнётся, когда будут готовы компоненты ffmpeg")
+            } else {
+                sub = T("Запустите конвертацию сами")
+            }
         } else if !Self.startNow {
             title = Tf("В очередь: «%@»", url.lastPathComponent)
             sub = T("Запустите конвертацию сами")

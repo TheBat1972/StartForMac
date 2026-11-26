@@ -329,6 +329,93 @@ enum LoginItem {
     }
 }
 
+// MARK: - Перезапуск «Пуска», если он выгрузился
+//
+// Агент запуска (LaunchAgent) с KeepAlive: система сама поднимает «Пуск» после сбоя или принудительного завершения и запускает его
+// при входе в систему. Обычное закрытие («Закрыть «Пуск»», выход с кодом 0) закрытием и остаётся. Выключено по умолчанию.
+// Пока включено, отдельный автозапуск при входе не нужен: он выключается и в настройках недоступен.
+
+enum Watchdog {
+    static let label = "ru.local.StartMenu.keepalive"
+    private static let helper = "ru.local.StartMenu.helper"
+    static var agentURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/LaunchAgents/\(label).plist")
+    }
+    static var enabled: Bool { FileManager.default.fileExists(atPath: agentURL.path) }
+    /// «Пуск» запущен самой системой (агентом), а не вручную
+    static var byLauncher: Bool { ProcessInfo.processInfo.environment["START_BY_LAUNCHD"] != nil }
+    private static var domain: String { "gui/\(getuid())" }
+
+    private static func q(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+
+    @discardableResult
+    private static func launchctl(_ args: [String]) -> Int32 {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        p.arguments = args
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        guard (try? p.run()) != nil else { return -1 }
+        p.waitUntilExit()
+        return p.terminationStatus
+    }
+
+    private static func writePlist() -> Bool {
+        guard let exe = Bundle.main.executablePath else { return false }
+        let plist: [String: Any] = [
+            "Label": label,
+            "ProgramArguments": [exe],
+            "RunAtLoad": true,
+            "KeepAlive": ["SuccessfulExit": false],
+            "ThrottleInterval": 10,
+            "ProcessType": "Interactive",
+            "EnvironmentVariables": ["START_BY_LAUNCHD": "1"]
+        ]
+        do {
+            try FileManager.default.createDirectory(at: agentURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        } catch { return false }
+        return (plist as NSDictionary).write(to: agentURL, atomically: true)
+    }
+
+    /// Включает или выключает перезапуск. «Пуск» при этом один раз перезапускается (отдельным процессом, чтобы запуск шёл уже под
+    /// наблюдением системы или, при выключении, снова вручную); вызывающий после успеха закрывает программу
+    static func set(_ on: Bool) -> Bool {
+        let job = "\(domain)/\(label)"
+        let wait = "while kill -0 \(ProcessInfo.processInfo.processIdentifier) 2>/dev/null; do sleep 0.3; done"
+        var cmd: String
+        if on {
+            guard writePlist() else { return false }
+            UserDefaults.standard.set(LoginItem.isEnabled, forKey: "watch.hadLogin")       // автозапуск при входе заменяет агент
+            LoginItem.set(false)
+            cmd = "\(wait); launchctl bootout \(job) 2>/dev/null; launchctl bootstrap \(domain) \(q(agentURL.path))"
+        } else {
+            try? FileManager.default.removeItem(at: agentURL)
+            if UserDefaults.standard.bool(forKey: "watch.hadLogin") { LoginItem.set(true) }
+            UserDefaults.standard.removeObject(forKey: "watch.hadLogin")
+            cmd = "\(wait); launchctl bootout \(job) 2>/dev/null; open \(q(Bundle.main.bundlePath))"
+        }
+        cmd += "; launchctl remove \(helper)"
+        launchctl(["remove", helper])
+        // отдельная задача launchd: её не завершит ни выход «Пуска», ни bootout его агента
+        return launchctl(["submit", "-l", helper, "--", "/bin/sh", "-c", cmd]) == 0
+    }
+
+    /// Запуск вручную при включённом перезапуске: «Пуск» передаётся агенту, чтобы быть под наблюдением; true — этот экземпляр нужно закрыть
+    static func handOver() -> Bool {
+        guard enabled, !byLauncher else { return false }
+        let job = "\(domain)/\(label)"
+        if launchctl(["kickstart", job]) == 0 { return true }
+        return launchctl(["bootstrap", domain, agentURL.path]) == 0
+    }
+
+    /// После переезда программы агент должен указывать на новый файл
+    static func refreshPath() {
+        guard enabled, let exe = Bundle.main.executablePath,
+              let d = NSDictionary(contentsOf: agentURL), (d["ProgramArguments"] as? [String])?.first != exe else { return }
+        _ = writePlist()
+    }
+}
+
 // MARK: - Клик по иконке активного приложения в Dock → свернуть его окна
 
 final class DockClickWatcher {
@@ -539,6 +626,7 @@ final class MinimizeController: NSObject, ObservableObject {
     @Published var selfOn = false
     @Published var dockOn = false
     @Published var loginOn = false
+    @Published var watchOn = false
     /// Значок в верхней панели (строке меню); по умолчанию есть
     /// Окна по ⌃⌥ + стрелки (по умолчанию выключено)
     @Published var snapOn = WindowSnap.enabled
@@ -945,6 +1033,7 @@ final class MinimizeController: NSObject, ObservableObject {
         dockWatcher.onMinimize = { [weak self] pid in self?.minimizer.minimize(pids: [pid], remember: false) }
         dockWatcher.start()
         // после переименования или переезда программы автозапуск должен указывать на новый файл
+        Watchdog.refreshPath()
         let here = Bundle.main.bundlePath
         if UserDefaults.standard.string(forKey: "login.path") != here {
             if LoginItem.isEnabled { LoginItem.set(false); LoginItem.set(true) }
@@ -961,6 +1050,7 @@ final class MinimizeController: NSObject, ObservableObject {
         selfOn = Minimizer.keepSelf
         dockOn = dockWatcher.enabled
         loginOn = LoginItem.isEnabled
+        watchOn = Watchdog.enabled
     }
 
     @discardableResult
@@ -1017,6 +1107,12 @@ final class MinimizeController: NSObject, ObservableObject {
     func setRestore(_ on: Bool) { Minimizer.restoreEnabled = on; restoreOn = on }
     func setSelf(_ on: Bool) { Minimizer.keepSelf = on; selfOn = on }
     func setDock(_ on: Bool) { dockWatcher.enabled = on; dockOn = dockWatcher.enabled }
+    func setWatch(_ on: Bool) {
+        guard Watchdog.set(on) else { NSSound.beep(); return }
+        watchOn = Watchdog.enabled
+        loginOn = LoginItem.isEnabled
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { NSApp.terminate(nil) }       // перезапуск «Пуска» продолжит отдельный процесс
+    }
     func setLogin(_ on: Bool) {
         if !LoginItem.set(on) { NSSound.beep() }
         loginOn = LoginItem.isEnabled

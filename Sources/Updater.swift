@@ -229,7 +229,7 @@ final class AppUpdater: ObservableObject {
             if mv "$DST" "$DST.old" && ditto "$NEW" "$DST"; then rm -rf "$DST.old"; else rm -rf "$DST"; mv "$DST.old" "$DST"; fi
             xattr -dr com.apple.quarantine "$DST" 2>/dev/null
             rm -rf "$WORK"
-            open "$DST"
+            if launchctl print "gui/$(id -u)/ru.local.StartMenu.keepalive" >/dev/null 2>&1; then launchctl kickstart -k "gui/$(id -u)/ru.local.StartMenu.keepalive"; else open "$DST"; fi
             """
             let sh = work.appendingPathComponent("replace.sh")
             do { try script.write(to: sh, atomically: true, encoding: .utf8) } catch { self.fail(T("Не удалось установить обновление.")); return }

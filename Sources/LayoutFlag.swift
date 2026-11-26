@@ -206,6 +206,7 @@ final class LayoutFlag: NSObject {
         if on {
             if statusItem == nil {
                 let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+                item.autosaveName = "StartLayoutFlagIcon"      // система запоминает место значка в строке меню
                 item.button?.target = self
                 item.button?.action = #selector(statusClicked(_:))
                 item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])

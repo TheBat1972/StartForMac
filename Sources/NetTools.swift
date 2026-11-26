@@ -8,6 +8,8 @@ import Darwin
 // Ping и трассировку выполняют системные программы /sbin/ping и /usr/sbin/traceroute, порты проверяются обычным
 // подключением (TCP), список портов берётся у /usr/sbin/lsof. Внешний IP узнаётся только по кнопке: запрос к api.ipify.org.
 
+final class NetBlocks { var a: [String]; init(_ n: Int) { a = [String](repeating: "", count: n) } }
+
 final class NetRunner: ObservableObject {
     @Published var output = ""
     @Published var running = false
@@ -328,7 +330,6 @@ enum NetSpeed {
         ("icanhazip.com", "https://icanhazip.com"),
         ("ifconfig.me", "https://ifconfig.me/ip"),
         ("ident.me", "https://ident.me"),
-        ("Яндекс", "https://ipv4-internet.yandex.net/api/v0/ip"),
         ("Amazon", "https://checkip.amazonaws.com"),
         ("ipinfo.io", "https://ipinfo.io/ip"),
         ("ip.sb", "https://api.ip.sb/ip"),
@@ -493,10 +494,10 @@ struct NetToolsView: View {
 
     private var hint: String {
         switch tab {
-        case .ip: return T("Внешний IP спрашивается у нескольких сервисов (ipify, icanhazip, ifconfig.me, ident.me, Яндекс), страна и провайдер — у ipwho.is, только когда вы нажмёте кнопку. Если адреса разные, у вас работает туннель или VPN для части трафика.")
+        case .ip: return T("Внешний IP спрашивается у нескольких сервисов (ipify, icanhazip, ifconfig.me, ident.me и другие), страна и провайдер — у ipwho.is, только когда вы нажмёте кнопку. Если адреса разные, у вас работает туннель или VPN для части трафика.")
         case .ports: return T("Порты: через запятую или диапазоном, например 80, 443, 8000-8010. 554 — RTSP камер, 80 и 8080 — веб-интерфейс.")
         case .conns: return T("Показаны соединения программ вашей учётной записи.")
-        case .lan: return T("Ищет устройства в вашей подсети по таблице ARP: включённые устройства отвечают, выключенные и спящие могут не показаться. macOS может спросить доступ к локальной сети.")
+        case .lan: return T("Ищет устройства в вашей подсети по таблице ARP и выясняет о каждом всё, что оно выдаёт по сети: имя, производителя, отклик, открытые порты, веб-страницу. Выключенные и спящие устройства могут не показаться. macOS может спросить доступ к локальной сети.")
         case .wol: return T("Отправляет «магический пакет» всей локальной сети. Устройство должно быть подключено проводом, а в его настройках включён Wake-on-LAN.")
         case .whois: return T("Сведения о владельце домена или адреса.")
         default: return ""
@@ -625,13 +626,9 @@ struct NetToolsView: View {
                 }
             }
             let uniq = Set(answers.compactMap { $0 }.filter { !NetSpeed.isLoopback($0) })
-            if answers.contains(where: { $0.map(NetSpeed.isLoopback) == true }) {
-                emit("\n" + T("Один из сервисов ответил 127.0.0.1 — внешний адрес он не определил. Это не блокировка: если DNS-вкладка («Кто отвечает») показывает «Всё чисто», сервис сам так ответил (например, из-за прокси или туннеля). В сравнении этот ответ не учитывается.") + "\n")
-            }
             emit("\n")
             if uniq.isEmpty { emit(T("Не удалось узнать: нет доступа в интернет или сервисы недоступны.") + "\n") }
             else if uniq.count == 1 { emit(T("Адрес один: весь трафик выходит через одно место.") + "\n") }
-            else { emit(T("Адреса разные: часть трафика идёт через туннель или VPN, часть напрямую. Обычно российские сайты видят один адрес, зарубежные — другой.") + "\n") }
         }
     }
 
@@ -734,10 +731,23 @@ struct NetToolsView: View {
             if stopped() { emit(T("Остановлено") + "\n"); return }
             Thread.sleep(forTimeInterval: 1.5)
             let rows = NetProbe.arpTable().filter { $0.ip & (count == 254 ? 0xFFFFFF00 : mask) == base }
-            emit(T("Найдено устройств") + ": \(rows.count)\n\n")
-            for x in rows.sorted(by: { $0.ip < $1.ip }) {
-                let me = x.ip == ip ? "  (" + T("этот Mac") + ")" : ""
-                emit(NetProbe.dotted(x.ip).padding(toLength: 17, withPad: " ", startingAt: 0) + x.mac + me + "\n")
+            emit(T("Найдено устройств") + ": \(rows.count)\n")
+            emit(T("Собираю подробности по каждому — это займёт немного времени…") + "\n\n")
+            let sorted = rows.sorted(by: { $0.ip < $1.ip })
+            let gw = NetDevice.gateway()
+            let blocks = NetBlocks(sorted.count)
+            let lock = NSLock()
+            _ = NetDevice.vendor("000000")   // таблица производителей загружается один раз до параллельной работы
+            DispatchQueue.concurrentPerform(iterations: sorted.count) { i in
+                if stopped() { return }
+                let x = sorted[i]
+                let d = NetDevice.details(ip: NetProbe.dotted(x.ip), mac: x.mac, isSelf: x.ip == ip, gateway: gw)
+                lock.lock(); blocks.a[i] = d; lock.unlock()
+            }
+            if stopped() { emit(T("Остановлено") + "\n"); return }
+            for (i, x) in sorted.enumerated() {
+                let me = x.ip == ip ? "  (" + T("этот Mac") + ")" : (NetProbe.dotted(x.ip) == gw ? "  (" + T("шлюз") + ")" : "")
+                emit(NetProbe.dotted(x.ip).padding(toLength: 17, withPad: " ", startingAt: 0) + x.mac + me + "\n" + blocks.a[i] + "\n")
             }
         }
     }

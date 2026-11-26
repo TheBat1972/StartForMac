@@ -324,7 +324,8 @@ final class RulerView: NSView {
     }
 
     override func keyDown(with event: NSEvent) {
-        let key = event.charactersIgnoringModifiers?.lowercased() ?? ""
+        // «C» по коду клавиши (8), а не по символу: так работает и в русской раскладке («С»)
+        let key = event.keyCode == 8 ? "c" : (event.charactersIgnoringModifiers?.lowercased() ?? "")
         if event.keyCode == 53 { onClose() }
         else if key == "c", mode == 1, angle != nil {
             copyToPasteboard(angleText)

@@ -204,6 +204,7 @@ final class TMMenuBar: NSObject {
         if on {
             if item == nil {
                 let it = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+                it.autosaveName = "StartTaskManagerIcon"      // система запоминает место значка в строке меню
                 let menu = NSMenu()
                 cpuLine.isEnabled = false
                 memLine.isEnabled = false

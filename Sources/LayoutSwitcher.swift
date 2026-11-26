@@ -35,6 +35,8 @@ final class LayoutSwitcher {
     }
     static let comboFallback = Combo(keyCode: 49, mods: UInt32(controlKey | optionKey), keyTitle: "Space")
     static func loadCombo() -> Combo { Combo.load(prefix: "layout.hk", fallback: comboFallback) }
+    /// Добавить выделенное или предыдущее слово в свой словарь: ⇧⌃⌥Пробел
+    static let dictCombo = Combo(keyCode: 49, mods: UInt32(controlKey | optionKey | shiftKey), keyTitle: "Space")
 
 
     // MARK: Состояние
@@ -66,6 +68,7 @@ final class LayoutSwitcher {
     private var poison = false                              // в слове цифра или знак — слово не трогаем
     private var last: LastWord?                             // последнее законченное слово (для горячей клавиши)
     private var run: [RunWord] = []                         // слова текущей фразы, набранные подряд и не исправленные (для коротких слов «И», «А»)
+    private var dictCand: String?                           // слово для словаря, запомненное при нажатии ⇧⌃⌥Пробел
     private var undo: UndoInfo?                             // откат последнего автоисправления (пока ничего не набрано дальше)
     private var pendingUndo: UndoInfo?
     private var appObserver: NSObjectProtocol?
@@ -78,7 +81,9 @@ final class LayoutSwitcher {
         "уж", "ах", "ох", "эх", "ой", "ай"]
     private static let enShort: Set<String> = ["i", "a", "am", "an", "as", "at", "be", "by", "do", "go", "he", "if", "in", "is", "it",
         "me", "my", "no", "of", "on", "or", "so", "to", "up", "us", "we"]
-    private func isShort(_ s: String, ru: Bool) -> Bool { (ru ? LayoutSwitcher.ruShort : LayoutSwitcher.enShort).contains(s.lowercased()) }
+    private func isShort(_ s: String, ru: Bool) -> Bool {
+        (ru ? LayoutSwitcher.ruShort : LayoutSwitcher.enShort).contains(s.lowercased()) || LayoutDictionary.contains(s)
+    }
 
     /// Слова, которые пользователь откатил: их больше не исправляем (набранный вид, строчными)
     static var never: Set<String> { Set(UserDefaults.standard.stringArray(forKey: "layout.never") ?? []) }
@@ -133,6 +138,7 @@ final class LayoutSwitcher {
             self?.resetWord()
         }
         HotKeyCenter.shared.register(LayoutSwitcher.loadCombo(), id: 16) { [weak self] in self?.manual() }
+        HotKeyCenter.shared.register(LayoutSwitcher.dictCombo, id: 17) { [weak self] in self?.addToDictionary() }
         // другая программа выходит вперёд: слово, которое набиралось, и память об исправлении больше не актуальны
         appObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification,
                                                                          object: nil, queue: .main) { [weak self] _ in self?.resetWord() }
@@ -150,6 +156,7 @@ final class LayoutSwitcher {
         tap = nil
         source = nil
         HotKeyCenter.shared.unregister(id: 16)
+        HotKeyCenter.shared.unregister(id: 17)
         resetWord()
         last = nil
         busy = false
@@ -223,6 +230,7 @@ final class LayoutSwitcher {
     }
 
     private func isWord(_ s: String, ru: Bool) -> Bool {
+        if LayoutDictionary.contains(s) || LayoutNames.resolve(s) != nil { return true }   // слово из своего словаря или имя
         guard let lang = spellLang(ru: ru) else { return false }
         func ok(_ w: String) -> Bool {
             NSSpellChecker.shared.checkSpelling(of: w, startingAt: 0, language: lang, wrap: false,
@@ -232,13 +240,23 @@ final class LayoutSwitcher {
     }
 
     /// Конец слова: знаки, которые могут стоять после слова и не мешают его исправить
+    private static let tailMarks: Set<Character> = [".", ",", "?", "!", ":", ";"]
+
+    /// Знак конца слова в раскладке-цели: берётся из самой раскладки, поэтому годятся и «Русская» (точка на ⇧7, запятая на ⇧6),
+    /// и «Русская – ПК» (точка и запятая на клавише «/»)
+    private func isMark(_ s: Stroke, in l: Lay) -> Bool {
+        guard let t = translate(s, l), t.count == 1, let c = t.first else { return false }
+        return LayoutSwitcher.tailMarks.contains(c)
+    }
+
     private func isTail(_ s: Stroke, to: Lay) -> Bool {
-        LayoutSwitcher.punctCodes.contains(s.code) || s.code == 44 || (to.ru && s.shift && (s.code == 26 || s.code == 18))
+        LayoutSwitcher.punctCodes.contains(s.code) || s.code == 44 || (to.ru && s.shift && (s.code == 26 || s.code == 18)) || isMark(s, in: to)
     }
 
     private func tailText(_ strokes: [Stroke], from: Lay, to: Lay) -> String {
         strokes.map { s -> String in
             if to.ru {
+                if isMark(s, in: to) { return translate(s, to) ?? "" }       // знак так, как его даёт сама русская раскладка
                 if s.code == 44 { return s.shift ? "," : "." }
                 if s.code == 26 && s.shift { return "?" }
                 if s.code == 18 && s.shift { return "!" }
@@ -268,25 +286,48 @@ final class LayoutSwitcher {
         guard spellLang(ru: from.ru) != nil, spellLang(ru: to.ru) != nil else { return nil }
         let typedAll = string(k, from).lowercased()
         if LayoutSwitcher.never.contains(typedAll) { return nil }                    // слово, которое пользователь откатывал
+        if LayoutDictionary.contains(typedAll) || LayoutNames.resolve(typedAll) != nil { return nil }   // слово из своего словаря или имя набрано верно
         // адреса сайтов («github.com») не трогаем
         if !from.ru, typedAll.range(of: "^[a-z0-9-]+\\.(com|ru|org|net|io|dev|app|su|info|biz|edu|gov|me|co|ai|xyz|tv|pro|tech)$",
                                     options: .regularExpression) != nil { return nil }
         if k.contains(where: { $0.code == 27 && !$0.shift }) { return decideHyphen(k, from: from, to: to) }
         // внутренние заглавные (camelCase) и короткие слова не трогаем
-        if k.dropFirst().contains(where: { $0.shift != k[0].shift && !$0.caps && !k[0].caps && !$0.shift }) == false,
-           k.dropFirst().filter({ $0.shift }).count > 0, k.count != k.filter({ $0.shift }).count { return nil }
+        // (⇧ на клавише знака, например ⇧7 = «.», заглавной буквой не считается)
+        let body = k.filter { LayoutSwitcher.letterCodes.contains($0.code) || LayoutSwitcher.punctCodes.contains($0.code) }
+        if body.dropFirst().contains(where: { $0.shift }), body.count != body.filter({ $0.shift }).count { return nil }
         var tailMax = 0
         for s in k.reversed() { if isTail(s, to: to) { tailMax += 1 } else { break } }
         tailMax = min(tailMax, 3)
         for t in 0...tailMax {
             let part = Array(k.dropLast(t))
-            guard part.count >= 3 else { break }
             let typed = string(part, from), conv = string(part, to)
-            guard !conv.isEmpty, conv.allSatisfy({ $0.isLetter }) else { continue }
-            if typed.allSatisfy({ $0.isLetter }), isWord(typed, ru: from.ru) { return nil }   // слово набрано верно
-            if isWord(conv, ru: to.ru) { return conv + tailText(Array(k.suffix(t)), from: from, to: to) }
+            let inDict = LayoutDictionary.contains(conv)                                   // сокращение из словаря («OS» из «щы»)
+            let name = LayoutNames.resolve(conv)                                           // имя из списка имён
+            let custom = inDict || name != nil                                             // свои словари важнее системного
+            guard part.count >= 3 || (inDict && part.count == 2 && (conv.contains(".") || part.allSatisfy { $0.shift || $0.caps })) else { break }   // двухбуквенные — только заглавными («ЩЫ» → «OS») или с точкой («т.»)
+            if LayoutDictionary.contains(typed) || LayoutNames.resolve(typed) != nil { return nil }
+            guard !conv.isEmpty, conv.allSatisfy({ $0.isLetter }) || inDict else { continue }
+            if !custom, typed.allSatisfy({ $0.isLetter }), isWord(typed, ru: from.ru) { return nil }   // слово набрано верно (но слово из своих словарей важнее системного)
+            if isWord(conv, ru: to.ru) {
+                // имя, набранное строчными, сразу получает заглавную букву
+                let out = (name != nil && LayoutNames.capsEnabled && part.allSatisfy { !$0.shift && !$0.caps }) ? name! : conv
+                return out + tailText(Array(k.suffix(t)), from: from, to: to)
+            }
         }
         return nil
+    }
+
+    /// Слово набрано правильно и целиком строчными, но это имя из списка («андрей,» → «Андрей,»): что стоит на экране и что должно быть
+    private func nameCase(_ k: [Stroke], from: Lay) -> (old: String, new: String)? {
+        var body = k, tail: [Stroke] = []
+        while let s = body.last, isMark(s, in: from) { tail.insert(s, at: 0); body.removeLast() }
+        guard !body.isEmpty, body.allSatisfy({ !$0.shift && !$0.caps }) else { return nil }     // «Андрей» и «АНДРЕЙ» не трогаем
+        let typed = string(body, from)
+        guard typed.allSatisfy({ $0.isLetter || $0 == "-" || $0 == "'" || $0 == "’" }) else { return nil }
+        if LayoutSwitcher.never.contains(typed.lowercased()) { return nil }                     // пользователь откатил
+        guard let name = LayoutNames.resolve(typed), name != typed else { return nil }
+        let t = string(tail, from)
+        return (typed + t, name + t)
     }
 
     // MARK: Перехват клавиш
@@ -322,8 +363,22 @@ final class LayoutSwitcher {
         return m == c.mods
     }
 
+    private func isDictCombo(_ code: CGKeyCode, _ flags: CGEventFlags) -> Bool {
+        let want: CGEventFlags = [.maskControl, .maskAlternate, .maskShift]
+        return UInt32(code) == LayoutSwitcher.dictCombo.keyCode && flags.intersection([.maskControl, .maskAlternate, .maskShift, .maskCommand]) == want
+    }
+
+    private func captureDictCandidate() {
+        dictCand = nil
+        if !keys.isEmpty, !poison, let l = lay(wordLayID) { dictCand = string(keys, l) }
+        else if let w = last, w.pid == NSWorkspace.shared.frontmostApplication?.processIdentifier, let l = lay(w.layID) {
+            dictCand = string(w.strokes, l)
+        }
+    }
+
     /// Разбор нажатия. Возвращает true, если нажатие поглощено (слово исправляется)
     private func process(_ code: CGKeyCode, _ flags: CGEventFlags, allowFix: Bool) -> Bool {
+        if isDictCombo(code, flags) { captureDictCandidate(); return false }   // ⇧⌃⌥Пробел: запоминаем слово до того, как сочетание сбросит буфер
         let fixCombo = isFixCombo(code, flags)
         if !fixCombo { undo = nil }                         // любое другое нажатие закрывает возможность отката
         if flags.contains(.maskCommand) || flags.contains(.maskControl) || flags.contains(.maskAlternate) {
@@ -363,6 +418,15 @@ final class LayoutSwitcher {
                 fix(full, delete: del, target: to, boundary: (code, flags.intersection(.maskShift)), undo: u)
                 return true
             }
+            // имя набрано правильно, но строчными: заглавная первая буква
+            if allowFix, LayoutNames.capsEnabled, !poisoned, k.count >= 2, let from = lay(wl), let c = nameCase(k, from: from) {
+                last = nil
+                run = []
+                let u = UndoInfo(now: c.new, other: c.old, layNow: from, layOther: from,
+                                 boundary: (code, flags.intersection(.maskShift)), never: c.old.lowercased(), isAuto: true)
+                fix(c.new, delete: k.count, target: from, boundary: (code, flags.intersection(.maskShift)), undo: u)
+                return true
+            }
             if code == 49, !poisoned, !k.isEmpty {
                 run = Array((before + [RunWord(strokes: k, layID: wl)]).suffix(6))
             } else if !(code == 49 && k.isEmpty && !poisoned) {
@@ -377,7 +441,10 @@ final class LayoutSwitcher {
         default:
             break
         }
-        let tailExtra = code == 44 || (shift && (code == 26 || code == 18))
+        var tailExtra = code == 44 || (shift && (code == 26 || code == 18))
+        if !tailExtra, shift, LayoutSwitcher.digitCodes.contains(code), let l = lay(Kb.current().id), let o = other(l) {
+            tailExtra = isMark(Stroke(code: code, shift: true, caps: caps), in: o)       // «b n&l&» → «и т.д.»
+        }
         if LayoutSwitcher.letterCodes.contains(code) || LayoutSwitcher.punctCodes.contains(code) || tailExtra {
             let cur = Kb.current().id
             guard lay(cur) != nil else { resetWord(); return false }
@@ -497,6 +564,65 @@ final class LayoutSwitcher {
             let u = UndoInfo(now: text, other: self.string(l.strokes, from), layNow: to, layOther: from,
                              boundary: (l.boundary, []), never: nil, isAuto: false)
             self.fix(text, delete: l.strokes.count + 1, target: to, boundary: (l.boundary, []), undo: u)
+        }
+    }
+
+    // MARK: Свой словарь
+
+    /// ⇧⌃⌥Пробел: выделенное слово (или, если ничего не выделено, предыдущее) → вопрос «Добавить в словарь?»
+    private func addToDictionary() {
+        guard tap != nil, !busy, !frontExcluded() else { return }
+        let cand = dictCand
+        dictCand = nil
+        readSelection { [weak self] sel in
+            guard self != nil else { return }
+            let w = LayoutDictionary.clean(sel ?? cand ?? "")
+            if w.isEmpty {
+                FinderCut.shared.present(icon: "text.book.closed", title: T("Нечего добавлять в словарь"),
+                                         subtitle: T("Выделите слово или наберите его"))
+                return
+            }
+            let wordErr = LayoutDictionary.validate(w)
+            let nameW = LayoutNames.normalize(w)
+            let nameOK = LayoutNames.validate(nameW) == nil && !LayoutNames.has(nameW)
+            let wordOK = wordErr == nil && !LayoutDictionary.containsEntry(w)
+            if !wordOK && !nameOK {
+                if let e = wordErr, LayoutNames.validate(nameW) != nil {
+                    FinderCut.shared.present(icon: "exclamationmark.triangle", title: Tf("Не добавлено: «%@»", w), subtitle: e)
+                } else {
+                    FinderCut.shared.present(icon: "text.book.closed", title: Tf("Уже есть в словаре: «%@»", w), subtitle: "")
+                }
+                return
+            }
+            DictionaryPrompt.shared.ask(word: w, canWord: wordOK, canName: nameOK) { kind in
+                guard kind != 0 else { return }
+                let e = kind == 2 ? LayoutNames.add(nameW) : LayoutDictionary.add(w)
+                if let e = e {
+                    FinderCut.shared.present(icon: "exclamationmark.triangle", title: Tf("Не добавлено: «%@»", w), subtitle: e)
+                } else if kind == 2 {
+                    FinderCut.shared.present(icon: "text.book.closed", title: Tf("Добавлено в имена: «%@»", nameW), subtitle: "")
+                } else {
+                    FinderCut.shared.present(icon: "text.book.closed", title: Tf("Добавлено в словарь: «%@»", w), subtitle: "")
+                }
+            }
+        }
+    }
+
+    /// Выделенный текст (nil, если ничего не выделено); буфер обмена возвращается как был
+    private func readSelection(_ done: @escaping (String?) -> Void) {
+        let pb = NSPasteboard.general
+        let saved = snapshot(pb)
+        let before = pb.changeCount
+        ClipboardHistory.shared.suppress(for: 2)
+        post(8, .maskCommand)                               // ⌘C
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.16) { [weak self] in
+            guard let self = self else { return }
+            var s: String? = nil
+            if pb.changeCount != before {
+                s = pb.string(forType: .string)
+                self.restore(saved, pb)
+            }
+            done(s)
         }
     }
 

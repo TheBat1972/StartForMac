@@ -2321,6 +2321,14 @@ enum Maintenance {
                   info: T("Помогает, если наушники, мышь или клавиатура не подключаются или «не видны». Bluetooth-устройства на несколько секунд отключатся и подключатся снова."),
                   command: "sudo killall bluetoothd",
                   needsAdmin: true),
+        MaintTask(id: "net", title: T("Перезапустить всё, что связано с сетью"), symbol: "arrow.triangle.2.circlepath",
+                  info: T("Сбрасывает кэш DNS и на несколько секунд выключает и снова включает все сетевые подключения (Ethernet, Wi-Fi, USB-модемы, VPN-службы системы), адрес в сети получается заново. Помогает, если сеть «зависла», пропал интернет при живом подключении или не открываются сайты. Связь на несколько секунд пропадёт."),
+                  command: "dscacheutil -flushcache; killall -HUP mDNSResponder; networksetup -setnetworkserviceenabled <каждая служба> off / on",
+                  needsAdmin: true),
+        MaintTask(id: "wifi", title: T("Перезапустить Wi-Fi"), symbol: "wifi",
+                  info: T("Выключает Wi-Fi адаптер на пару секунд и включает снова, Mac заново подключается к сети. Помогает, если Wi-Fi не видит сети, часто отваливается или подключён, но интернета нет. Остальные подключения (кабель и другие) не затрагиваются."),
+                  command: "networksetup -setairportpower <Wi-Fi> off; sleep 2; networksetup -setairportpower <Wi-Fi> on",
+                  needsAdmin: true),
         MaintTask(id: "dns", title: T("Сбросить кэш DNS"), symbol: "network",
                   info: T("Помогает, если сайты не открываются или открываются по старым адресам."),
                   command: "dscacheutil -flushcache; killall -HUP mDNSResponder",
@@ -2360,6 +2368,20 @@ enum Maintenance {
         case "ram": return "/usr/sbin/purge"
         case "audio": return "/usr/bin/killall coreaudiod"
         case "bt": return "/usr/bin/killall bluetoothd"
+        case "net":
+            // список включённых служб запоминается ОДИН раз до выключения: после него все службы помечены «*»,
+            // и повторное чтение списка пропустило бы их — сеть осталась бы выключенной
+            let toggle = { (state: String) in
+                "printf \"%s\\n\" \"$NSL\" | while IFS= read -r NS; do [ -n \"$NS\" ] && /usr/sbin/networksetup -setnetworkserviceenabled \"$NS\" \(state) </dev/null; done"
+            }
+            return "NSL=$(/usr/sbin/networksetup -listallnetworkservices | /usr/bin/tail -n +2 | /usr/bin/sed \"/^\\*/d\"); "
+                + "/usr/bin/dscacheutil -flushcache; /usr/bin/killall -HUP mDNSResponder; "
+                + toggle("off") + "; /bin/sleep 3; "
+                + toggle("on") + "; /bin/sleep 1; " + toggle("on")
+        case "wifi":
+            return "WD=$(/usr/sbin/networksetup -listallhardwareports | /usr/bin/awk '/Wi-Fi|AirPort/{f=1;next} f&&/Device/{print $2;exit}'); "
+                + "if [ -z \"$WD\" ]; then echo \"Wi-Fi adapter not found\"; false; "
+                + "else /usr/sbin/networksetup -setairportpower \"$WD\" off; /bin/sleep 2; /usr/sbin/networksetup -setairportpower \"$WD\" on; fi"
         case "dns": return "/usr/bin/dscacheutil -flushcache && /usr/bin/killall -HUP mDNSResponder"
         case "spotlight": return "/usr/bin/mdutil -E /"
         case "tm": return "/usr/bin/tmutil thinlocalsnapshots / 99999999999 4"
@@ -3642,18 +3664,21 @@ struct FormatDrive: Identifiable {
     let size: Int64
     let bus: String
     let volumes: [String]
+    var fs: String = ""
 }
 
 final class FormatModel: ObservableObject {
     enum Stage { case pick, confirm, working, done }
-    enum Tab { case format, speed }
-    @Published var tab: Tab = .format
+    enum Tab { case format, speed, info }
+    @Published var tab: Tab = .format { didSet { if tab == .info { loadInfo() } } }
+    @Published var info: [DiskInfoSection] = []
+    @Published var infoLoading = false
     let speed = SpeedModel()
 
     @Published var stage: Stage = .pick
     @Published var drives: [FormatDrive] = []
     @Published var loading = true
-    @Published var selectedID: String?
+    @Published var selectedID: String? { didSet { if tab == .info { loadInfo() } } }
     @Published var kind: FormatKind = .fat32 {
         didSet {
             if !kind.supportsMBR { scheme = "GPT" }
@@ -3718,6 +3743,7 @@ final class FormatModel: ObservableObject {
                 self.loading = false
                 if let s = self.selectedID, !list.contains(where: { $0.id == s }) { self.selectedID = nil }
                 if self.selectedID == nil, list.count == 1 { self.selectedID = list[0].id }
+                if self.tab == .info { self.loadInfo() }
             }
         }
     }
@@ -3777,10 +3803,17 @@ final class FormatModel: ObservableObject {
             var name = (info["MediaName"] as? String) ?? ""
             if name.isEmpty { name = T("Внешний диск") }
             var vols: [String] = []
+            var fsList: [String] = []
             for p in d["Partitions"] as? [[String: Any]] ?? [] {
                 if let v = p["VolumeName"] as? String, !v.isEmpty { vols.append(v) }
+                let c = (p["Content"] as? String) ?? ""
+                if c == "EFI" || c.isEmpty { continue }
+                let pi = (p["DeviceIdentifier"] as? String).flatMap { plist(["info", "-plist", $0]) } ?? [:]
+                let n = fsName(pi, content: c)
+                if !fsList.contains(n) { fsList.append(n) }
             }
-            out.append(FormatDrive(id: id, name: name, size: size, bus: (info["BusProtocol"] as? String) ?? "", volumes: vols))
+            if fsList.isEmpty, let c = d["Content"] as? String, !c.isEmpty, !c.hasSuffix("_partition_scheme") { fsList = [fsName(info, content: c)] }
+            out.append(FormatDrive(id: id, name: name, size: size, bus: (info["BusProtocol"] as? String) ?? "", volumes: vols, fs: fsList.joined(separator: ", ")))
         }
         return out
     }
@@ -3997,7 +4030,7 @@ final class SpeedModel: ObservableObject {
     }
 
     /// Название подключения, скорость линка (Мбит/с) и практический предел (МБ/с)
-    private static func classify(_ raw: String) -> (String, Double, Double)? {
+    static func classify(_ raw: String) -> (String, Double, Double)? {
         let s = raw.lowercased()
         if s.contains("40 gb") || s.contains("thunderbolt") { return ("USB4 / Thunderbolt", 40000, 3000) }
         if s.contains("20 gb") { return ("USB 3.2 Gen 2×2", 20000, 1800) }
@@ -4437,12 +4470,14 @@ struct FormatOverlay: View {
                         Text(T("Внешние диски")).font(.headline)
                         Text(model.tab == .speed
                              ? T("Измеряет последовательную скорость записи и чтения и сравнивает с типичными устройствами")
+                             : model.tab == .info
+                             ? T("Формат и всё, что известно о диске")
                              : T("Стирает диск и создаёт файловую систему, которую поймут любые устройства"))
                             .font(.caption).foregroundColor(.secondary)
                     }
                     Spacer()
                 }
-                .padding(14)
+                .padding(.horizontal, 14).padding(.vertical, 8)
                 Divider()
                 content
             }
@@ -4476,7 +4511,7 @@ struct FormatOverlay: View {
     }
 
     private var pick: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text(T("Диск")).font(.subheadline.bold())
                 Spacer()
@@ -4484,13 +4519,13 @@ struct FormatOverlay: View {
             }
             Group {
                 if model.loading && model.drives.isEmpty {
-                    HStack { Spacer(); ProgressView(); Spacer() }.frame(height: 90)
+                    HStack { Spacer(); ProgressView(); Spacer() }.frame(height: 46)
                 } else if model.drives.isEmpty {
                     VStack(spacing: 4) {
                         Text(T("Нет подключённых внешних дисков")).foregroundColor(.secondary)
                         Text(T("Вставьте флешку и нажмите «Обновить»")).font(.caption).foregroundColor(.secondary)
                     }
-                    .frame(maxWidth: .infinity).frame(height: 90)
+                    .frame(maxWidth: .infinity).frame(height: 46)
                 } else {
                     ScrollView {
                         VStack(spacing: 0) {
@@ -4512,16 +4547,19 @@ struct FormatOverlay: View {
                             }
                         }
                     }
-                    .frame(height: 96)
+                    .frame(height: CGFloat(min(max(model.drives.count, 1), 2)) * 46)
                 }
             }
             Picker("", selection: $model.tab) {
                 Text(T("Форматирование")).tag(FormatModel.Tab.format)
                 Text(T("Скорость")).tag(FormatModel.Tab.speed)
+                Text(T("Сведения")).tag(FormatModel.Tab.info)
             }
             .pickerStyle(.segmented).labelsHidden()
             if model.tab == .speed {
                 SpeedPanel(model: model, speed: model.speed, store: store)
+            } else if model.tab == .info {
+                DiskInfoPanel(model: model, store: store)
             } else {
             Text(T("Формат")).font(.subheadline.bold())
             Picker("", selection: $model.kind) {
@@ -4557,12 +4595,14 @@ struct FormatOverlay: View {
             }
         }
         .padding(14)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
     private func subtitle(_ d: FormatDrive) -> String {
         var parts = [fmt(d.size)]
         if !d.bus.isEmpty { parts.append(d.bus) }
         parts.append(d.id)
+        if !d.fs.isEmpty { parts.append(Tf("Формат: %@", d.fs)) }
         var s = parts.joined(separator: " · ")
         if !d.volumes.isEmpty { s += " · " + Tf("Тома: %@", d.volumes.joined(separator: ", ")) }
         return s
@@ -6726,7 +6766,10 @@ struct SettingsView: View {
                         }
                         sep()
                         section(T("Запуск")) {
-                            toggleRow(T("Запускать при входе в систему"), mc.loginOn) { mc.setLogin($0) }
+                            toggleRow(T("Перезапускать «Пуск», если он закрылся сам"), mc.watchOn) { mc.setWatch($0) }
+                            Text(T("«Пуск» запускается системой и поднимается заново после сбоя или принудительного завершения; обычное закрытие («Закрыть «Пуск»») остаётся закрытием. Он же запускается при входе в систему. При включении и выключении «Пуск» один раз перезапускается."))
+                                .font(.caption).foregroundColor(.secondary)
+                            toggleRow(T("Запускать при входе в систему"), mc.loginOn || mc.watchOn, disabled: mc.watchOn) { mc.setLogin($0) }
                             toggleRow(T("Значок в верхней панели"), mc.trayOn) { mc.setTray($0) }
                         }
                         sep()
@@ -7091,6 +7134,8 @@ struct SettingsView: View {
                                     }
                                 }
                                 Button(T("Добавить программу…")) { mc.addLayoutExcluded() }
+                                sep()
+                                LayoutDictionaryEditor()
                             }
                             sep()
                             layoutSwitchKeyRow()
@@ -8076,6 +8121,14 @@ struct RootView: View {
                 showTools = false
                 NetToolsController.shared.show()
             }
+            ToolRow(title: T("Обмен файлами по сети"), symbol: "qrcode") {
+                showTools = false
+                ShareController.shared.show()
+            }
+            ToolRow(title: T("Стикеры"), symbol: "note.text") {
+                showTools = false
+                StickersController.shared.show()
+            }
             ToolRow(title: T("Сведения о системе"), symbol: "info.circle") {
                 showTools = false
                 SysInfoController.shared.show()
@@ -8302,6 +8355,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if Watchdog.handOver() { exit(0) }          // перезапуск включён: запуск вручную передаётся агенту, чтобы «Пуск» был под наблюдением
         AppTheme.apply()
         DispatchQueue.global(qos: .utility).async { cleanDropTemp() }
         setupMenu()
@@ -8338,6 +8392,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if self.window.isVisible && NSApp.isActive { self.window.orderOut(nil) } else { self.show() }
         }
         minimize.start()
+        ShareManager.shared.restoreOnLaunch()
+        StickerManager.shared.start()
         // Esc закрывает «Пуск» из любого места окна, даже если фокус не в SwiftUI-элементе
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
             if e.keyCode == 53, let w = e.window, ToolWindows.shared.handleEscape(w) { return nil }
