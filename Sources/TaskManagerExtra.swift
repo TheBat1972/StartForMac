@@ -713,6 +713,18 @@ struct TMServicesView: View {
         let rows = list()
         let cur = rows.first { $0.id == selected }
         return VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Picker("", selection: $filter) {
+                    Text(T("Все")).tag(0)
+                    Text(T("Работают")).tag(1)
+                    Text(T("Остановлены")).tag(2)
+                }
+                .pickerStyle(.segmented).labelsHidden().fixedSize()          // как в остальных окнах программы: естественная ширина, без заданной
+                Spacer(minLength: 12)
+                Toggle(T("Скрыть службы Apple"), isOn: $hideApple).lineLimit(1).fixedSize()
+            }
+            .padding(.horizontal, 18).padding(.vertical, 9)
+            Divider()
             HStack(spacing: 0) {
                 Text(T("Служба")).frame(maxWidth: .infinity, alignment: .leading)
                 Text("PID").frame(width: 64, alignment: .trailing)
@@ -746,21 +758,15 @@ struct TMServicesView: View {
             }
             Divider()
             HStack(spacing: 10) {
-                TextField(T("Поиск служб"), text: $query).textFieldStyle(.roundedBorder).frame(width: 190)
-                Picker("", selection: $filter) {
-                    Text(T("Все")).tag(0)
-                    Text(T("Работают")).tag(1)
-                    Text(T("Остановлены")).tag(2)
-                }
-                .labelsHidden().pickerStyle(.segmented).frame(width: 220)
-                Toggle(T("Скрыть службы Apple"), isOn: $hideApple)
-                Spacer()
-                if store.busy { ProgressView().controlSize(.small) }
-                Button(T("Запустить")) { if let c = cur { do_(c, "start", T("Запустить")) } }.disabled(cur == nil)
-                Button(T("Остановить")) { if let c = cur { do_(c, "stop", T("Остановить")) } }.disabled(cur == nil)
-                Button(T("Обновить")) { store.refresh(procs: s.procs, reload: true) }
+                TextField(T("Поиск служб"), text: $query).textFieldStyle(.roundedBorder)
+                    .frame(minWidth: 90, idealWidth: 220, maxWidth: 260).layoutPriority(-1)
+                Spacer(minLength: 4)
+                ProgressView().controlSize(.small).opacity(store.busy ? 1 : 0).frame(width: 16)        // место занято всегда: кнопки не прыгают
+                Button(T("Запустить")) { if let c = cur { do_(c, "start", T("Запустить")) } }.disabled(cur == nil).fixedSize()
+                Button(T("Остановить")) { if let c = cur { do_(c, "stop", T("Остановить")) } }.disabled(cur == nil).fixedSize()
+                Button(T("Обновить")) { store.refresh(procs: s.procs, reload: true) }.fixedSize()
             }
-            .padding(10)
+            .padding(.horizontal, 18).padding(.vertical, 10)
         }
         .onAppear { store.refresh(procs: s.procs, reload: true) }
         .onReceive(timer) { _ in store.refresh(procs: s.procs) }

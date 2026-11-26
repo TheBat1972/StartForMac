@@ -1,11 +1,11 @@
 import Cocoa
 import Carbon
 
-/// Своя клавиша переключения раскладки (Globe/fn): работает независимо от автоматического переключателя
+/// Своя клавиша переключения раскладки (Globe/fn или Control+Shift): работает независимо от автоматического переключателя
 final class LayoutKey {
     static let shared = LayoutKey()
 
-    /// "off" — системная, "fn" — Globe/fn
+    /// "off" — системная, "fn" — Globe/fn, "ctrlshift" — Control+Shift, нажатые вместе и отпущенные без других клавиш
     static var kind: String {
         get { UserDefaults.standard.string(forKey: "layout.sw.kind") ?? "off" }
         set { UserDefaults.standard.set(newValue, forKey: "layout.sw.kind") }
@@ -16,10 +16,12 @@ final class LayoutKey {
     private var retry: Timer?
     private var fnDown = false
     private var fnUsed = false
+    private var csDown = false                             // Control и Shift зажаты вместе
+    private var csUsed = false                             // пока они зажаты, нажато что-то ещё
 
     /// Применить текущие настройки (при запуске и при любом изменении)
     func apply() {
-        if LayoutKey.kind == "fn" { startTap() } else { stopTap() }
+        if LayoutKey.kind == "fn" || LayoutKey.kind == "ctrlshift" { startTap() } else { stopTap() }
     }
 
     private func startTap() {
@@ -30,7 +32,7 @@ final class LayoutKey {
             var tries = 0
             retry = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] t in
                 tries += 1
-                if AXIsProcessTrusted() { t.invalidate(); self?.retry = nil; if LayoutKey.kind == "fn" { self?.startTap() } }
+                if AXIsProcessTrusted() { t.invalidate(); self?.retry = nil; if LayoutKey.kind == "fn" || LayoutKey.kind == "ctrlshift" { self?.startTap() } }
                 else if tries > 200 { t.invalidate(); self?.retry = nil }
             }
             return
@@ -54,6 +56,7 @@ final class LayoutKey {
         tap = nil
         source = nil
         fnDown = false
+        csDown = false
     }
 
     private func handle(_ type: CGEventType, _ event: CGEvent) -> Unmanaged<CGEvent>? {
@@ -64,6 +67,20 @@ final class LayoutKey {
         }
         if type == .keyDown {
             if fnDown { fnUsed = true }                     // fn + другая клавиша — это не переключение
+            if csDown { csUsed = true }                     // Control+Shift+буква и т. п. — тоже
+            return pass
+        }
+        if LayoutKey.kind == "ctrlshift" {
+            guard type == .flagsChanged else { return pass }
+            let f = event.flags
+            let both = f.contains(.maskControl) && f.contains(.maskShift)
+            let extra = f.contains(.maskCommand) || f.contains(.maskAlternate) || f.contains(.maskSecondaryFn)
+            if both && !csDown { csDown = true; csUsed = extra }
+            else if csDown && extra { csUsed = true }
+            else if csDown && !both {                       // Control+Shift отпущены, ничего больше не нажималось: переключаем
+                csDown = false
+                if !csUsed && !extra { DispatchQueue.main.async { Kb.selectNext() } }
+            }
             return pass
         }
         guard type == .flagsChanged, event.getIntegerValueField(.keyboardEventKeycode) == 63 else { return pass }

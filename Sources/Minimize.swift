@@ -272,7 +272,11 @@ final class Minimizer {
         }
     }
 
+    /// Когда в последний раз возвращали свёрнутые окна: пока они возвращаются, их программы выходят вперёд и могут отнять фокус у «Пуска»
+    static var lastRestore = Date.distantPast
+
     func restore() {
+        Minimizer.lastRestore = Date()
         let list = minimized
         minimized = []
         let own = ownMinimized
@@ -369,7 +373,8 @@ enum Watchdog {
             "KeepAlive": ["SuccessfulExit": false],
             "ThrottleInterval": 10,
             "ProcessType": "Interactive",
-            "EnvironmentVariables": ["START_BY_LAUNCHD": "1"]
+            "EnvironmentVariables": ["START_BY_LAUNCHD": "1"],
+            "AssociatedBundleIdentifiers": [Bundle.main.bundleIdentifier ?? "ru.local.StartMenu"]      // в «Объектах входа» запись показывается под именем и значком программы
         ]
         do {
             try FileManager.default.createDirectory(at: agentURL.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -411,7 +416,8 @@ enum Watchdog {
     /// После переезда программы агент должен указывать на новый файл
     static func refreshPath() {
         guard enabled, let exe = Bundle.main.executablePath,
-              let d = NSDictionary(contentsOf: agentURL), (d["ProgramArguments"] as? [String])?.first != exe else { return }
+              let d = NSDictionary(contentsOf: agentURL),
+              (d["ProgramArguments"] as? [String])?.first != exe || d["AssociatedBundleIdentifiers"] == nil else { return }
         _ = writePlist()
     }
 }

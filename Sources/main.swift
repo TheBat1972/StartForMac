@@ -6157,6 +6157,46 @@ final class RecentDocs: ObservableObject {
     }
 }
 
+/// Строка стикера в результатах поиска: цвет, строка с найденным текстом, приклеен или нет; клик открывает инструмент «Стикеры» на нём
+struct StickerSearchRow: View {
+    let sticker: Sticker
+    let query: String
+    let onOpen: () -> Void
+    @State private var hover = false
+
+    private var matched: String {
+        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+        return sticker.items.first { $0.text.lowercased().contains(q) }?.text ?? sticker.title
+    }
+
+    var body: some View {
+        Button(action: onOpen) {
+            HStack(spacing: 10) {
+                RoundedRectangle(cornerRadius: 3).fill(StickerPalette.paperColor(sticker.color))
+                    .overlay(RoundedRectangle(cornerRadius: 3).stroke(Color.black.opacity(0.15)))
+                    .frame(width: 22, height: 26)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(matched).font(.system(size: 13)).lineLimit(1)
+                    Text(StickerPalette.name(sticker.color)).font(.caption).foregroundColor(.secondary).lineLimit(1)
+                }
+                Spacer(minLength: 8)
+                if let at = sticker.remindAt {
+                    Label(at.formatted(date: .abbreviated, time: .shortened), systemImage: "bell")
+                        .font(.caption).foregroundColor(sticker.alertActive ? .red : .secondary).lineLimit(1)
+                }
+                Label(sticker.onScreen ? T("Приклеен") : T("Не приклеен"), systemImage: sticker.onScreen ? "pin.fill" : "pin.slash")
+                    .font(.caption).foregroundColor(sticker.onScreen ? .accentColor : .secondary).lineLimit(1)
+            }
+            .padding(.horizontal, 8).padding(.vertical, 5)
+            .background(RoundedRectangle(cornerRadius: 8).fill(hover ? Color.secondary.opacity(0.15) : Color.clear))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
+        .help(T("Открыть в инструменте «Стикеры»"))
+    }
+}
+
 struct FileRow: View {
     let hit: FileHit
     let onOpen: () -> Void
@@ -6642,9 +6682,10 @@ struct SettingsView: View {
         HStack {
             Text(T("Клавиша переключения раскладки"))
             Spacer()
-            Picker("", selection: Binding(get: { mc.switchKind == "fn" ? "fn" : "off" }, set: { mc.setSwitchKind($0) })) {
+            Picker("", selection: Binding(get: { ["fn", "ctrlshift"].contains(mc.switchKind) ? mc.switchKind : "off" }, set: { mc.setSwitchKind($0) })) {
                 Text(T("Системная")).tag("off")
                 Text(T("Globe (fn)")).tag("fn")
+                Text(T("Control+Shift")).tag("ctrlshift")
             }
             .labelsHidden()
             .frame(width: 150)
@@ -7143,6 +7184,10 @@ struct SettingsView: View {
                                 Text(T("Для Globe (fn) отключите системное действие: Системные настройки → Клавиатура → «Нажатие 🌐 для» → «Ничего не делать»."))
                                     .font(.caption).foregroundColor(.secondary)
                             }
+                            if mc.switchKind == "ctrlshift" {
+                                Text(T("Раскладка переключается, когда вы нажали Control и Shift вместе и отпустили их, не нажимая других клавиш. Сочетания вроде ⌃⇧Буква работают как обычно."))
+                                    .font(.caption).foregroundColor(.secondary)
+                            }
                             sep()
                             toggleRow(T("Скрыть системную плашку раскладки у курсора"), mc.hideIndicatorOn) { mc.setHideIndicator($0) }
                             Text(T("Маленькая плашка с буквой («A», «Р») под текстовым курсором, которую macOS показывает при смене раскладки (Sonoma и новее). Она часто глючит: запаздывает, показывает не ту раскладку, а иногда переключение в поле ввода вообще «теряется» и нужно нажимать дважды. Флаги «Пуска» берут раскладку напрямую из системы и проверяют переключение, поэтому плашка не нужна. Если она не исчезла сразу, перезапустите программу, в которой печатаете, или выйдите из системы и войдите снова."))
@@ -7312,6 +7357,14 @@ struct RootView: View {
     @FocusState private var nameFocused: Bool
 
     private var searching: Bool { !query.trimmingCharacters(in: .whitespaces).isEmpty }
+
+    /// Стикеры, в тексте которых есть запрос (не больше восьми, свежие первыми)
+    private var stickerHits: [Sticker] {
+        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !q.isEmpty else { return [] }
+        return Array(StickerStore.shared.list.sorted { $0.created > $1.created }
+            .filter { s in s.items.contains { $0.text.lowercased().contains(q) } }.prefix(8))
+    }
 
     private var showingLinks: Bool { store.currentSelection == webCategory && !searching }
     private var showingRecent: Bool { store.currentSelection == recentCategory && !searching }
@@ -7619,6 +7672,19 @@ struct RootView: View {
                         }
                     }
                     .padding(14)
+                    }
+                    if searching, !stickerHits.isEmpty {
+                        Text(T("Стикеры")).font(.headline)
+                            .padding(.horizontal, 16).padding(.top, visibleApps.isEmpty ? 2 : 4).padding(.bottom, 4)
+                        VStack(spacing: 0) {
+                            ForEach(stickerHits) { st in
+                                StickerSearchRow(sticker: st, query: query) {
+                                    StickersController.shared.show(focus: st.id)
+                                    close()
+                                }
+                            }
+                        }
+                        .padding(.horizontal, 8).padding(.bottom, 8)
                     }
                     if searching && !files.hits.isEmpty {
                         Text(T("Файлы и папки")).font(.headline)
@@ -8378,7 +8444,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]   // .stationary: не уезжает при «Показывать Рабочий стол при нажатии на обои», как флаг раскладки
         window.isReleasedWhenClosed = false
         NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification,
-                                               object: window, queue: .main) { [weak self] _ in self?.hide() }
+                                               object: window, queue: .main) { [weak self] _ in self?.resignedKey() }
         for name in [NSWindow.didMoveNotification, NSWindow.didEndLiveResizeNotification] {
             NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
                 self?.saveFrame()
@@ -8485,8 +8551,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         store.rescan()
         store.refreshPermissions()
         store.showTick += 1
+        shownAt = Date()
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
+    }
+
+    private var shownAt = Date.distantPast
+
+    /// Окно потеряло фокус: закрываем. Но сразу после открытия фокус могла отнять программа, которая как раз возвращается из свёрнутого
+    /// состояния («Развернуть окна» и сразу «Пуск»): тогда окно забирает фокус обратно, а не закрывается
+    private func resignedKey() {
+        let restoring = Date().timeIntervalSince(Minimizer.lastRestore) < 4
+        if window.isVisible, Date().timeIntervalSince(shownAt) < (restoring ? 2.0 : 0.5) {
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+            return
+        }
+        hide()
     }
 
     func hide() {
