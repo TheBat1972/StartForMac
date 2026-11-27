@@ -1,5 +1,7 @@
 import SwiftUI
 import AppKit
+import Carbon.HIToolbox
+import UniformTypeIdentifiers
 
 // MARK: - Стикеры
 //
@@ -16,6 +18,9 @@ struct StickerItem: Identifiable, Codable, Equatable {
     var id = UUID()
     var text = ""
     var done = false
+    /// Строка-ссылка на файл: путь и закладка (она находит файл, даже если его переместили); text — подпись
+    var file: String? = nil
+    var bookmark: Data? = nil
     /// Самая длинная строка стикера (символов); вставленное из буфера обмена обрезается
     static let maxLength = 200
 }
@@ -91,6 +96,27 @@ final class StickerStore: ObservableObject {
     }
 }
 
+/// Файлы, на которые ссылаются строки стикеров
+enum StickerFiles {
+    /// Найденный файл: сначала по закладке (она следует за перемещением), затем по пути
+    static func url(_ it: StickerItem) -> URL? {
+        if let b = it.bookmark {
+            var stale = false
+            if let u = try? URL(resolvingBookmarkData: b, options: [], relativeTo: nil, bookmarkDataIsStale: &stale),
+               FileManager.default.fileExists(atPath: u.path) { return u }
+        }
+        if let p = it.file, FileManager.default.fileExists(atPath: p) { return URL(fileURLWithPath: p) }
+        return nil
+    }
+
+    /// Открывает файл; с ⌥ показывает его в Finder
+    static func open(_ it: StickerItem) {
+        guard let u = url(it) else { NSSound.beep(); return }
+        if NSEvent.modifierFlags.contains(.option) { NSWorkspace.shared.activateFileViewerSelecting([u]) }
+        else { NSWorkspace.shared.open(u) }
+    }
+}
+
 // MARK: Окна на экране
 
 /// Первое нажатие по неактивному окну сразу попадает в стикер (без «холостого» щелчка), поэтому перетаскивать можно с первого раза
@@ -125,6 +151,62 @@ final class StickerManager: NSObject, NSWindowDelegate {
     static let shared = StickerManager()
     private let store = StickerStore.shared
     private var panels: [UUID: StickerPanel] = [:]
+    /// Режим «Показать стикеры»: экран затемнён, наклеенные стикеры лежат поверх всех окон
+    private(set) var spotlightOn = false
+    private var dimWindows: [NSWindow] = []
+    private var keyMonitor: Any?
+    /// Какая строка каждого стикера сейчас правится (её сообщает карточка)
+    var editingItem: [UUID: UUID] = [:]
+    private var fileKeyMonitor: Any?
+    private var filePasteMonitor: Any?
+
+    /// Файлы из буфера обмена при правке строки: первый прикрепляется к ней, остальные становятся новыми строками
+    func pasteFiles(_ sid: UUID, in tv: NSTextView) -> Bool {
+        guard let urls = NSPasteboard.general.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL],
+              let first = urls.first, let iid = editedItem(sid, tv) else { return false }
+        attachFile(sid, item: iid, file: first)
+        for u in urls.dropFirst() { addLine(sid, text: u.lastPathComponent, file: u) }
+        return true
+    }
+
+    /// Правимая строка стикера: по сообщению карточки, а если его нет — по тексту в поле правки
+    private func editedItem(_ sid: UUID, _ tv: NSTextView) -> UUID? {
+        if let i = editingItem[sid] { return i }
+        let m = store.sticker(sid)?.items.filter { $0.text == tv.string } ?? []
+        return m.count == 1 ? m[0].id : nil
+    }
+
+    /// Delete / Backspace в начале правимой строки с файлом убирает значок файла (как стирание символа перед текстом)
+    private func installFileKeyMonitor() {
+        if fileKeyMonitor != nil { return }
+        // ⌘V с файлом в буфере при правке строки: файл прикрепляется к этой строке (без файла — обычная вставка текста)
+        filePasteMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
+            guard let self = self, e.keyCode == 9, e.modifierFlags.intersection([.command, .option, .control]) == .command,
+                  let panel = e.window as? StickerPanel, let sid = panel.stickerID,
+                  let tv = e.window?.firstResponder as? NSTextView,
+                  let iid = self.editedItem(sid, tv),
+                  let urls = NSPasteboard.general.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL],
+                  let first = urls.first
+            else { return e }
+            self.attachFile(sid, item: iid, file: first)
+            for u in urls.dropFirst() { self.addLine(sid, text: u.lastPathComponent, file: u) }
+            return nil
+        }
+        fileKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
+            guard let self = self, e.keyCode == 51 || e.keyCode == 117,
+                  e.modifierFlags.intersection([.command, .option, .control]).isEmpty,
+                  let panel = e.window as? StickerPanel, let sid = panel.stickerID,
+                  let tv = e.window?.firstResponder as? NSTextView,
+                  let iid = self.editedItem(sid, tv),
+                  tv.selectedRange().location == 0, tv.selectedRange().length == 0,
+                  let item = self.store.sticker(sid)?.items.first(where: { $0.id == iid }), item.file != nil
+            else { return e }
+            self.store.update(sid) { s in
+                if let k = s.items.firstIndex(where: { $0.id == iid }) { s.items[k].file = nil; s.items[k].bookmark = nil }
+            }
+            return nil
+        }
+    }
     /// Окна-просмотры из инструмента «Стикеры»: копия стикера в том же виде, правится то же содержимое; закрытие копии стикер не трогает
     private var previews: [UUID: StickerPanel] = [:]
     private var timer: Timer?
@@ -136,6 +218,7 @@ final class StickerManager: NSObject, NSWindowDelegate {
 
     /// При запуске: наклеить всё, что было наклеено, и начать следить за напоминаниями
     func start() {
+        installFileKeyMonitor()
         for s in store.list where s.onScreen { showPanel(s.id) }
         timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
@@ -143,6 +226,7 @@ final class StickerManager: NSObject, NSWindowDelegate {
             self?.checkReminders()
         }
         StickerPrivacy.shared.start()
+        HotKeyCenter.shared.register(StickerManager.spotlightCombo, id: StickerManager.spotlightHotKeyID) { [weak self] in self?.toggleSpotlight() }
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
             self?.cleanSpaceSoon()
         }
@@ -234,11 +318,58 @@ final class StickerManager: NSObject, NSWindowDelegate {
     func insertFromClipboard(_ id: UUID) {
         guard let p = previews[id].flatMap({ $0.isKeyWindow ? $0 : nil }) ?? panels[id] ?? previews[id] else { return }
         p.makeKey()
-        if let t = p.firstResponder as? NSText { t.paste(nil) } else { pasteLine(id) }
+        if let t = p.firstResponder as? NSText {
+            // файл из буфера прикрепляется к правящейся строке, всё остальное вставляется текстом
+            if let tv = t as? NSTextView, pasteFiles(id, in: tv) { return }
+            t.paste(nil)
+        } else { pasteLine(id) }
+    }
+
+    /// Убирает файл из строки (подпись остаётся)
+    func detachFile(_ id: UUID, item: UUID) {
+        store.update(id) { s in
+            if let k = s.items.firstIndex(where: { $0.id == item }) { s.items[k].file = nil; s.items[k].bookmark = nil }
+        }
+    }
+
+    /// Прикрепляет файл к существующей строке (прежняя ссылка заменяется; пустая подпись берёт имя файла)
+    func attachFile(_ id: UUID, item: UUID, file: URL) {
+        let bm = try? file.bookmarkData()
+        store.update(id) { s in
+            guard let k = s.items.firstIndex(where: { $0.id == item }) else { return }
+            s.items[k].file = file.path
+            s.items[k].bookmark = bm
+            if s.items[k].text.trimmingCharacters(in: .whitespaces).isEmpty { s.items[k].text = file.lastPathComponent }
+        }
+    }
+
+    /// Новая строка из перетащенного текста или файла (у файла — значок и подпись); пустая последняя строка заполняется
+    func addLine(_ id: UUID, text: String, file: URL? = nil) {
+        var t = text.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }.joined(separator: " ")
+        if t.isEmpty && file == nil { return }
+        if t.count > StickerItem.maxLength { t = String(t.prefix(StickerItem.maxLength - 1)) + "…" }
+        let bm = file.flatMap { try? $0.bookmarkData() }
+        store.update(id) { s in
+            if let last = s.items.last, last.text.trimmingCharacters(in: .whitespaces).isEmpty, last.file == nil {
+                s.items[s.items.count - 1].text = t
+                s.items[s.items.count - 1].file = file?.path
+                s.items[s.items.count - 1].bookmark = bm
+            } else {
+                var it = StickerItem(text: t)
+                it.file = file?.path
+                it.bookmark = bm
+                s.items.append(it)
+            }
+        }
     }
 
     /// Новая строка стикера из буфера обмена: переводы строк и повторные пробелы сжимаются, длинное обрезается (до 200 символов, в конце «…»)
     func pasteLine(_ id: UUID) {
+        // файлы, скопированные в Finder: каждый становится строкой со значком
+        if let urls = NSPasteboard.general.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty {
+            for u in urls { addLine(id, text: u.lastPathComponent, file: u) }
+            return
+        }
         let raw = NSPasteboard.general.string(forType: .string) ?? ""
         var t = raw.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }.joined(separator: " ")
         if t.isEmpty { NSSound.beep(); return }
@@ -312,7 +443,7 @@ final class StickerManager: NSObject, NSWindowDelegate {
 
     /// На «чистом» столе стикеры прячутся (кроме сработавшего напоминания), на остальных показываются
     func applyCleanSpace() {
-        guard Spaces.available else { return }
+        guard !spotlightOn, Spaces.available else { return }
         let clean = Spaces.currentUUID().map { StickerManager.cleanSpaces.contains($0) } ?? false
         for (id, p) in panels {
             let alert = store.sticker(id)?.alertActive == true
@@ -329,6 +460,50 @@ final class StickerManager: NSObject, NSWindowDelegate {
 
     func panelOrigin(_ id: UUID, preview: Bool = false) -> NSPoint? { (preview ? previews[id] : panels[id])?.frame.origin }
     func setOrigin(_ id: UUID, _ o: NSPoint, preview: Bool = false) { (preview ? previews[id] : panels[id])?.setFrameOrigin(o) }
+
+    // MARK: режим «Показать стикеры»
+
+    /// Горячая клавиша режима (⌃⌥S): включает и выключает его
+    static let spotlightCombo = Combo(keyCode: UInt32(kVK_ANSI_S), mods: UInt32(controlKey | optionKey), keyTitle: "S")
+    static let spotlightHotKeyID: UInt32 = 41
+
+    func toggleSpotlight() { if spotlightOn { endSpotlight() } else { beginSpotlight() } }
+
+    private static let spotlightLevel = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
+
+    /// Затемняет экран и выводит наклеенные стикеры поверх всех окон (с ними работают все функции). Выход — Esc или щелчок по затемнению
+    func beginSpotlight() {
+        guard !spotlightOn else { return }
+        let ids = store.list.filter { $0.onScreen }.map { $0.id }
+        spotlightOn = true
+        for id in ids { showPanel(id) }       // и на «чистом» столе: показываем все
+        dimWindows = NSScreen.screens.map { StickerDimWindow(screen: $0) { [weak self] in self?.endSpotlight() } }
+        for (_, p) in panels {
+            p.level = StickerManager.spotlightLevel
+            p.collectionBehavior.insert(.fullScreenAuxiliary)
+            p.orderFrontRegardless()
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        dimWindows.forEach { $0.orderFrontRegardless() }
+        dimWindows.first?.makeKey()
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
+            if e.keyCode == 53 { self?.endSpotlight(); return nil }
+            return e
+        }
+    }
+
+    func endSpotlight() {
+        guard spotlightOn else { return }
+        spotlightOn = false
+        if let m = keyMonitor { NSEvent.removeMonitor(m); keyMonitor = nil }
+        dimWindows.forEach { $0.orderOut(nil) }
+        dimWindows = []
+        for (_, p) in panels {
+            p.level = StickerManager.level
+            p.collectionBehavior.remove(.fullScreenAuxiliary)
+        }
+        applyCleanSpace()
+    }
 
     // MARK: просмотр из инструмента
 
@@ -380,6 +555,54 @@ final class StickerManager: NSObject, NSWindowDelegate {
     }
 }
 
+// MARK: Затемнение для режима «Показать стикеры»
+
+/// Окно-затемнение на одном экране: под стикерами, над всем остальным
+final class StickerDimWindow: NSWindow {
+    init(screen: NSScreen, onExit: @escaping () -> Void) {
+        super.init(contentRect: screen.frame, styleMask: .borderless, backing: .buffered, defer: false)
+        isReleasedWhenClosed = false
+        level = .screenSaver
+        isOpaque = false
+        backgroundColor = .clear
+        hasShadow = false
+        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        contentView = StickerDimView(frame: NSRect(origin: .zero, size: screen.frame.size), onExit: onExit)
+        setFrame(screen.frame, display: true)
+    }
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+}
+
+final class StickerDimView: NSView {
+    private let onExit: () -> Void
+    init(frame: NSRect, onExit: @escaping () -> Void) {
+        self.onExit = onExit
+        super.init(frame: frame)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    override var acceptsFirstResponder: Bool { true }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func mouseDown(with event: NSEvent) { onExit() }
+    override func keyDown(with event: NSEvent) { if event.keyCode == 53 { onExit() } }
+
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.black.withAlphaComponent(0.4).setFill()
+        bounds.fill()
+        let shadow = NSShadow()
+        shadow.shadowColor = NSColor.black.withAlphaComponent(0.6)
+        shadow.shadowBlurRadius = 3
+        shadow.shadowOffset = .zero
+        let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 13, weight: .medium),
+                                                    .foregroundColor: NSColor.white.withAlphaComponent(0.9),
+                                                    .shadow: shadow]
+        let s = T("Esc или щелчок по затемнению — выйти из режима стикеров") as NSString
+        let sz = s.size(withAttributes: attrs)
+        s.draw(at: NSPoint(x: (bounds.width - sz.width) / 2, y: 24), withAttributes: attrs)
+    }
+}
+
 // MARK: Приватность: авто-размытие
 
 /// Стикеры размываются сами, когда включён «Не беспокоить» (любой режим фокусировки; при демонстрации экрана macOS включает его сама),
@@ -389,13 +612,30 @@ final class StickerPrivacy: ObservableObject {
     static let shared = StickerPrivacy()
     private static let dndKey = "stickers.autoBlurDND"
 
-    @Published var onDND: Bool = (UserDefaults.standard.object(forKey: StickerPrivacy.dndKey) as? Bool) ?? true {
+    @Published var onDND: Bool = (UserDefaults.standard.object(forKey: StickerPrivacy.dndKey) as? Bool) ?? false {
         didSet { UserDefaults.standard.set(onDND, forKey: Self.dndKey); poll() }
     }
+    /// Видеоповтор (зеркалирование экрана, AirPlay, проектор)
+    @Published var onMirror: Bool = (UserDefaults.standard.object(forKey: StickerPrivacy.mirrorKey) as? Bool) ?? false {
+        didSet { UserDefaults.standard.set(onMirror, forKey: Self.mirrorKey); poll() }
+    }
+    /// Подключение к этому Mac по общему доступу к экрану
+    @Published var onVNC: Bool = (UserDefaults.standard.object(forKey: StickerPrivacy.vncKey) as? Bool) ?? false {
+        didSet { UserDefaults.standard.set(onVNC, forKey: Self.vncKey); vnc = false; poll() }
+    }
+    private static let mirrorKey = "stickers.autoBlurMirror", vncKey = "stickers.autoBlurVNC"
+    /// Как прятать записи: false — размытие, true — стикер складывается пополам и закрывает записи
+    @Published var fold: Bool = UserDefaults.standard.bool(forKey: StickerPrivacy.foldKey) {
+        didSet { UserDefaults.standard.set(fold, forKey: Self.foldKey) }
+    }
+    private static let foldKey = "stickers.hideFold"
     /// Сейчас идёт авто-режим (стикеры размыты автоматически)
     @Published private(set) var active = false
     /// Стикеры, которые пользователь открыл рукой, пока авто-режим включён
     @Published private(set) var revealed: Set<UUID> = []
+    /// Подключились к этому Mac по общему доступу к экрану (VNC, порт 5900)
+    private var vnc = false
+    private var vncTick = 0
     /// Удалось ли прочитать состояние «Не беспокоить» (нужен полный доступ к диску)
     @Published private(set) var dndReadable = true
     private var timer: Timer?
@@ -428,9 +668,70 @@ final class StickerPrivacy: ObservableObject {
             if let f = Self.focusActive() { if !dndReadable { dndReadable = true }; on = on || f }
             else if dndReadable { dndReadable = false }
         }
+        if onMirror, Self.mirroring() { on = true }
+        if onVNC {
+            vncTick += 1
+            if vncTick % 3 == 1 { checkVNC() }
+            if vnc { on = true }
+        }
         if on != active {
             active = on
             revealed = []
+        }
+    }
+
+    /// Видеоповтор: экраны зеркалятся (AirPlay, проектор, телевизор в режиме повтора)
+    private static func mirroring() -> Bool {
+        var n: UInt32 = 0
+        guard CGGetOnlineDisplayList(0, nil, &n) == .success, n > 0 else { return false }
+        var ids = [CGDirectDisplayID](repeating: 0, count: Int(n))
+        guard CGGetOnlineDisplayList(n, &ids, &n) == .success else { return false }
+        return ids.prefix(Int(n)).contains { CGDisplayIsInMirrorSet($0) != 0 }
+    }
+
+    private static func processRunning(_ name: String) -> Bool {
+        let count = proc_listallpids(nil, 0)
+        guard count > 0 else { return false }
+        var pids = [pid_t](repeating: 0, count: Int(count) + 32)
+        let n = proc_listallpids(&pids, Int32(pids.count * MemoryLayout<pid_t>.stride))
+        guard n > 0 else { return false }
+        var buf = [CChar](repeating: 0, count: 64)
+        for pid in pids.prefix(Int(n)) where pid > 0 {
+            if proc_name(pid, &buf, UInt32(buf.count)) > 0, String(cString: buf) == name { return true }
+        }
+        return false
+    }
+
+    /// Есть ли установленное подключение к порту 5900 этого Mac («Общий экран» / «Удалённое управление»); проверяется раз в несколько секунд
+    private func checkVNC() {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            // подключений нет, пока не запущен служебный процесс общего экрана: тогда netstat не вызываем вовсе
+            guard Self.processRunning("screensharingd") else {
+                DispatchQueue.main.async {
+                    guard let self = self, self.vnc else { return }
+                    self.vnc = false
+                    self.poll()
+                }
+                return
+            }
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/sbin/netstat")
+            p.arguments = ["-an", "-p", "tcp"]
+            let pipe = Pipe()
+            p.standardOutput = pipe
+            p.standardError = FileHandle.nullDevice
+            guard (try? p.run()) != nil else { return }
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            p.waitUntilExit()
+            let on = String(decoding: data, as: UTF8.self).split(separator: "\n").contains { line in
+                let c = line.split(separator: " ", omittingEmptySubsequences: true)
+                return c.count >= 6 && c[5] == "ESTABLISHED" && c[3].hasSuffix(".5900")
+            }
+            DispatchQueue.main.async {
+                guard let self = self, self.vnc != on else { return }
+                self.vnc = on
+                self.poll()
+            }
         }
     }
 
@@ -462,6 +763,12 @@ struct StickerCardView: View {
     @State private var hover: UUID? = nil
     @State private var resizeStart: (mouse: NSPoint, size: NSSize)? = nil
     @State private var pulse = false
+    /// 0 — стикер развёрнут, 1 — сложен пополам (нижняя половина записей поднята и закрывает верхнюю)
+    @State private var foldP: Double = 0
+    /// Над стикером держат перетаскиваемый текст или файл
+    @State private var dropOn = false
+    /// Строка, над которой держат файл
+    @State private var rowDrop: UUID? = nil
     @State private var dragStart: (mouse: NSPoint, origin: NSPoint)? = nil
 
     private let ink = Color.black.opacity(0.85)
@@ -490,7 +797,15 @@ struct StickerCardView: View {
         )
         .overlay(grip, alignment: .bottomTrailing)
         .clipShape(RoundedRectangle(cornerRadius: 6))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.accentColor, lineWidth: dropOn ? 3 : 0).allowsHitTesting(false))
+        .onDrop(of: [UTType.fileURL, UTType.plainText], isTargeted: $dropOn) { providers in handleDrop(providers) }
+        .mask(foldMask)
         .environment(\.colorScheme, .light)
+        .onChange(of: privacy.isBlurred(s)) { _ in updateFold(animated: true) }
+        .onChange(of: privacy.fold) { _ in updateFold(animated: true) }
+        .onChange(of: editing) { v in StickerManager.shared.editingItem[id] = v }
+        .onChange(of: s.alertActive) { _ in updateFold(animated: true) }
+        .onAppear { updateFold(animated: false) }
         .onChange(of: s.alertActive) { on in
             if on { withAnimation(Animation.easeInOut(duration: 0.7).repeatForever(autoreverses: true)) { pulse = true } }
             else { withAnimation(.default) { pulse = false } }
@@ -508,6 +823,8 @@ struct StickerCardView: View {
                 ForEach(0..<StickerPalette.count, id: \.self) { i in
                     Button(StickerPalette.name(i)) { store.update(id) { $0.color = i } }
                 }
+                Divider()
+                Button(T("Новый стикер")) { StickerManager.shared.newSticker() }
             } label: {
                 Image(systemName: "paintpalette").font(.system(size: 11))
             }
@@ -624,9 +941,97 @@ struct StickerCardView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         // «глаз»: записи размазаны и недоступны, пока их не покажут той же кнопкой
-        .blur(radius: privacy.isBlurred(s) ? 7 : 0)
         .allowsHitTesting(!privacy.isBlurred(s))
         .clipped()
+        .overlay(foldFlap(s))
+    }
+
+    // MARK: перетаскивание на стикер
+
+    /// Файл или текст, брошенный на стикер, становится новой строкой (файл — со значком и ссылкой)
+    private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
+        guard let s = store.sticker(id), !privacy.isBlurred(s) else { return false }
+        var any = false
+        for p in providers {
+            if p.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                any = true
+                p.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                    var url: URL?
+                    if let d = item as? Data { url = URL(dataRepresentation: d, relativeTo: nil) } else if let u = item as? URL { url = u }
+                    guard let u = url else { return }
+                    DispatchQueue.main.async { [id] in StickerManager.shared.addLine(id, text: u.lastPathComponent, file: u) }
+                }
+            } else if p.canLoadObject(ofClass: NSString.self) {
+                any = true
+                _ = p.loadObject(ofClass: NSString.self) { obj, _ in
+                    guard let t = (obj as? NSString) as String? else { return }
+                    DispatchQueue.main.async { [id] in StickerManager.shared.addLine(id, text: t) }
+                }
+            }
+        }
+        return any
+    }
+
+    private func fileIcon(_ it: StickerItem) -> some View {
+        let u = StickerFiles.url(it)
+        return Button { StickerFiles.open(it) } label: {
+            Image(nsImage: NSWorkspace.shared.icon(forFile: u?.path ?? it.file ?? ""))
+                .resizable().frame(width: 16, height: 16)
+                .opacity(u == nil ? 0.35 : 1)
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            Button(T("Убрать файл из строки")) { StickerManager.shared.detachFile(id, item: it.id) }
+        }
+        .help(u == nil ? Tf("Файл не найден: %@", it.file ?? "") : Tf("%@\nНажмите, чтобы открыть; ⌥ — показать в Finder", u!.path))
+    }
+
+    // MARK: складывание пополам
+
+    private func updateFold(animated: Bool) {
+        guard let s = store.sticker(id) else { return }
+        let to: Double = privacy.fold && privacy.isBlurred(s) && !s.alertActive ? 1 : 0     // сработавшее напоминание не складываем
+        if animated { withAnimation(.easeInOut(duration: 0.55)) { foldP = to } } else { foldP = to }
+    }
+
+    /// Нижняя половина поля записей (с её текстом) поднимается на сгибе и ложится на верхнюю
+    private func foldFlap(_ s: Sticker) -> some View {
+        FoldFlapView(progress: foldP, paper: StickerPalette.paperColor(s.color)) { _ in AnyView(staticLines(s)) }
+            .allowsHitTesting(false)
+    }
+
+    /// Складывание убирает нижнюю половину поля записей (шапка остаётся целиком)
+    private var foldMask: some View { FoldMaskView(progress: foldP) }
+
+    /// Неинтерактивная копия поля записей: рисуется на поднимающейся половине
+    private func staticLines(_ s: Sticker) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            ForEach(s.items) { it in
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: it.done ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 12))
+                        .foregroundColor(ink.opacity(it.done ? 0.5 : 0.7))
+                        .padding(.top, 1)
+                    if let f = it.file { Image(nsImage: NSWorkspace.shared.icon(forFile: StickerFiles.url(it)?.path ?? f)).resizable().frame(width: 16, height: 16) }
+                    Text(it.text.isEmpty ? " " : it.text)
+                        .font(.system(size: 13))
+                        .strikethrough(it.done)
+                        .foregroundColor(it.done ? ink.opacity(0.4) : ink)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Image(systemName: "xmark").font(.system(size: 8, weight: .bold)).opacity(0).padding(.top, 3)
+                }
+            }
+            Label(T("Строка"), systemImage: "plus").font(.system(size: 11)).foregroundColor(ink.opacity(0.55)).padding(.top, 2)
+        }
+        .padding(.horizontal, 9).padding(.vertical, 8)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    /// Размытие касается только надписей: значки строк остаются чёткими, а надпись нельзя прочесть, но видно, что строка есть
+    private var textBlur: CGFloat {
+        guard !privacy.fold, let s = store.sticker(id), privacy.isBlurred(s) else { return 0 }
+        return 4
     }
 
     private func row(_ it: StickerItem) -> some View {
@@ -639,6 +1044,7 @@ struct StickerCardView: View {
             .buttonStyle(.plain)
             .padding(.top, 1)
             .help(it.done ? T("Вернуть строку") : T("Зачеркнуть"))
+            if it.file != nil { fileIcon(it) }
             if editing == it.id {
                 TextField("", text: textBinding(it.id), onCommit: { commit(it.id) })
                     .textFieldStyle(PlainTextFieldStyle())
@@ -650,6 +1056,7 @@ struct StickerCardView: View {
                     .font(.system(size: 13))
                     .strikethrough(it.done)
                     .foregroundColor(it.done ? ink.opacity(0.4) : ink)
+                    .blur(radius: textBlur)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .fixedSize(horizontal: false, vertical: true)
                     .contentShape(Rectangle())
@@ -664,6 +1071,19 @@ struct StickerCardView: View {
             .help(T("Удалить строку"))
         }
         .onHover { inside in hover = inside ? it.id : (hover == it.id ? nil : hover) }
+        .background(RoundedRectangle(cornerRadius: 4).fill(Color.accentColor.opacity(rowDrop == it.id ? 0.25 : 0)))
+        .onDrop(of: [UTType.fileURL], isTargeted: Binding(get: { rowDrop == it.id }, set: { on in
+            if on { rowDrop = it.id } else if rowDrop == it.id { rowDrop = nil }
+        })) { providers in
+            guard let p = providers.first(where: { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }) else { return false }
+            p.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                var url: URL?
+                if let d = item as? Data { url = URL(dataRepresentation: d, relativeTo: nil) } else if let u = item as? URL { url = u }
+                guard let u = url else { return }
+                DispatchQueue.main.async { [id, iid = it.id] in StickerManager.shared.attachFile(id, item: iid, file: u) }
+            }
+            return true
+        }
     }
 
     // MARK: правка
@@ -750,6 +1170,61 @@ struct StickerCardView: View {
     }
 }
 
+/// Поднимающаяся половина стикера. Animatable: вид пересчитывается на каждом кадре анимации (лицо с текстом, потом обратная сторона)
+private struct FoldFlapView: View, Animatable {
+    var progress: Double
+    let paper: Color
+    let front: (CGSize) -> AnyView
+    var animatableData: Double {
+        get { progress }
+        set { progress = newValue }
+    }
+
+    var body: some View {
+        GeometryReader { g in
+            let half = g.size.height / 2
+            if progress > 0.001 {
+                ZStack(alignment: .top) {
+                    ZStack(alignment: .topLeading) {
+                        paper
+                        if progress < 0.5 {
+                            front(g.size)
+                                .frame(width: g.size.width, height: g.size.height, alignment: .topLeading)
+                                .offset(y: -half)
+                        }
+                    }
+                    .frame(width: g.size.width, height: half, alignment: .topLeading)
+                    .clipped()
+                    .overlay(Color.black.opacity(0.16 * sin(Double.pi * progress)))
+                    .rotation3DEffect(.degrees(-180 * progress), axis: (x: 1, y: 0, z: 0), anchor: .top, perspective: 0.35)
+                    .offset(y: half)
+                    Rectangle().fill(Color.black.opacity(0.18)).frame(width: g.size.width, height: 1).offset(y: half)
+                }
+                .frame(width: g.size.width, height: g.size.height, alignment: .top)
+            }
+        }
+    }
+}
+
+/// Видимая часть стикера при складывании: шапка и поле записей до края поднимающейся половины
+private struct FoldMaskView: View, Animatable {
+    var progress: Double
+    var animatableData: Double {
+        get { progress }
+        set { progress = newValue }
+    }
+
+    var body: some View {
+        GeometryReader { g in
+            let area = max(0, g.size.height - 24)
+            let h = min(g.size.height, 24 + area / 2 + area / 2 * max(0, cos(Double.pi * progress)))
+            Rectangle()
+                .frame(width: g.size.width, height: h)
+                .frame(width: g.size.width, height: g.size.height, alignment: .top)
+        }
+    }
+}
+
 // MARK: - Инструмент «Стикеры»
 
 /// Стикер, к которому нужно перейти в списке инструмента (из поиска «Пуска»)
@@ -805,15 +1280,25 @@ struct StickersListView: View {
                 })
     }
 
-    /// Авто-размытие при «Не беспокоить» и демонстрации экрана
+    /// Авто-прятание записей при «Не беспокоить», видеоповторе и подключении по общему доступу к экрану
     private var privacySection: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(T("Приватность")).fontWeight(.semibold)
-            Toggle(T("Размывать стикеры при «Не беспокоить»"), isOn: $privacy.onDND)
-            Text(T("Записи размываются сами и возвращаются, когда режим закончится. Открыть стикер рукой можно глазом; кнопка-«глаз в кружке» рядом с ним размывает или показывает все стикеры сразу."))
+            HStack(spacing: 8) {
+                Text(T("Как прятать записи:"))
+                Picker("", selection: $privacy.fold) {
+                    Text(T("Размытие")).tag(false)
+                    Text(T("Складывание пополам")).tag(true)
+                }
+                .pickerStyle(.segmented).labelsHidden().fixedSize()
+            }
+            Toggle(T("Прятать записи при «Не беспокоить»"), isOn: $privacy.onDND)
+            Toggle(T("Прятать записи при видеоповторе (зеркалирование экрана, AirPlay, проектор)"), isOn: $privacy.onMirror)
+            Toggle(T("Прятать записи при подключении к этому Mac по общему доступу к экрану"), isOn: $privacy.onVNC)
+            Text(T("Записи прячутся сами (способом, выбранным выше) и возвращаются, когда режим закончится. «Не беспокоить» — любой режим фокусировки; общий доступ — «Экран» Apple (порт 5900). Показ экрана в Zoom, Teams и других программах определить нельзя: для него есть глаз на стикере, кнопка-«глаз в кружке» (прячет или показывает все стикеры сразу) и клавиши ⌃⌥S."))
                 .font(.caption).foregroundColor(.secondary)
             if privacy.active {
-                Text(T("Сейчас стикеры размыты автоматически.")).font(.caption).foregroundColor(.accentColor)
+                Text(T("Сейчас записи на стикерах спрятаны автоматически.")).font(.caption).foregroundColor(.accentColor)
             }
             if privacy.onDND && !privacy.dndReadable {
                 Text(T("Не удаётся прочитать состояние «Не беспокоить»: выдайте «Пуску» полный доступ к диску в «Конфиденциальность и безопасность»."))
@@ -854,6 +1339,15 @@ struct StickersListView: View {
             Text(T("Наклеенный стикер лежит на рабочем столе там, куда вы его поставили, пока запущен «Пуск», и виден на всех рабочих столах. Потяните за шапку или за свободное место, чтобы передвинуть его. «×» на стикере убирает его с экрана, а здесь он сохраняется, пока вы его не удалите. Колокольчик на стикере — напомнить в нужное время: стикер сам появится на экране."))
                 .font(.caption).foregroundColor(.secondary)
             privacySection
+            HStack(spacing: 8) {
+                Button { StickerManager.shared.toggleSpotlight() } label: {
+                    Label(T("Показать стикеры"), systemImage: "note.text")
+                }
+                .controlSize(.small)
+                .help(T("Затемнить экран и вывести наклеенные стикеры поверх всех окон. Выход — Esc"))
+                Text(Tf("Горячая клавиша: %@. Затемняет экран и выводит наклеенные стикеры поверх всех окон; выход — Esc.", StickerManager.spotlightCombo.title))
+                    .font(.caption).foregroundColor(.secondary)
+            }
             if Spaces.available { cleanSpacesSection.id(spaceTick) }
             if store.list.isEmpty {
                 Spacer()

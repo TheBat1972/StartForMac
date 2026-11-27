@@ -246,6 +246,9 @@ final class Store: ObservableObject, @unchecked Sendable {
     @Published var menuShowMinimize = UserDefaults.standard.object(forKey: "menu.showMinimize") as? Bool ?? false {
         didSet { UserDefaults.standard.set(menuShowMinimize, forKey: "menu.showMinimize") }
     }
+    @Published var menuShowStickers = UserDefaults.standard.object(forKey: "menu.showStickers") as? Bool ?? false {
+        didSet { UserDefaults.standard.set(menuShowStickers, forKey: "menu.showStickers") }
+    }
     @Published var menuShowLock = UserDefaults.standard.object(forKey: "menu.showLock") as? Bool ?? false {
         didSet { UserDefaults.standard.set(menuShowLock, forKey: "menu.showLock") }
     }
@@ -6868,6 +6871,7 @@ struct SettingsView: View {
                             Text(T("Какие кнопки показывать под списком категорий в меню «Пуска». «Новая категория» есть всегда."))
                                 .font(.caption).foregroundColor(.secondary)
                             toggleRow(T("Свернуть все окна"), store.menuShowMinimize) { store.menuShowMinimize = $0 }
+                            toggleRow(T("Показать стикеры"), store.menuShowStickers) { store.menuShowStickers = $0 }
                             toggleRow(T("Заблокировать экран"), store.menuShowLock) { store.menuShowLock = $0 }
                             toggleRow(T("Выключить / Перезагрузить"), store.menuShowPower) { store.menuShowPower = $0 }
                         }
@@ -7148,7 +7152,8 @@ struct SettingsView: View {
                 }
                 Spacer()
             }
-            ReadmeView().frame(height: 420)
+            FullBackupSection()
+            ReadmeView().frame(height: 380)
         }
     }
 
@@ -7834,6 +7839,22 @@ struct RootView: View {
 
                 }
 
+                if store.menuShowStickers {
+                Button {
+                    close()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { StickerManager.shared.beginSpotlight() }
+                } label: {
+                    Label(T("Показать стикеры"), systemImage: "note.text")
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 8).padding(.vertical, 6)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .hoverHighlight(7)
+                .help(T("Затемнить экран и вывести наклеенные стикеры поверх всех окон. Выход — Esc"))
+                }
+
                 if store.menuShowLock {
                 Button {
                     close()
@@ -8396,6 +8417,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let m = NSMenu()
         let a = m.addItem(withTitle: T("Свернуть все окна"), action: #selector(dockMinimizeAll), keyEquivalent: "")
         a.target = self
+        m.addItem(withTitle: T("Показать стикеры"), action: #selector(dockShowStickers), keyEquivalent: "").target = self
         let b = m.addItem(withTitle: T("Не давать компьютеру уснуть"), action: #selector(dockToggleAwake), keyEquivalent: "")
         b.target = self
         b.state = minimize.awakeOn ? .on : .off
@@ -8404,6 +8426,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     @objc private func dockMinimizeAll() { minimize.minimizeOnly() }
     @objc private func dockToggleAwake() { minimize.toggleAwake?() }
+    @objc private func dockShowStickers() { DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { StickerManager.shared.beginSpotlight() } }
     var window: PopupWindow!
     private var programmatic = false
     private let defaults = UserDefaults.standard
@@ -8422,6 +8445,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if Watchdog.handOver() { exit(0) }          // перезапуск включён: запуск вручную передаётся агенту, чтобы «Пуск» был под наблюдением
+        Watchdog.watchTermination()
         AppTheme.apply()
         DispatchQueue.global(qos: .utility).async { cleanDropTemp() }
         setupMenu()
@@ -8616,6 +8640,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+FullBackup.applyPending()                 // отложенное восстановление из полной копии: до того, как что-то прочитано
 let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate

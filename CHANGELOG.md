@@ -1,5 +1,37 @@
 # Что нового / What's new
 
+### Версия 14.1
+
+**Добавлено**
+- Стикеры: записи можно прятать не размытием, а складыванием: стикер анимированно складывается пополам, и нижняя половина закрывает записи. Выбор «Размытие» / «Складывание пополам» в инструменте «Стикеры», раздел «Приватность»; он действует и для глаза, и для кнопки «глаз в кружке», и для авто-режима «Не беспокоить».
+- «Показать стикеры»: экран затемняется (как у линейки), а наклеенные стикеры выходят на передний план поверх всех окон; с ними работают все функции. Выход — Esc или щелчок по затемнению. Горячая клавиша ⌃⌥S (включает и выключает режим), она же показана в инструменте «Стикеры», где есть и кнопка запуска. Ещё запуск: пункт в меню значка в верхней панели и в меню значка в Dock (там он всегда) и кнопка в меню «Пуска» (между «Свернуть все окна» и «Заблокировать экран»; включается в Настройках в разделе «Кнопки внизу меню»).
+- Полная копия «Пуска»: Настройки → «О программе» → «Сохранить полную копию…» собирает в один файл «.startbackup» все настройки, стикеры, словари раскладки, категории, ссылки и «чистые» рабочие столы; «Восстановить из полной копии…» разворачивает файл (с подтверждением): текущие данные сначала сохраняются отдельным файлом, «Пуск» перезапускается и применяет копию. Не входят история буфера обмена, скачанные программы, кэши и системные настройки (автозапуск, перезапуск, разрешения). Копия словарей на вкладке «Раскладка» осталась.
+- Стикеры: файл или текст можно перетащить на стикер, и получится новая строка. Файл становится строкой со значком и подписью-именем (подпись можно править); щелчок по значку открывает файл, с ⌥ показывает его в Finder; ссылка находит файл, даже если его переместили. Если файла нет, значок бледнеет.
+- Стикеры: в меню цветов на каждом стикере внизу, под серой линией, пункт «Новый стикер».
+- Стикеры: файл можно бросить на уже существующую строку, и он прикрепится к ней (текст остаётся, прежняя ссылка заменяется); на свободное место стикера — по-прежнему новая строка.
+- Стикеры: файл можно убрать из строки: Delete (⌫) в начале правимой строки или пункт «Убрать файл из строки» в меню правой кнопки на значке. Подпись остаётся.
+- Стикеры: ⌘V на стикере вставляет и файлы, скопированные в Finder: каждый становится строкой со значком.
+- Стикеры: ⌘V с файлом в буфере при правке строки прикрепляет файл к этой строке.
+
+**Исправлено**
+- Перезапуск «Пуска»: агент больше не привязывается к программе (AssociatedBundleIdentifiers). Из-за этой привязки система вела его как отправленную службу без перезапуска, и «Пуск» не поднимался после принудительного завершения. Кроме того, «Завершить» для «Пуска» в Мониторинге системы (сигнал SIGTERM) и в диспетчере задач самого «Пуска» приводило к выходу с кодом 0, который система считает обычным закрытием, и «Пуск» не поднимался: теперь такой выход считается сбоем и агент запускает «Пуск» заново (обычное закрытие по-прежнему остаётся закрытием). Если перезапуск уже не работает, один раз выключите и снова включите его в Настройках → «Запуск».
+
+### Version 14.1
+
+**Added**
+- Stickers: the lines can be hidden by folding instead of blurring: the sticker folds in half with an animation and the lower half covers the lines. The “Blur” / “Fold in half” choice is in the Stickers tool, “Privacy” section, and applies to the eye, the circled-eye button and the automatic Do Not Disturb mode.
+- “Show stickers”: the screen dims (like the ruler) and the stuck stickers come to the front above all windows; all their functions work. Leave with Esc or a click on the dimmed screen. Hotkey ⌃⌥S (turns the mode on and off), also shown in the Stickers tool, which has a start button too. You can also start it from the menu bar icon menu and the Dock icon menu (always there) or from a button in Start’s menu (between “Minimize all windows” and “Lock screen”; turn it on in Settings → “Buttons at the bottom of the menu”).
+- Full Start backup: Settings → About → “Save full backup…” puts all settings, stickers, layout dictionaries, categories, links and “clean” desktops into one “.startbackup” file; “Restore from full backup…” unpacks the file (with a confirmation): your current data is first saved to a separate file, then Start restarts and applies the backup. The clipboard history, downloaded tools, caches and system settings (launch at login, restart, permissions) are not included. The dictionaries backup on the “Keyboard layout” tab stays.
+- Stickers: a file or text can be dragged onto a sticker and becomes a new line. A file becomes a line with its icon and a caption (the caption can be edited); a click on the icon opens the file, with ⌥ it is shown in Finder; the link finds the file even if it was moved. If the file is gone the icon fades.
+- Stickers: the colour menu on every sticker now ends, below a grey separator, with a «New sticker» item.
+- Stickers: a file can be dropped onto an existing line and gets attached to it (the text stays, an old link is replaced); dropped on empty space of the sticker it still makes a new line.
+- Stickers: a file can be removed from a line: Delete (⌫) at the start of the line being edited, or «Remove file from line» in the icon's right-click menu. The caption stays.
+- Stickers: ⌘V on a sticker also pastes files copied in Finder: each becomes a line with its icon.
+- Stickers: ⌘V with a file on the clipboard while editing a line attaches the file to that line.
+
+**Fixed**
+- Restart of Start: the agent is no longer tied to the app (AssociatedBundleIdentifiers). Because of that tie the system handled it as a submitted service without restarting, and Start did not come back after a forced quit. Also, ending Start in Activity Monitor (SIGTERM) or in Start’s own Task Manager made Start exit with code 0, which the system treats as a normal quit, so it was not restarted: such an exit now counts as a crash and the agent starts Start again (a normal quit is still a quit). If the restart no longer works, turn it off and on once in Settings → Launch.
+
 ### Версия 14.0
 
 **Добавлено**
@@ -23,7 +55,7 @@
 - Настройки → «Раскладка» → «Клавиша переключения раскладки»: кроме «Системной» и Globe (fn) добавлен вариант Control+Shift — раскладка переключается, когда эти клавиши нажаты вместе и отпущены без других клавиш (⌃⇧Буква и подобные сочетания работают как обычно).
 - Поиск «Пуска» ищет и по стикерам: найденные показываются отдельным блоком «Стикеры» (цвет, найденная строка, «Приклеен» / «Не приклеен», время напоминания); клик открывает инструмент «Стикеры», прокручивает список к этому стикеру и на пару секунд подсвечивает его.
 - В инструменте «Стикеры» клик по стикеру открывает его копию в том виде, как он выглядит на экране: с цветом, размером и записями. Её можно править (меняется сам стикер), двигать и менять размер; «×» или Esc закрывает только копию и не снимает стикер с экрана.
-- Стикеры сами размываются, когда включён «Не беспокоить» (в том числе macOS включает его при демонстрации экрана), и возвращаются, когда режим закончился (переключатель в инструменте «Стикеры», раздел «Приватность»). Открыть стикер рукой можно глазом. Рядом с глазом на каждом стикере кнопка «глаз в кружке»: размыть или показать записи сразу на всех стикерах.
+- Стикеры сами прячут записи, когда включён «Не беспокоить», экран зеркалится (видеоповтор, AirPlay, проектор) или к Mac подключились по общему доступу к экрану (каждый признак включается отдельным переключателем), и возвращаются, когда режим закончился (переключатель в инструменте «Стикеры», раздел «Приватность»). Открыть стикер рукой можно глазом. Рядом с глазом на каждом стикере кнопка «глаз в кружке»: размыть или показать записи сразу на всех стикерах.
 
 **Исправлено**
 - Напоминания: после «Принять» (в списке, на стикере или в окне у значка) значок таймера уходит из верхней панели, как по «Закрыть», если больше ничего не идёт: ни таймера, ни секундомера, ни других сработавших напоминаний.
@@ -56,7 +88,7 @@
 - Settings → Keyboard layout → Layout switch key: besides “System” and Globe (fn) there is now Control+Shift — the layout switches when these keys are pressed together and released without other keys (⌃⇧Letter and similar shortcuts work as usual).
 - Start’s search also looks through stickers: matches appear in a separate “Stickers” block (colour, the matching line, “Stuck” / “Not stuck”, the reminder time); a click opens the Stickers tool, scrolls the list to that sticker and highlights it for a couple of seconds.
 - In the Stickers tool, clicking a sticker opens a copy of it looking just like it does on screen: colour, size and lines. You can edit it (the sticker itself changes), move and resize it; “×” or Esc closes only the copy and does not unstick the sticker.
-- Stickers blur themselves while Do Not Disturb is on (macOS turns it on while you share the screen) and come back when the mode ends (a switch in the Stickers tool, “Privacy” section). A sticker can be revealed by hand with the eye. Next to the eye every sticker has a circled-eye button: blur or show the lines on all stickers at once.
+- Stickers hide their lines on their own while Do Not Disturb is on, the screen is mirrored (display mirroring, AirPlay, a projector) or someone has connected through screen sharing (each trigger has its own switch), and come back when the mode ends (a switch in the Stickers tool, “Privacy” section). A sticker can be revealed by hand with the eye. Next to the eye every sticker has a circled-eye button: blur or show the lines on all stickers at once.
 
 **Fixed**
 - Reminders: after “Accept” (in the list, on a sticker or in the icon window) the timer icon leaves the menu bar, as with “Close”, if nothing else is running: no timer, no stopwatch and no other fired reminders.

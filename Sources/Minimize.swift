@@ -373,8 +373,7 @@ enum Watchdog {
             "KeepAlive": ["SuccessfulExit": false],
             "ThrottleInterval": 10,
             "ProcessType": "Interactive",
-            "EnvironmentVariables": ["START_BY_LAUNCHD": "1"],
-            "AssociatedBundleIdentifiers": [Bundle.main.bundleIdentifier ?? "ru.local.StartMenu"]      // в «Объектах входа» запись показывается под именем и значком программы
+            "EnvironmentVariables": ["START_BY_LAUNCHD": "1"]
         ]
         do {
             try FileManager.default.createDirectory(at: agentURL.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -413,11 +412,50 @@ enum Watchdog {
         return launchctl(["bootstrap", domain, agentURL.path]) == 0
     }
 
+    /// «Завершить» для самого «Пуска» в диспетчере задач: при включённом перезапуске это завершение процесса (агент поднимет «Пуск» заново),
+    /// иначе обычное закрытие. Закрыть «Пуск» совсем при включённом перезапуске можно пунктом «Закрыть «Пуск»» или выключив перезапуск.
+    static func endSelf() {
+        if byLauncher {
+            UserDefaults.standard.synchronize()
+            exit(1)
+        }
+        NSApp.terminate(nil)
+    }
+
+    /// Перезапуск «Пуска» (после восстановления из копии): под агентом — выход с ошибкой, чтобы система подняла «Пуск» заново, иначе отдельная задача запускает его после выхода
+    static func relaunch() {
+        UserDefaults.standard.synchronize()
+        if byLauncher { exit(1) }
+        let job = "ru.local.StartMenu.relaunch"
+        let wait = "while kill -0 \(ProcessInfo.processInfo.processIdentifier) 2>/dev/null; do sleep 0.3; done"
+        launchctl(["remove", job])
+        let cmd = "\(wait); open \(q(Bundle.main.bundlePath)); launchctl remove \(job)"
+        _ = launchctl(["submit", "-l", job, "--", "/bin/sh", "-c", cmd])
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { NSApp.terminate(nil) }
+    }
+
+    private static var termSource: DispatchSourceSignal?
+
+    /// Программа, запущенная агентом, на SIGTERM (например «Завершить» в Мониторинге системы) обычно выходила бы с кодом 0, и система считала бы это
+    /// обычным закрытием и не перезапускала её. Поэтому сигнал завершения снаружи превращается в выход с ошибкой: агент поднимет «Пуск» заново.
+    /// Обычное закрытие («Закрыть «Пуск»», ⌘Q, диспетчер задач самого «Пуска») идёт без сигнала и остаётся закрытием.
+    static func watchTermination() {
+        guard byLauncher, termSource == nil else { return }
+        signal(SIGTERM, SIG_IGN)
+        let src = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        src.setEventHandler {
+            UserDefaults.standard.synchronize()
+            exit(1)
+        }
+        src.resume()
+        termSource = src
+    }
+
     /// После переезда программы агент должен указывать на новый файл
     static func refreshPath() {
         guard enabled, let exe = Bundle.main.executablePath,
               let d = NSDictionary(contentsOf: agentURL),
-              (d["ProgramArguments"] as? [String])?.first != exe || d["AssociatedBundleIdentifiers"] == nil else { return }
+              (d["ProgramArguments"] as? [String])?.first != exe || d["AssociatedBundleIdentifiers"] != nil else { return }      // старый агент с AssociatedBundleIdentifiers переписывается
         _ = writePlist()
     }
 }
@@ -1090,6 +1128,7 @@ final class MinimizeController: NSObject, ObservableObject {
         let m = NSMenu()
         m.addItem(withTitle: T("Открыть «StartForMac»"), action: #selector(openStartMenu), keyEquivalent: "").target = self
         m.addItem(withTitle: T("Настройки…"), action: #selector(openSettingsItem), keyEquivalent: "").target = self
+        m.addItem(withTitle: T("Показать стикеры"), action: #selector(showStickersItem), keyEquivalent: "").target = self
         let awake = m.addItem(withTitle: T("Не давать компьютеру уснуть"), action: #selector(toggleAwakeItem), keyEquivalent: "")
         awake.target = self
         awake.state = awakeOn ? .on : .off
@@ -1104,6 +1143,7 @@ final class MinimizeController: NSObject, ObservableObject {
     @objc func openStartMenu() { openStart?() }
     @objc func openSettingsItem() { (NSApp.delegate as? AppDelegate)?.openSettings() }
     @objc func toggleAwakeItem() { toggleAwake?() }
+    @objc func showStickersItem() { DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { StickerManager.shared.beginSpotlight() } }
     @objc func quit() { NSApp.terminate(nil) }
 
     // MARK: Настройки (вызываются из окна «Настройки» в «Пуске»)

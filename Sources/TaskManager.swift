@@ -172,7 +172,7 @@ final class TMSampler: ObservableObject {
     func end(_ r: TMRow, force: Bool) {
         let k = TMGuard.kind(path: r.path, name: r.name, user: r.pids.first.flatMap { procs[$0]?.user } ?? "", pids: r.pids)
         if !TMGuard.confirm(r.name, k, verb: T("Завершить")) { return }
-        if k == .selfApp { NSApp.terminate(nil); return }
+        if k == .selfApp { Watchdog.endSelf(); return }
         if r.isApp, let a = NSWorkspace.shared.runningApplications.first(where: { $0.bundleURL?.path == r.id }) {
             if force {
                 a.forceTerminate()
@@ -190,7 +190,7 @@ final class TMSampler: ObservableObject {
         let p = procs[pid]
         let k = TMGuard.kind(path: p?.path ?? "", name: p?.name ?? "", user: p?.user ?? "", pids: [pid])
         if !TMGuard.confirm(p?.name ?? "\(pid)", k, verb: T("Завершить")) { return }
-        if k == .selfApp { NSApp.terminate(nil); return }
+        if k == .selfApp { Watchdog.endSelf(); return }
         if kill(pid, force ? SIGKILL : SIGTERM) != 0 { NSSound.beep() }
     }
 
