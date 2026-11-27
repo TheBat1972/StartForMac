@@ -15,6 +15,7 @@
 
 **Исправлено**
 - Перезапуск «Пуска»: агент больше не привязывается к программе (AssociatedBundleIdentifiers). Из-за этой привязки система вела его как отправленную службу без перезапуска, и «Пуск» не поднимался после принудительного завершения. Кроме того, «Завершить» для «Пуска» в Мониторинге системы (сигнал SIGTERM) и в диспетчере задач самого «Пуска» приводило к выходу с кодом 0, который система считает обычным закрытием, и «Пуск» не поднимался: теперь такой выход считается сбоем и агент запускает «Пуск» заново (обычное закрытие по-прежнему остаётся закрытием). Если перезапуск уже не работает, один раз выключите и снова включите его в Настройках → «Запуск».
+- Умный буфер обмена: в режиме «Показать стикеры» его список оказывался под затемнением, и выбор записи закрывал этот режим; теперь список открывается поверх стикеров, и вставка в стикер режим не закрывает.
 
 ### Version 14.1
 
@@ -31,6 +32,7 @@
 
 **Fixed**
 - Restart of Start: the agent is no longer tied to the app (AssociatedBundleIdentifiers). Because of that tie the system handled it as a submitted service without restarting, and Start did not come back after a forced quit. Also, ending Start in Activity Monitor (SIGTERM) or in Start’s own Task Manager made Start exit with code 0, which the system treats as a normal quit, so it was not restarted: such an exit now counts as a crash and the agent starts Start again (a normal quit is still a quit). If the restart no longer works, turn it off and on once in Settings → Launch.
+- Smart clipboard: in the “Show stickers” mode its list ended up under the dimming and choosing an entry ended that mode; the list now opens above the stickers and pasting into a sticker keeps the mode.
 
 ### Версия 14.0
 

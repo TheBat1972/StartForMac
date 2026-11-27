@@ -469,7 +469,7 @@ final class StickerManager: NSObject, NSWindowDelegate {
 
     func toggleSpotlight() { if spotlightOn { endSpotlight() } else { beginSpotlight() } }
 
-    private static let spotlightLevel = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
+    static let spotlightLevel = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
 
     /// Затемняет экран и выводит наклеенные стикеры поверх всех окон (с ними работают все функции). Выход — Esc или щелчок по затемнению
     func beginSpotlight() {

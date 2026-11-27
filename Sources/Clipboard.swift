@@ -470,7 +470,8 @@ final class ClipPanelController {
         p.isOpaque = false
         p.backgroundColor = .clear
         p.hasShadow = true
-        p.level = .popUpMenu
+        // в режиме «Показать стикеры» (затемнение и стикеры выше всех окон) список должен быть над ними
+        p.level = StickerManager.shared.spotlightOn ? NSWindow.Level(rawValue: StickerManager.spotlightLevel.rawValue + 1) : .popUpMenu
         p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
         p.hidesOnDeactivate = false
         p.contentView = host
